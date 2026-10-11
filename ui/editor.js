@@ -769,7 +769,14 @@ const Ed = {
       for (let i = Math.max(0, lo - 40); i < rows.length && rows[i].offsetTop - base <= bot; i++)
         if (rows[i]._lzy) todo.push(i);
       if (!todo.length) return;
+      // longpos: keep the row at the top in place. Rows built ABOVE it (lo-40..lo)
+      // grow from one-line placeholders to their real height and would push it
+      // down while scrollTop stays put — the view jumps to earlier lines.
+      const a = rows[lo], ay = a.offsetTop - base, ah = a.offsetHeight || 1;
+      const af = Math.min(1, Math.max(0, (top - ay) / ah));
       for (const i of todo) Ed.wake(g, i);       // one batch, then re-measure: built rows may wrap taller
+      const b = rows[lo], by = b.offsetTop - rows[0].offsetTop + af * b.offsetHeight;
+      if (Math.abs(by - top) >= 1) lp.scrollTop = by;
       if (typeof scHits === "function" && scHits(g).length) scMarks(g);   // the search flash covers built rows too
     }
   },
