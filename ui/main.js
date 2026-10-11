@@ -8807,7 +8807,9 @@ async function startGraph(g, cfg) {
   // pan centred, like stock (notes/stock.md: positions and pan are not kept there, the zoom is).
   // The stored value is snapped to the nearest wheel notch so the lattice invariant holds (stock
   // steps x1.5, we step 0.9: a stock-written 2.25 opens at 0.9^-8 = 2.32).
-  if (!prevK && gcS && gcS.kind === "gg" && gcS.st.scale !== 1) {
+  // lgkeep: a fresh LOCAL graph likewise opens at its leaf's options.scale (stock run u: split,
+  // close+reopen and restart restore the leaf options, the zoom with them; layout and pan fresh).
+  if (!prevK && gcS && (gcS.kind === "gg" || gcS.kind === "lg") && gcS.st.scale !== 1) {
     view.notch = Math.max(GZ_IN, Math.min(GZ_OUT, Math.round(Math.log(gcS.st.scale) / Math.log(0.9))));
     view.scale = notchScale(view.notch);
   }
@@ -8864,6 +8866,7 @@ async function startGraph(g, cfg) {
     // in parallel with the note open, a full round trip when it did not.
     const pfHit = !!(pf && pf.n === cfg.center()), wT0 = perf.now();
     const g2 = await (pfHit ? pf.p : cfg.fetch());
+    if (kt && kt.gk) kt.gk.c = cfg.center();   // lgkeep: N[] is rebuilt in place below for this centre
     const waited = perf.now() - wT0;
     // graph-webgl: a refresh that changes nothing (the race-closing refetch below, a save that
     // touched no link) must not reheat — the layout stays a pure function of the vault, so two
@@ -8968,7 +8971,7 @@ async function startGraph(g, cfg) {
     quiet = prevK.st.quiet; settledMark = prevK.st.settledMark;
     if (kept < N.length || kept < prevK.pos.size) { alpha = Math.max(alpha, 0.3); calm = 0; kePeak = 0; quiet = false; }   // grew or shrank while away
   }
-  if (kt) kt.gk = { N, view, st: () => ({ alpha, calm, kePeak, quiet: quiet && alphaTarget === 0, settledMark }) };
+  if (kt) kt.gk = { c: cfg.center(), N, view, st:() => ({ alpha, calm, kePeak, quiet: quiet && alphaTarget === 0, settledMark }) };
   const kinetic = () => { let k = 0; for (const p of N) k += p.vx * p.vx + p.vy * p.vy; return k; };
   // Barnes-Hut quadtree (theta 0.8) for the many-body repulsion (d3 shape:
   // dv = REPEL*alpha*dx/d^2, i.e. |dv| ~ 1/d). The force is long-range, so a
@@ -9402,6 +9405,7 @@ async function startGraph(g, cfg) {
     const s = notchScale(view.notch);
     view.tx = mx - view.wx * s; view.ty = my - view.wy * s; view.scale = s;
     if (gcS && gcS.kind === "gg" && gcS.st.scale !== s) { gcS.st.scale = s; gcS.save({ scale: s }); }   // ggkeep: stock persists the zoom (graph.json scale)
+    else if (gcS && gcS.kind === "lg" && gcS.st.scale !== s) { gcS.st.scale = s; gcS.save({ scale: s }); updateTitle(); }   // lgkeep: a local zoom goes to the leaf's options.scale (workspace.json via wsLgOpts, armed by updateTitle), never graph.json
     redraw();
   };
   // census [ggz:s,tx,ty,notch] (canvas px, full precision) and [ggzb:x0,y0,x1,y1,n] — the window-px
@@ -9523,8 +9527,17 @@ async function startGraph(g, cfg) {
 // index.rs GraphCache::local — served over graph_local from the cached adjacency.
 
 async function showLocalGraph(g, t) {  // t = the localgraph tab (kind:"lg")
-  cancelAnimationFrame(g.sim);         // clean restart on tab switches
+  // lgkeep: a hidden local graph does not follow its linked tab (lgFollow re-centres only the ACTIVE
+  // one), so on the way back it catches up first. Stock (goal/lgkeep notes/stock.md run u): a source
+  // note changed while the tab was away -> the graph is REBUILT for the new note, options kept; the
+  // same source -> the frame the user left (positions, motion, pan, zoom, depth). t.gk.c is the centre
+  // its N[] was built for (startGraph keeps it current across in-place refreshes).
+  const lk = groups().find(x => x.id === t.linkId), lt = lk && lk.active >= 0 ? lk.tabs[lk.active] : null;
+  if (lt && !lt.kind && lt.name && lt.name !== t.center) { t.center = lt.name; t.name = "Graph of " + lt.name.split("/").pop(); }
+  if (t.gk && t.gk.c !== t.center) delete t.gk;
+  cancelAnimationFrame(g.sim);         // the sim is restarted, but from the tab's KEPT layout + camera (lgkeep = ggkeep's t.gk)
   await startGraph(g, {
+    keep: t,                           // lgkeep: the tab carries its live layout across a switch (t.gk)
     fetch: () => gcFetchLg(t, t.center),   // R19: served from the index adjacency cache; graphctx: graph_view when a filter is set
     center: () => t.center,
     scope: () => gcScopeLg(t),         // graphctx GC1: the leaf's ONE card, bound to this tab's options
