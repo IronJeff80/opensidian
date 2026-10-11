@@ -11689,7 +11689,7 @@ function psgTok() {
 }
 function psgPublish() {
   if (!psgProbe || vaultPath || $("picker").hidden) return;
-  const t = "opensidian" + vargTok() + psgTok();
+  const t = "opensidian" + vargTok() + psgTok() + sbarTok();   // noscroll: the boot picker's root/element scrollbars too (the pane census never runs here)
   if (t === psgLast) return;
   psgLast = t; document.title = t; pushTitle(t);
 }
