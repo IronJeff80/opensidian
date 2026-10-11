@@ -323,9 +323,14 @@ body { --font-interface-override: "??"; --font-text-override: "??"; --font-monos
    body is now pinned to the viewport (fixed, inset 0, height auto): a snippet margin
    SHRINKS it inside the window instead of pushing past it, and html padding no longer
    adds to it (fixed is out of html's flow). The frame border stays inside (border-box).
-   overflow:hidden on both is the guard behind that, not the fix. */
+   overflow:hidden on both is the guard behind that, not the fix.
+   goal graphperf: ABSOLUTE, not fixed. With html non-positioned and never scrolling, an
+   absolute inset:0 body sits on the initial containing block = the viewport, so the noscroll
+   geometry is identical. A FIXED body, though, made WebKitGTK re-rasterize the whole page in
+   llvmpipe on every caret blink: idle CPU after typing 470-570 -> 760-860 ms/10s on testvault
+   (gidle2: 3a564b00^ vs 3a564b00; gidle3: HEAD body fixed vs absolute) — notes/cause.md. */
 html { overflow: hidden }
-body { position: fixed; inset: 0; overflow: hidden }
+body { position: absolute; inset: 0; overflow: hidden }
 body { display: flex; font: 14px/1.5 var(--font-interface);
        /* the wasp ring: a THEME that declares --frame-width/--frame-color paints it here; every other theme resolves to 0 (colour irrelevant at 0 width) — docs/palette-wasp/SOURCE.md "The frame" */
        border: var(--frame-width, 0) solid var(--frame-color, currentColor);
