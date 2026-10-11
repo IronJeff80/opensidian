@@ -5338,9 +5338,19 @@ async function loadActive(g) {
       fetch: gcFetchGg,              // graphctx GC4-GC11: graph_view when a filter/group is set
       scope: gcScopeGg,             // graphparity/graphctx: the leaf's ONE graph-controls card, bound to graph.json
       center: () => null,
-      onClick: async n => {         // node click: this tab BECOMES the note
+      onClick: async (n, e) => {    // node click: this tab BECOMES the note
+        // ggclick Q3 (notes/stock.md): Ctrl/Cmd or middle = new tab right of the graph, Ctrl+Alt
+        // (+Shift: stock's new window, which we do not have) = split right; Shift = plain click
+        if (e && (e.button === 1 || e.ctrlKey || e.metaKey))
+          return e.altKey && e.button !== 1 ? splitWith(g, "row", mkTab(n)) : openNewTab(n, g);
         const tt = g.active >= 0 ? g.tabs[g.active] : null;
-        if (tt && tt.kind === "gg") { delete tt.kind; delete tt.gk; modeBits(tt); }   // #16: it is a NOTE tab now — give it the two mode bits; ggkeep: its kept graph goes with the kind
+        if (tt && tt.kind === "gg") {
+          // ggclick Q1/Q2: the graph becomes this leaf's Back entry (forward slice dropped)
+          tt.hist = tt.hpos >= 0 ? tt.hist.slice(0, tt.hpos + 1) : [];
+          if (!tt.hist.length || !tt.hist[tt.hist.length - 1].gg) tt.hist.push({ n: tt.name, s: 0, gg: 1 });
+          tt.hpos = tt.hist.length - 1;
+          delete tt.kind; delete tt.gk; modeBits(tt);   // #16: it is a NOTE tab now — give it the two mode bits; ggkeep: its kept graph goes with the kind
+        }
         await navigate(g, n);
       },
     });
@@ -5419,8 +5429,7 @@ async function openInTab(name, via = "tab") {   // explorer click -> FOCUSED gro
    - middle click, Ctrl/Cmd click and menu "Open in new tab" open a NEW tab
      IMMEDIATELY RIGHT of the active one, focused, never deduped (REQ-6..9,11,14).
    rowOpen is the one seam the two row kinds share. */
-async function openNewTab(name) {
-  const g = fg();
+async function openNewTab(name, g = fg()) {   // ggclick: a graph click passes the graph's own group
   await act("note_open", { via: "newtab", tabs: g.tabs.length }, async sp => {
     await flushSave(g);
     const at = g.active >= 0 ? g.active + 1 : g.tabs.length;
@@ -5532,6 +5541,9 @@ async function navAnchor(g, anchor) {
    the history bounds. navBtnSync repaints every pane's pair from that state;
    it is called from updateTitle, the one census choke point, so the buttons
    can never be fresher or staler than the [nvb:] token a phase asserts. */
+// ggclick: a global-graph leaf that a node click turned into a note keeps the graph as a
+// history entry ({gg:1}); back on that entry the leaf is a graph again and still walks it
+const histable = t => !t.kind || (t.kind === "gg" && t.hist.length > 0);
 function navState(g) {
   if (!g || g.active < 0) return { b: false, f: false };
   let tab = g.tabs[g.active];
@@ -5540,7 +5552,7 @@ function navState(g) {
     if (!h || h.active < 0) return { b: false, f: false };
     tab = h.tabs[h.active];
   }
-  if (tab.kind) return { b: false, f: false };
+  if (!histable(tab)) return { b: false, f: false };
   return { b: tab.hpos > 0, f: tab.hpos < tab.hist.length - 1 };
 }
 function navBtnSync() {
@@ -5575,7 +5587,7 @@ function navHistMenu(e, g, dir, btn) {
     if (!h || h.active < 0) return;
     tab = h.tabs[h.active];
   }
-  if (tab.kind) return;
+  if (!histable(tab)) return;
   const idx = [];
   if (dir < 0) { for (let i = tab.hpos - 1; i >= 0; i--) idx.push(i); }               // back: most-recent-first
   else { for (let i = tab.hpos + 1; i < tab.hist.length; i++) idx.push(i); }          // fwd: nearest-first
@@ -5609,7 +5621,7 @@ async function histGo(d, from) {
     if (!g || g.active < 0) return;
     tab = g.tabs[g.active];
   }
-  if (tab.kind) return;
+  if (!histable(tab)) return;
   const p = tab.hpos + d;
   if (p < 0 || p >= tab.hist.length) return;
   const sp = otel.begin("history_nav", { dir: d < 0 ? "back" : "forward", pos: p, len: tab.hist.length });
@@ -5617,13 +5629,17 @@ async function histGo(d, from) {
   tab.hist[tab.hpos].s = scrollOf(g);
   tab.hpos = p;
   tab.name = tab.hist[p].n;
+  // ggclick Q2: a graph entry turns the leaf back into a FRESH global graph (stock re-simulates,
+  // zoom from graph.json — ggkeep's reopen path); leaving it makes the leaf a note again
+  if (tab.hist[p].gg) { tab.kind = "gg"; delete tab.gk; }
+  else if (tab.kind === "gg") { delete tab.kind; delete tab.gk; modeBits(tab); }
   // R19 (HARD RULE 100ms): history_nav always ends at PAINT. A linked local graph
   // re-centres in loadActive -> lgFollow -> graphRefresh; its settling is animation and
   // is measured by that group's own graph_settle span, never by history_nav.
   const lgh = groups().find(h => { const t = h.active >= 0 ? h.tabs[h.active] : null; return t && t.kind === "lg" && t.linkId === g.id && t.center !== tab.name; });
   if (lgh) { otel.cancel(lgh.settleSp); lgh.settleSp = otel.begin("graph_settle", { from: "history", nodes: 0 }); }
   await loadActive(g);
-  const s = tab.hist[p].s;
+  const s = !tab.kind && tab.hist[p].s;
   if (s) { if (tab.mode === "reading") g.preview.scrollTop = s; else if (isLp(tab.mode)) g.lp.scrollTop = s; else g.editor.scrollTop = s; }
   otel.paint(sp);
 }
@@ -9498,13 +9514,16 @@ async function startGraph(g, cfg) {
     if (!hit || !hit.resolved || (hit.kind !== 0 && hit.kind !== 3)) return;   // GC31: empty canvas, ghost, tag
     graphNodeMenu(e, hit, cfg.center() ? "lg" : "gg");
   };
+  // ggclick: a MIDDLE click on a global-graph node = Ctrl+click (stock: new tab right of the graph)
+  cv.onauxclick = e => { if (e.button === 1 && !cfg.center()) { e.preventDefault(); cv.onclick(e); } };
   cv.onclick = async e => {
     if (moved) { moved = false; return; }               // was a pan, not a click
     const r = cv.getBoundingClientRect();
     const [x, y] = toWorld(e.clientX - r.left, e.clientY - r.top);
     const hit = N[hitTest(x, y)];
     if (!hit) return;
-    if (hit.kind === 2 || hit.kind === 3) return;      // graphctx: tag / attachment nodes are not notes (their menus: GC29-GC31)
+    if (hit.kind === 2 && !cfg.center()) return tagSearch(hit.n);   // ggclick Q5: stock reveals Search with "tag:#x", the graph stays
+    if (hit.kind === 2 || hit.kind === 3) return;     // graphctx: tag / attachment nodes are not notes (their menus: GC29-GC31)
     if (!hit.resolved)                                  // ghost node: create then open (M3 path)
       await createNote(hit.n);
     // R19 (HARD RULE 100ms): the CLICK is the interaction — graph_recenter measures it to the
@@ -9513,7 +9532,7 @@ async function startGraph(g, cfg) {
     // Global graph clicks turn the tab into the note (no re-centre): note_open only.
     const rsp = cfg.center() ? otel.begin("graph_recenter", { nodes: N.length, edges: gr.edges.length }) : null;
     if (rsp) { otel.cancel(g.settleSp); g.settleSp = otel.begin("graph_settle", { from: "recenter", nodes: N.length }); }
-    await cfg.onClick(hit.n);
+    await cfg.onClick(hit.n, e);
     if (rsp) otel.paint(rsp, { nodes: N.length, edges: gr.edges.length });
     if (g.settleSp && quiet) { otel.end(g.settleSp, { nodes: N.length, edges: gr.edges.length, reheat: false }); g.settleSp = null; }   // centre unchanged / nothing to settle
   };
