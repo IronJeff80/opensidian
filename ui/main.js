@@ -9282,9 +9282,15 @@ async function startGraph(g, cfg) {
   }
   let firstFrame = true, running = false, dirty = true, shadeNow = false;
   const gen = ++simGen; g.simGen = gen;   // a newer startGraph on this canvas retires this sim
+  // graphperf: work the FIRST frame of a start would otherwise do inside the opening action's paint
+  // (title census, span flush) runs after the next frame instead. A setTimeout queued from this rAF
+  // would still land before the paint span's own setTimeout, so it is rAF -> setTimeout. Coalesced.
+  let afterQ = false;
+  const afterPaint = () => { if (afterQ) return; afterQ = true;
+    requestAnimationFrame(() => setTimeout(() => { afterQ = false; updateTitle(); perf.flush(); }, 0)); };
   function step() {
     if (g.simGen !== gen) return;
-    const now = performance.now();
+    const now = performance.now(), first = firstFrame;
     if (firstFrame) {
       firstFrame = false;
       // ggkeep census [ggk:seq,r,n,dev,cam] — published by THIS frame, before its physics, so a
@@ -9309,7 +9315,7 @@ async function startGraph(g, cfg) {
         // first frame of a switch back sat inside the tab_switch paint (testvault tabsw_gg
         // 28 -> 36 ms vs v0.6.1, line test notes/cause.md §2). The value cannot change before
         // it lands: ggkTok is only rewritten by the next start's first frame.
-        requestAnimationFrame(() => setTimeout(updateTitle, 0));
+        afterPaint();
       }
       phLast = now; phAcc = 0;   // the sim clock starts at the first frame: the time spent building the view before it is not owed as a 6-step burst
       if (g.perfT0) { perf.mark("graph_open", g.perfT0, { nodes: N.length, edges: gr.edges.length, kind: (g.tabs[g.active] || {}).kind || "-" }); g.perfT0 = null; }
@@ -9337,7 +9343,12 @@ async function startGraph(g, cfg) {
     if (anim && (animT0 < 0 || now - animPub >= 100)) { animPub = now; updateTitle(); }   // census [gfd:] anim=k/n follows the reveal
     if (steps) perf.push("graph_frame", perf.now() - fT0, { nodes: N.length, steps, phys: +(fT1 - fT0).toFixed(1), ke: +ke.toFixed(2), alpha: +alpha.toFixed(3) });
     if (quiet && animT0 < 0) {         // settled: loop ends, CPU -> 0; publish node coords to the census
-      running = false; perf.flush();
+      running = false;
+      // graphperf: a ggkeep tab left at rest comes back QUIET, so its very first frame lands here —
+      // inside the tab_switch paint. v0.6.1 restarted hot and settled ~2 s later, outside it.
+      // State is set now; the title + span flush are published after the next frame (afterPaint).
+      if (first && !shadeNow) { g.graphSettled = true; afterPaint(); return; }
+      perf.flush();
       if (shadeNow) {                  // Forces card shadow just switched on (settleTest): its first paint
         shadeNow = false;              // stalls ~460 ms, so "settled" is published from the NEXT frame,
         requestAnimationFrame(() => {  // after that paint — a screenshot taken on the census sees the shadow
