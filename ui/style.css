@@ -317,7 +317,16 @@ body { --font-interface-override: "??"; --font-text-override: "??"; --font-monos
        --font-interface: var(--font-interface-override), system-ui, sans-serif;
        --font-text: var(--font-text-override), var(--font-default);
        --font-monospace: var(--font-monospace-override), var(--font-monospace-default) }
-body { display: flex; height: 100vh; font: 14px/1.5 var(--font-interface);
+/* goal noscroll: the DOCUMENT never scrolls. body used to be a static height:100vh box, so
+   any outer box a theme or vault snippet put on it (body{margin:6px}, html{padding:4px})
+   made the document 100vh+extra tall and the window grew a root scrollbar (cause.md).
+   body is now pinned to the viewport (fixed, inset 0, height auto): a snippet margin
+   SHRINKS it inside the window instead of pushing past it, and html padding no longer
+   adds to it (fixed is out of html's flow). The frame border stays inside (border-box).
+   overflow:hidden on both is the guard behind that, not the fix. */
+html { overflow: hidden }
+body { position: fixed; inset: 0; overflow: hidden }
+body { display: flex; font: 14px/1.5 var(--font-interface);
        /* the wasp ring: a THEME that declares --frame-width/--frame-color paints it here; every other theme resolves to 0 (colour irrelevant at 0 width) — docs/palette-wasp/SOURCE.md "The frame" */
        border: var(--frame-width, 0) solid var(--frame-color, currentColor);
        background: var(--bg-base); color: var(--text-chrome) }
