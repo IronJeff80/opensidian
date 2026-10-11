@@ -4376,6 +4376,7 @@ function ssRestore(g, line) {   // scroll the CURRENT view so `line` is at the t
   const i = Math.min(rows.length - 1, Math.max(0, Math.floor(line)));
   // longpos: build the anchor row first (a lazy placeholder is one line tall),
   // so the fraction lands inside the real row; Ed.wakeView keeps it in place after
+  g.lp._lzyKeep = !!g.lp._lzy;
   ssScrollTo(g.lp, Ed.rowAt(g, i) || rows[i], Math.min(1, Math.max(0, line - i)));
 }
 

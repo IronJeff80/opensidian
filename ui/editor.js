@@ -772,11 +772,13 @@ const Ed = {
       // longpos: keep the row at the top in place. Rows built ABOVE it (lo-40..lo)
       // grow from one-line placeholders to their real height and would push it
       // down while scrollTop stays put — the view jumps to earlier lines.
-      const a = rows[lo], ay = a.offsetTop - base, ah = a.offsetHeight || 1;
+      // Only until the USER scrolls (lp._lzyKeep, cleared by wheel/touch/nav keys):
+      // writing scrollTop mid-wheel cancels the smooth-scroll animation and eats the wheel.
+      const keep = lp._lzyKeep, a = rows[lo], ay = a.offsetTop - base, ah = a.offsetHeight || 1;
       const af = Math.min(1, Math.max(0, (top - ay) / ah));
       for (const i of todo) Ed.wake(g, i);       // one batch, then re-measure: built rows may wrap taller
       const b = rows[lo], by = b.offsetTop - rows[0].offsetTop + af * b.offsetHeight;
-      if (Math.abs(by - top) >= 1) lp.scrollTop = by;
+      if (keep && Math.abs(by - top) >= 1) lp.scrollTop = by;
       if (typeof scHits === "function" && scHits(g).length) scMarks(g);   // the search flash covers built rows too
     }
   },
@@ -1040,7 +1042,7 @@ const Ed = {
         frag.appendChild(!lazy || i < Ed.LAZY_HEAD || Math.abs(i - near) < Ed.LAZY_NEAR ? Ed.row(g, L[i], i) : Ed.lzy());
       lp.textContent = "";
       lp.appendChild(frag);
-      lp._lzy = lazy;
+      lp._lzy = lazy; lp._lzyKeep = lazy;        // a placed view: wakeView keeps its top row until the user scrolls
       if (lazy) requestAnimationFrame(() => Ed.wakeView(g));
       touched = L.length;
     } else {
@@ -1533,6 +1535,9 @@ const Ed = {
       Ed.heal(G());
     });
     lp.addEventListener("blur", () => { if (typeof hideAc === "function") setTimeout(hideAc, 100); });
+    for (const ev of ["wheel", "touchstart", "pointerdown"])   // the user moves the view: stop anchoring (wakeView)
+      lp.addEventListener(ev, () => { lp._lzyKeep = false; }, { passive: true });
+    lp.addEventListener("keydown", e => { if (/^(Page|Arrow(Up|Down)$|Home$|End$)/.test(e.key)) lp._lzyKeep = false; });
     lp.addEventListener("scroll", () => {       // lazy rows: build what scrolls into view, once per frame
       if (!lp._lzy || lp._lzyRaf) return;
       lp._lzyRaf = requestAnimationFrame(() => { lp._lzyRaf = 0; Ed.wakeView(G()); });
