@@ -3080,6 +3080,32 @@ function ovfScan() {
   walk(document.body);
   return { dw: de.scrollWidth - vw, dh: de.scrollHeight - vh, n, bad };
 }
+/* noscroll: [sbar:<root dw>,<root dh>|<n>|<el>:<v|h>+<px>,...] every element that would PAINT a
+   scrollbar right now (computed overflow auto/scroll AND content past its box, or overflow:scroll),
+   the root first. Allowed scroll containers (OVF_SCROLL) carry a leading "*"; the noscroll phase
+   fails on the root or on any un-starred entry. ovfScan cannot see these: it only counts boxes whose
+   overflow is VISIBLE, and it skips the allowed containers' subtrees. */
+function sbarTok() {
+  const de = document.documentElement, out = [];
+  let n = 0;
+  const walk = el => {                 // the frame only, like ovfScan: an allowed container is reported, never descended
+    for (const e of el.children) {
+      if (e.hidden || e.tagName === "SCRIPT" || e.tagName === "STYLE" || !e.getClientRects().length) continue;
+      const st = getComputedStyle(e), sc = v => v === "auto" || v === "scroll";
+      const v = sc(st.overflowY) && (st.overflowY === "scroll" || e.scrollHeight > e.clientHeight) ? "v+" + (e.scrollHeight - e.clientHeight) : "";
+      const h = sc(st.overflowX) && (st.overflowX === "scroll" || e.scrollWidth > e.clientWidth) ? "h+" + (e.scrollWidth - e.clientWidth) : "";
+      const ok = e.matches(OVF_SCROLL);
+      if (v || h) {
+        if (!ok) n++;
+        const tag = (ok ? "*" : "") + ovfName(e).replace(/[[\]|,:]/g, "") + ":" + [v, h].filter(Boolean).join("/");
+        if (ok) out.push(tag); else out.unshift(tag);   // offenders first: they must survive the cut below
+      }
+      if (!ok) walk(e);
+    }
+  };
+  walk(document.body);
+  return " [sbar:" + (de.scrollWidth - de.clientWidth) + "," + (de.scrollHeight - de.clientHeight) + "|" + n + "|" + out.slice(0, 8).join(",") + "]";
+}
 let ovfT = 0;
 addEventListener("resize", () => {                 // the census must follow the window, not only UI state
   requestAnimationFrame(updateTitle);
