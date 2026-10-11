@@ -9304,7 +9304,12 @@ async function startGraph(g, cfg) {
         }
         const cam = prevK && view.scale === prevK.v.scale && view.tx === prevK.v.tx && view.ty === prevK.v.ty ? 1 : 0;
         g.ggkTok = ++ggkSeq + "," + (kept ? 1 : 0) + "," + N.length + "," + (dev < 0 ? "-" : dev.toFixed(2)) + "," + cam;
-        updateTitle();
+        // graphperf: the token is fixed HERE (what this frame drew), but the title census is
+        // published after the next frame, not inside this one — a full updateTitle() in the
+        // first frame of a switch back sat inside the tab_switch paint (testvault tabsw_gg
+        // 28 -> 36 ms vs v0.6.1, line test notes/cause.md §2). The value cannot change before
+        // it lands: ggkTok is only rewritten by the next start's first frame.
+        requestAnimationFrame(() => setTimeout(updateTitle, 0));
       }
       phLast = now; phAcc = 0;   // the sim clock starts at the first frame: the time spent building the view before it is not owed as a 6-step burst
       if (g.perfT0) { perf.mark("graph_open", g.perfT0, { nodes: N.length, edges: gr.edges.length, kind: (g.tabs[g.active] || {}).kind || "-" }); g.perfT0 = null; }
