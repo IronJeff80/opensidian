@@ -9287,7 +9287,9 @@ async function startGraph(g, cfg) {
   // would still land before the paint span's own setTimeout, so it is rAF -> setTimeout. Coalesced.
   let afterQ = false;
   const afterPaint = () => { if (afterQ) return; afterQ = true;
-    requestAnimationFrame(() => setTimeout(() => { afterQ = false; updateTitle(); perf.flush(); }, 0)); };
+    // Two rAFs: the first frame's step() runs synchronously, BEFORE the tab_switch span's own
+    // otel.paint rAF is queued — one rAF + setTimeout put this work in that span's layout_ms.
+    requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(() => { afterQ = false; updateTitle(); perf.flush(); }, 0))); };
   function step() {
     if (g.simGen !== gen) return;
     const now = performance.now(), first = firstFrame;
