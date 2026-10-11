@@ -5349,7 +5349,7 @@ async function loadActive(g) {
           tt.hist = tt.hpos >= 0 ? tt.hist.slice(0, tt.hpos + 1) : [];
           if (!tt.hist.length || !tt.hist[tt.hist.length - 1].gg) tt.hist.push({ n: tt.name, s: 0, gg: 1 });
           tt.hpos = tt.hist.length - 1;
-          delete tt.kind; delete tt.gk; modeBits(tt);   // #16: it is a NOTE tab now — give it the two mode bits; ggkeep: its kept graph goes with the kind
+          delete tt.kind; delete tt.gk; delete tt.base; modeBits(tt);   // #16: it is a NOTE tab now — give it the two mode bits; ggkeep: its kept graph goes with the kind
         }
         await navigate(g, n);
       },
@@ -5631,7 +5631,7 @@ async function histGo(d, from) {
   tab.name = tab.hist[p].n;
   // ggclick Q2: a graph entry turns the leaf back into a FRESH global graph (stock re-simulates,
   // zoom from graph.json — ggkeep's reopen path); leaving it makes the leaf a note again
-  if (tab.hist[p].gg) { tab.kind = "gg"; delete tab.gk; }
+  if (tab.hist[p].gg) { tab.kind = "gg"; delete tab.gk; delete tab.base; tab.stale = true; }   // no disk base: the editor buffer is not this leaf's any more (a stale base made flushSave write it to "Graph view.md")
   else if (tab.kind === "gg") { delete tab.kind; delete tab.gk; modeBits(tab); }
   // R19 (HARD RULE 100ms): history_nav always ends at PAINT. A linked local graph
   // re-centres in loadActive -> lgFollow -> graphRefresh; its settling is animation and
