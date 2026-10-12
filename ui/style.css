@@ -328,9 +328,17 @@ body { --font-interface-override: "??"; --font-text-override: "??"; --font-monos
    absolute inset:0 body sits on the initial containing block = the viewport, so the noscroll
    geometry is identical. A FIXED body, though, made WebKitGTK re-rasterize the whole page in
    llvmpipe on every caret blink: idle CPU after typing 470-570 -> 760-860 ms/10s on testvault
-   (gidle2: 3a564b00^ vs 3a564b00; gidle3: HEAD body fixed vs absolute) — notes/cause.md. */
-html { overflow: hidden }
-body { position: absolute; inset: 0; overflow: hidden }
+   (gidle2: 3a564b00^ vs 3a564b00; gidle3: HEAD body fixed vs absolute) — notes/cause.md.
+   goal graphperf (big vault): ABSOLUTE still cost it — idle CPU after typing on the big fixture,
+   WebKitWebProcess 760-850 (v0.6.1, 88cb11d9) -> 1000-1160 ms/10s (3a564b00 fixed, 02be43fa
+   absolute, fc780bc7), and a static body drops it back (gidleB1/gidleB2). So body is STATIC
+   again, as in v0.6.1, and html sizes it instead: html is the viewport (height 100%,
+   border-box, so html padding/border come out of it) and a one-cell grid, whose item (body)
+   stretches to the cell MINUS its own margin. A snippet margin or html padding shrinks body
+   inside the window, the document never grows past it: the same noscroll geometry with no
+   positioned body. min-width/height 0 keep body's content from forcing the cell wider/taller. */
+html { overflow: hidden; height: 100%; display: grid }
+body { overflow: hidden; min-width: 0; min-height: 0 }
 body { display: flex; font: 14px/1.5 var(--font-interface);
        /* the wasp ring: a THEME that declares --frame-width/--frame-color paints it here; every other theme resolves to 0 (colour irrelevant at 0 width) — docs/palette-wasp/SOURCE.md "The frame" */
        border: var(--frame-width, 0) solid var(--frame-color, currentColor);
