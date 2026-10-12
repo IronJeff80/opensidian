@@ -8643,6 +8643,7 @@ async function startGraph(g, cfg) {
   if (!g.perfT0 && lgT0) g.perfT0 = lgT0;   // perfhunt: a local graph is opened from its SOURCE group; the split hands the click time over
   lgT0 = 0;
   const openT0 = g.perfT0 || perf.now();   // perf: graph_open_settle = open -> kinetic energy below eps
+  const sgMs = perf.now() - openT0;     // graphperf: click -> startGraph (0 unless a click time was handed over); v0.6.1 started the lg settle clock HERE, so [sg] lets the A/B compare like with like
   hideAc();
   g.status.hidden = true;
   g.editor.style.display = "none"; g.preview.style.display = "none";
@@ -9377,7 +9378,7 @@ async function startGraph(g, cfg) {
           settledMark = true;
           // Forces card: shadow on at first rest, not at open (ui/style.css .gf-lit — its first paint is a one-off main-thread stall)
           if (g.gfp && !g.gfp.hidden && !g.gfp.classList.contains("gf-lit")) { g.gfp.classList.add("gf-lit"); shadeNow = true; }
-          perf.mark("graph_open_settle", openT0, { nodes: N.length, ke: +ke.toFixed(3), alpha: +alpha.toFixed(3) });
+          perf.mark("graph_open_settle", openT0, { nodes: N.length, sg: +sgMs.toFixed(1), ke: +ke.toFixed(3), alpha: +alpha.toFixed(3) });
           if (pref.loseCtx && glr) setTimeout(() => { if (glr && g.simGen === gen) glr.loseContext(); }, 300);   // smoke hook: WEBGL_lose_context after settle
         }
       }
