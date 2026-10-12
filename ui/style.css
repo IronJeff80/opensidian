@@ -337,13 +337,15 @@ body { --font-interface-override: "??"; --font-text-override: "??"; --font-monos
    stretches to the cell MINUS its own margin. A snippet margin or html padding shrinks body
    inside the window, the document never grows past it: the same noscroll geometry with no
    positioned body. min-width/height 0 keep body's content from forcing the cell wider/taller. */
-/* goal graphperf4: the one cell is EXPLICIT, minmax(0,1fr) both ways. Implicit grid tracks are
-   'auto', and an auto track takes its item's max-content contribution: every root layout (a
-   note tab switch) ran an intrinsic-size pass over the whole of body first (testvault
-   tabsw_note_ms at N=10: fc780bc7 8.5 -> c1e569ce 10.25 ms, v0.6.1 7.0 — tabswN). A flexible
-   track with a 0 minimum is sized from the viewport alone; same cell, same stretch-minus-margin. */
-html { overflow: hidden; height: 100%; display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr) }
-body { overflow: hidden; min-width: 0; min-height: 0 }
+/* goal graphperf4: html is a one-item FLEX column, not a grid. As a grid (c1e569ce) every root
+   layout (a note tab switch) ran WebKit's grid track sizing over body first — implicit 'auto'
+   tracks take body's max-content contribution (testvault tabsw_note_ms N=10: fc780bc7 8.5 ->
+   c1e569ce 10.25 ms, v0.6.1 7.0 — tabswN), and explicit minmax(0,1fr) tracks (7e7aa2ab) only
+   got back 1 ms (9.25 vs v0.6.1 6.25 — tabswF). A flex item with flex-basis 0 and min-height 0
+   is sized from the container alone: main size = html's height minus body's margins (grow 1),
+   cross size = stretch minus margins. Same stretch-minus-margin noscroll geometry, no grid. */
+html { overflow: hidden; height: 100%; display: flex; flex-direction: column }
+body { overflow: hidden; flex: 1 1 0; min-width: 0; min-height: 0 }
 body { display: flex; font: 14px/1.5 var(--font-interface);
        /* the wasp ring: a THEME that declares --frame-width/--frame-color paints it here; every other theme resolves to 0 (colour irrelevant at 0 width) — docs/palette-wasp/SOURCE.md "The frame" */
        border: var(--frame-width, 0) solid var(--frame-color, currentColor);
