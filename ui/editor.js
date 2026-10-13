@@ -1968,7 +1968,13 @@ Ed.lpExt = function (v, G) {
         const f = Ed.lpLeaves(Ed.row(G(), this.t, 0))[this.k];
         if (f) return f;
       }
-      return this.el ? this.el.cloneNode(true) : document.createElement("span");
+      if (!this.el) return document.createElement("span");
+      // cloneNode drops listeners, and ignoreEvent() keeps CM6's domEventHandlers off
+      // widget events — so the task checkbox clone gets its own toggle (R8.6)
+      const c = this.el.cloneNode(true);
+      const cb = c.matches && c.matches("input.tbox") ? c : (c.querySelector ? c.querySelector("input.tbox") : null);
+      if (cb) cb.addEventListener("mousedown", e => Ed.toggleTask(e));
+      return c;
     }
     ignoreEvent() { return true; }
   }
