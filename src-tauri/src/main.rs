@@ -3139,6 +3139,67 @@ fn set_snippet_enabled(v: State<Vault>, label: String, on: bool) -> Result<(), S
     themefs::set_snippet_enabled(&root, &label, on)
 }
 
+/* ---- plugin-loader item 3: the three commands ui/plugins/loader.js calls ----
+   Thin over src-tauri/src/plugins.rs (confinement + format live there, tested
+   there). Trust (restricted mode OFF) is ~/.opensidian.json "plugins_trusted"
+   keyed by the CANONICAL vault path, so a vault cannot ship itself trusted. */
+
+fn plugins_state_of(root: &Path) -> serde_json::Value {
+    serde_json::json!({
+        "trusted": plugins::is_trusted(&cfg_value(), root),
+        "enabled": plugins::enabled_ids(root),
+        "installed": plugins::installed(root),
+    })
+}
+
+/// {trusted, enabled:[id], installed:[{id, manifest, hasMain, hasStyles}]}
+#[tauri::command]
+fn plugins_state(v: State<Vault>, otel: Option<perf::Ctx>) -> Result<serde_json::Value, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    Ok(span_timed!(otel => "plugins_state", plugins_state_of(&root)))
+}
+
+/// restricted mode (trusted) and/or one enable toggle; answers the new state
+#[tauri::command]
+fn plugins_set(
+    v: State<Vault>,
+    trusted: Option<bool>,
+    id: Option<String>,
+    on: Option<bool>,
+    otel: Option<perf::Ctx>,
+) -> Result<serde_json::Value, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    span_timed!(otel => "plugins_set", (|| -> Result<serde_json::Value, String> {
+        if let Some(t) = trusted {
+            let key = plugins::trust_key(&root);
+            cfg_update(&[cfgstore::Op::SetIn(plugins::TRUST_KEY.into(), key, serde_json::json!(t))]);
+        }
+        if let (Some(id), Some(on)) = (id.as_deref(), on) {
+            plugins::set_enabled(&root, id, on)?;
+        }
+        Ok(plugins_state_of(&root))
+    })())
+}
+
+/// op "load" -> data.json (null if absent) | "save" (data) -> null | "styles" -> css or null
+#[tauri::command]
+fn plugin_io(
+    v: State<Vault>,
+    id: String,
+    op: String,
+    data: Option<serde_json::Value>,
+    otel: Option<perf::Ctx>,
+) -> Result<serde_json::Value, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    span_timed!(otel => "plugin_io", match op.as_str() {
+        "load" => plugins::read_data(&root, &id),
+        "save" => plugins::write_data(&root, &id, data.as_ref().unwrap_or(&serde_json::Value::Null))
+            .map(|_| serde_json::Value::Null),
+        "styles" => plugins::read_styles(&root, &id).map(|s| s.map_or(serde_json::Value::Null, serde_json::Value::String)),
+        _ => Err(format!("plugin_io: unknown op {op:?}")),
+    })
+}
+
 /* ---- themefs R5 (themes): the listing predicate is the oracle's, verbatim
    (the recon-themes probe §3 — themefs::themes_scan). themes_scan/theme_css
    are INSTRUMENTED (a directory walk that grows with the user's installed
@@ -5406,6 +5467,7 @@ fn main() {
             read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
+            plugins_state, plugins_set, plugin_io,
             themes_scan, theme_css, get_css_theme, set_css_theme, theme_seed_report, vault_css_watch,
             get_quickfont, set_quickfont, get_fonts, set_font, font_families,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,

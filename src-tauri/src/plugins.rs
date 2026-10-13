@@ -140,6 +140,119 @@ pub fn is_trusted(cfg: &serde_json::Value, root: &Path) -> bool {
     cfg["plugins_trusted"][trust_key(root).as_str()].as_bool() == Some(true)
 }
 
+// ---------------------------------------------------------------------------
+// ledger item 3: what ui/plugins/loader.js needs from the backend. Three thin
+// commands in main.rs (plugins_state / plugins_set / plugin_io) over these.
+// Every path below goes through plugin_dir_in (rule 4) and every write is a
+// vault-dir-fd relative atomic replace (vaultfs::write_atomic: a symlinked
+// .obsidian is refused, the replace is O_EXCL temp + renameat).
+
+/// the ~/.opensidian.json key holding { "<canon vault path>": bool }
+pub const TRUST_KEY: &str = "plugins_trusted";
+pub const ENABLED_FILE: &str = ".obsidian/community-plugins.json";
+/// a plugin's data.json past this is refused, read or write
+pub const MAX_DATA_JSON: u64 = 16 * 1024 * 1024;
+pub const MAX_STYLES: u64 = 4 * 1024 * 1024;
+const MAX_MANIFEST: u64 = 256 * 1024;
+
+/// one installed plugin: its dir is confined and manifest.json parses as an
+/// object. The id is the DIRECTORY name (what the scheme serves); the manifest's
+/// own "id" rides along in `manifest` and a mismatch is reported, not fatal.
+pub fn installed(root: &Path) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    let Ok(rd) = fs::read_dir(root.join(".obsidian").join("plugins")) else { return out };
+    let mut names: Vec<String> =
+        rd.filter_map(|e| e.ok()).filter_map(|e| e.file_name().into_string().ok()).filter(|n| valid_id(n)).collect();
+    names.sort();
+    for id in names {
+        let Ok(Some(mp)) = plugin_file_in(root, &id, "manifest.json", MAX_MANIFEST) else { continue };
+        let Some(manifest) = fs::read_to_string(&mp)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .filter(|v| v.is_object())
+        else {
+            continue;
+        };
+        let has = |f: &str, cap| matches!(plugin_file_in(root, &id, f, cap), Ok(Some(_)));
+        out.push(serde_json::json!({
+            "id": id,
+            "manifest": manifest,
+            "hasMain": has("main.js", MAX_MAIN_JS),
+            "hasStyles": has("styles.css", MAX_STYLES),
+        }));
+    }
+    out
+}
+
+/// enable/disable one id in community-plugins.json (Obsidian's array). Order is
+/// kept, other entries (even ones we cannot parse as ids) round-trip. A file
+/// that exists but is not a JSON array is refused, never overwritten.
+pub fn set_enabled(root: &Path, id: &str, on: bool) -> Result<Vec<String>, String> {
+    if !valid_id(id) {
+        return Err("bad plugin id".into());
+    }
+    let p = root.join(ENABLED_FILE);
+    let mut list: Vec<serde_json::Value> = match fs::symlink_metadata(&p) {
+        Err(_) => Vec::new(),
+        Ok(m) if !m.is_file() || m.len() > 1024 * 1024 => return Err(format!("{ENABLED_FILE}: not a plain file")),
+        Ok(_) => {
+            let s = fs::read_to_string(&p).map_err(|e| format!("{ENABLED_FILE}: {e}"))?;
+            serde_json::from_str(&s).map_err(|_| format!("{ENABLED_FILE}: not a JSON array, left untouched"))?
+        }
+    };
+    let present = list.iter().any(|v| v.as_str() == Some(id));
+    if on && !present {
+        list.push(serde_json::Value::String(id.into()));
+    } else if !on && present {
+        list.retain(|v| v.as_str() != Some(id));
+    } else {
+        return Ok(enabled_ids(root));
+    }
+    let body = serde_json::to_string_pretty(&list).map_err(|e| e.to_string())?;
+    crate::vaultfs::write_atomic(root, Path::new(ENABLED_FILE), body.as_bytes())
+        .map_err(|e| format!("{ENABLED_FILE}: {e}"))?;
+    Ok(enabled_ids(root))
+}
+
+/// the vault-relative path of a confined plugin file, for vaultfs writes
+fn rel_in(root: &Path, id: &str, file: &str) -> Result<PathBuf, String> {
+    plugin_dir_in(root, id).ok_or("plugin dir not confined")?;
+    Ok(Path::new(".obsidian").join("plugins").join(id).join(file))
+}
+
+/// Plugin.loadData(): data.json parsed, or Null when absent (Obsidian resolves null)
+pub fn read_data(root: &Path, id: &str) -> Result<serde_json::Value, String> {
+    match plugin_file_in(root, id, "data.json", MAX_DATA_JSON)? {
+        None => Ok(serde_json::Value::Null),
+        Some(p) => {
+            let s = fs::read_to_string(&p).map_err(|e| format!("{id}/data.json: {e}"))?;
+            serde_json::from_str(&s).map_err(|e| format!("{id}/data.json: {e}"))
+        }
+    }
+}
+
+/// Plugin.saveData(): pretty JSON (Obsidian writes 2-space), atomic, confined
+pub fn write_data(root: &Path, id: &str, data: &serde_json::Value) -> Result<(), String> {
+    plugin_file_in(root, id, "data.json", MAX_DATA_JSON)?; // a symlinked data.json refuses
+    let body = serde_json::to_string_pretty(data).map_err(|e| e.to_string())?;
+    if body.len() as u64 > MAX_DATA_JSON {
+        return Err(format!("{id}/data.json: too big"));
+    }
+    crate::vaultfs::write_atomic(root, &rel_in(root, id, "data.json")?, body.as_bytes())
+        .map_err(|e| format!("{id}/data.json: {e}"))
+}
+
+/// a plugin's styles.css through the snippet sanitizer; None = no styles.css
+pub fn read_styles(root: &Path, id: &str) -> Result<Option<String>, String> {
+    match plugin_file_in(root, id, "styles.css", MAX_STYLES)? {
+        None => Ok(None),
+        Some(p) => {
+            let src = fs::read_to_string(&p).map_err(|e| format!("{id}/styles.css: {e}"))?;
+            crate::themefs::sanitize_css(&src).map(|s| Some(s.css)).map_err(|e| format!("{id}/styles.css: {e}"))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,5 +373,66 @@ mod tests {
         let cfg = serde_json::json!({"plugins_trusted": {trust_key(&r): true}});
         assert!(is_trusted(&cfg, &r));
         assert!(!is_trusted(&serde_json::json!({"plugins_trusted": {trust_key(&r): "yes"}}), &r));
+    }
+
+    #[test]
+    fn installed_lists_confined_plugins_with_manifests() {
+        let r = vault("inst");
+        fs::write(r.join(".obsidian/plugins/good/manifest.json"), r#"{"id":"good","name":"Good","version":"1.0.0"}"#).unwrap();
+        fs::write(r.join(".obsidian/plugins/good/styles.css"), ".x{color:red}").unwrap();
+        fs::create_dir_all(r.join(".obsidian/plugins/nomani")).unwrap();
+        fs::create_dir_all(r.join(".obsidian/plugins/badmani")).unwrap();
+        fs::write(r.join(".obsidian/plugins/badmani/manifest.json"), "[1]").unwrap();
+        let l = installed(&r);
+        assert_eq!(l.len(), 1, "{l:?}");
+        assert_eq!(l[0]["id"], "good");
+        assert_eq!(l[0]["manifest"]["name"], "Good");
+        assert_eq!(l[0]["hasMain"], true);
+        assert_eq!(l[0]["hasStyles"], true);
+        assert_eq!(read_styles(&r, "good").unwrap().as_deref(), Some(".x{color:red}"));
+        assert_eq!(read_styles(&r, "nomani").unwrap(), None);
+    }
+
+    #[test]
+    fn set_enabled_round_trips_and_refuses_garbage() {
+        let r = vault("seten");
+        assert_eq!(set_enabled(&r, "new-one", true).unwrap(), vec!["good", "gone", "sneaky", "linkdir", "new-one"]);
+        assert_eq!(set_enabled(&r, "gone", false).unwrap(), vec!["good", "sneaky", "linkdir", "new-one"]);
+        assert!(set_enabled(&r, "../x", true).is_err());
+        fs::write(r.join(ENABLED_FILE), "{\"not\":\"array\"}").unwrap();
+        assert!(set_enabled(&r, "good", true).is_err());
+        assert_eq!(fs::read_to_string(r.join(ENABLED_FILE)).unwrap(), "{\"not\":\"array\"}");
+        fs::remove_file(r.join(ENABLED_FILE)).unwrap();
+        assert_eq!(set_enabled(&r, "good", true).unwrap(), vec!["good"]);
+    }
+
+    #[test]
+    fn data_json_is_confined() {
+        let r = vault("data");
+        assert_eq!(read_data(&r, "good").unwrap(), serde_json::Value::Null);
+        write_data(&r, "good", &serde_json::json!({"a": 1})).unwrap();
+        assert_eq!(read_data(&r, "good").unwrap(), serde_json::json!({"a": 1}));
+        assert!(fs::read_to_string(r.join(".obsidian/plugins/good/data.json")).unwrap().contains("\"a\": 1"));
+        for bad in ["..", "../good", "a/b", ".obsidian", "nosuch"] {
+            assert!(write_data(&r, bad, &serde_json::json!(1)).is_err(), "{bad}");
+            assert!(read_data(&r, bad).is_err(), "{bad}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn data_json_symlinks_refused() {
+        use std::os::unix::fs::symlink;
+        let r = vault("datasym");
+        symlink(r.join("secret.md"), r.join(".obsidian/plugins/good/data.json")).unwrap();
+        assert!(read_data(&r, "good").is_err());
+        assert!(write_data(&r, "good", &serde_json::json!({"x": 1})).is_err());
+        assert_eq!(fs::read_to_string(r.join("secret.md")).unwrap(), "SECRET");
+        let outside = r.with_extension("dataout");
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, r.join(".obsidian/plugins/linkdir")).unwrap();
+        assert!(write_data(&r, "linkdir", &serde_json::json!({"x": 1})).is_err());
+        assert!(!outside.join("data.json").exists());
     }
 }
