@@ -829,65 +829,27 @@ function scLC(g, off) {
   return { l: last, c: (L[last] || "").length };
 }
 /* R25.13f/m: this runs on EVERY keystroke while a decoration is live (from
-   lpRender and from scheduleSave), and what it does is DOM SURGERY ON THE ROW
-   THE CARET IS IN: the unwrap below calls p.normalize(), which MERGES the text
-   nodes the DOM Selection is anchored in, and a merged anchor is a moved
-   caret. Measured on the box (12:54 and 13:2x): typing `ZCDIRTY` at the start
-   of the line-42 match put `Z` at column 0 and the remaining six characters at
-   column 10 — the END of the match — because the first keystroke's scMarks
-   relocated the caret and every later one landed where it had been left. The
-   model position is the truth, so read it BEFORE the surgery and put it back
-   after. Ed.sel() returns null when the caret is not in this pane's lp, so a
-   blurred editor (R25.13f's query-input case) is left exactly as it was. */
-function scMarks(g) {
-  const s0 = g && g.lp ? Ed.sel(g) : null;
-  scPaint(g);
-  if (!s0) return;
-  if (s0.empty) Ed.place(g, s0.b.l, s0.b.c, false);
-  else { Ed.place(g, s0.a.l, s0.a.c, false); Ed.extendTo(g, s0.b.l, s0.b.c); }
-}
-/* paint the set with the SAME per-text-node right-to-left walk the find bar
-   uses (fWrap): a match that straddles a rendered <strong> becomes two spans,
-   and no offset is invalidated mid-walk. Only the lp surface is painted —
-   R25.13k measured that Obsidian paints NO highlight in the reading renderer. */
+   lpRender and from scheduleSave). The R17 painter did DOM surgery on the row
+   the caret was in and had to put the caret back (ZCDIRTY, box 12:54); the CM6
+   painter is a decoration set (Ed.hl "sc"), which never touches the document
+   or the selection, so there is nothing to restore. */
+function scMarks(g) { scPaint(g); }
+/* paint the set as ONE decoration range per hit: CM6 splits a range that
+   straddles a rendered <strong> into two spans itself. Only the lp surface is
+   painted — R25.13k measured that Obsidian paints NO highlight in the reading
+   renderer; the preview unwrap below clears what an older build left there. */
 function scPaint(g) {
-  for (const sc of [g.lp, g.preview]) {
-    if (!sc) continue;
-    for (const m of [...sc.querySelectorAll("span." + SC_MARK)]) {
-      const p = m.parentNode;
-      if (!p) continue;
-      while (m.firstChild) p.insertBefore(m.firstChild, m);
-      p.removeChild(m);
-      p.normalize();
-    }
+  if (g.preview) for (const m of [...g.preview.querySelectorAll("span." + SC_MARK)]) {
+    const p = m.parentNode;
+    if (!p) continue;
+    while (m.firstChild) p.insertBefore(m.firstChild, m);
+    p.removeChild(m);
+    p.normalize();
   }
-  const hs = scHits(g);
-  if (!hs.length || !g.lp) return;
-  const t = g.active >= 0 ? g.tabs[g.active] : null;
-  if (!t || t.kind || !isLp(t.mode)) return;
-  const byRow = new Map();
-  hs.forEach((h, i) => {
-    const a = scLC(g, h.off), b = scLC(g, h.off + h.len);
-    for (let l = a.l; l <= b.l; l++) {
-      const c0 = l === a.l ? a.c : 0;
-      const c1 = l === b.l ? b.c : (Ed.lines(g)[l] || "").length;
-      if (c1 <= c0) continue;
-      if (!byRow.has(l)) byRow.set(l, []);
-      byRow.get(l).push({ c: c0, end: c1, i });
-    }
-  });
-  for (const [l, rs] of byRow) {
-    const row = Ed.rowAt(g, l);
-    if (!row) continue;
-    const map = Ed.nodes(row), jobs = new Map();
-    for (const h of rs) for (const s of map) {
-      const a = Math.max(h.c, s.c), b = Math.min(h.end, s.c + s.len);
-      if (b <= a) continue;
-      if (!jobs.has(s.n)) jobs.set(s.n, []);
-      jobs.get(s.n).push({ a: a - s.c, b: b - s.c, i: h.i, cur: false });
-    }
-    fWrap(jobs, SC_MARK);
-  }
+  if (!g.lp) return;
+  const hs = scHits(g), t = g.active >= 0 ? g.tabs[g.active] : null;
+  const on = hs.length && t && !t.kind && isLp(t.mode);
+  Ed.hl(g, "sc", on ? hs.map((h, i) => ({ from: h.off, to: h.off + h.len, cls: SC_MARK, fh: i })) : []);
 }
 /* R25.13c: the match is CENTRED — measured at a 349 px offset in a 718 px
    viewport, independent of note length — and the scroll is a SINGLE-FRAME JUMP
@@ -933,7 +895,9 @@ async function scJump(g, hits) {
   // first half-viewport, a match on the last line) are distinguishable from a
   // jump that simply did not scroll. Row heights differ per line, so they are
   // MEASURED here and never assumed by the phase.
-  const rt = row ? row.offsetTop - g.lp.offsetTop : -1;
+  // a cm-line's offsetParent is .cm-editor (position: relative), not the scroller's:
+  // its top in scroller CONTENT coordinates is read from the two boxes
+  const rt = row ? row.getBoundingClientRect().top - g.lp.getBoundingClientRect().top - g.lp.clientTop + g.lp.scrollTop : -1;
   const rh = row ? row.offsetHeight : -1;
   if (row) scCenter(g.lp, rt, rh);
   scInfo = "sc:" + curOf(g) + "@" + p.l + "." + p.c + "|hl:" + scHits(g).length +
@@ -5524,11 +5488,17 @@ async function navAnchor(g, anchor) {
   navInfo = "nav:" + anchor + "@" + line;
   if (line < 0) return updateTitle();
   if (isLp(t.mode)) {
-    const row = Ed.rowAt(g, line);                 // R17: one row per source line
-    if (row) {
-      g.lp.scrollTop = row.offsetTop - g.lp.offsetTop - (g.lp.clientHeight - row.offsetHeight) / 2;
+    // CM6 draws only the viewport: a line it has not drawn is brought in first and
+    // centred once CM6 has measured it; a drawn line is centred on its real box now
+    const centre = () => {
+      const row = Ed.rowAt(g, line);
+      if (!row) return false;
+      const rt = row.getBoundingClientRect().top - g.lp.getBoundingClientRect().top - g.lp.clientTop + g.lp.scrollTop;
+      g.lp.scrollTop = rt - (g.lp.clientHeight - row.offsetHeight) / 2;
       flash(row);
-    }
+      return true;
+    };
+    if (!centre()) { Ed.scrollToLine(g, line); const cm = Ed.cm(g); if (cm) cm.requestMeasure({ key: "osNavAnchor", read: () => null, write: () => { centre(); } }); }
     if (t.mode === "source") await lpEdit(g, line, 0);  // R12: source puts the caret on the line
   } else {
     let el = null;
@@ -11033,11 +11003,10 @@ wfArm();
    WHERE THE MATCHES LIVE. Hits are computed over the MODEL (Ed.lines), never
    over the painted DOM: live preview hides markup, so a DOM-text search would
    silently disagree with the bytes on disk (and with the replace that follows).
-   The MARKS, by contrast, are pure DOM: each hit's run is wrapped in a
-   <span class="fmk"> by splitting the row's text nodes. That is safe for every
-   other part of the editor because Ed.nodes() maps a row's text nodes to source
-   columns by CONCATENATION — wrapping a run adds no text and removes none, so
-   every caret column, selection range and token range reads exactly as before.
+   The MARKS on the editor surface are a CM6 decoration set (Ed.hl "fd"): each
+   hit renders as <span class="fmk" data-fh=i>, mapped through edits by CM6 and
+   never touching the document or the selection. The reading view still wraps
+   the preview's text nodes (fWrap), which no editor reads back.
    Nothing in this block writes g.view.lines.
 
    ONE BAR PER PANE, owned by the group (g.findEl / g.find), because a split is
@@ -11223,7 +11192,9 @@ function fScan(g) {
 function fClear(g) {                   // unwrap every mark, leaving the row byte-identical
   /* BOTH surfaces: a mode switch leaves the marks it painted behind in the view
      the user just left, where nothing else will ever come back to remove them. */
-  for (const sc of [g.lp, g.preview]) {
+  // the lp surface is a CM6 decoration set (Ed.hl "fd"); only the preview holds DOM marks
+  if (g.lp) Ed.hl(g, "fd", []);
+  for (const sc of [g.preview]) {
     if (!sc) continue;
     for (const m of [...sc.querySelectorAll("span." + F_MARK)]) {
       const p = m.parentNode;
@@ -11266,25 +11237,13 @@ function fMarks(g) {
     return;
   }
   if (!g.lp) return;
-  const qlen = st.q.length, byRow = new Map();
-  st.hits.forEach((h, i) => {
-    if (!byRow.has(h.l)) byRow.set(h.l, []);
-    byRow.get(h.l).push({ c: h.c, i, cur: i === st.idx });
-  });
-  for (const [l, hs] of byRow) {
-    const row = Ed.rowAt(g, l);
-    if (!row) continue;                // row not rendered (should not happen: one row per line)
-    const map = Ed.nodes(row), jobs = new Map();
-    for (const h of hs) for (const s of map) {
-      const a = Math.max(h.c, s.c), b = Math.min(h.c + qlen, s.c + s.len);
-      if (b <= a) continue;
-      if (!jobs.has(s.n)) jobs.set(s.n, []);
-      jobs.get(s.n).push({ a: a - s.c, b: b - s.c, i: h.i, cur: h.cur });
-    }
-    fWrap(jobs);
-  }
+  // the lp surface: one CM6 mark per hit over the MODEL offsets (CM6 splits a hit
+  // that straddles a rendered <strong> into two spans with the same data-fh)
+  const qlen = st.q.length;
+  Ed.hl(g, "fd", st.hits.map((h, i) => { const a = Ed.off(g, h.l, h.c);
+    return { from: a, to: a + qlen, cls: F_MARK + (i === st.idx ? " " + F_CUR : ""), fh: i }; }));
 }
-/* The wrap itself, shared by both surfaces: per text node, right to left, so a
+/* The wrap itself, for the PREVIEW surface (the lp surface is CM6 decorations): per text node, right to left, so a
    splitText never invalidates an offset that has not been used yet. */
 function fWrap(jobs, cls) {
   for (const [node, js] of jobs) {
@@ -11339,11 +11298,21 @@ function fReveal(g) {
      navigate" includes not moving the page under the reader. */
   const sc = fSurf(g);
   if (!sc) return;
-  const el = sc.querySelector("span." + F_MARK + "." + F_CUR);
-  if (!el) return;
-  const r = el.getBoundingClientRect(), b = sc.getBoundingClientRect();
-  if (r.top >= b.top + 4 && r.bottom <= b.bottom - 4) return;      // already on screen: do not jitter
-  sc.scrollTop += (r.top - b.top) - Math.max(0, (sc.clientHeight - r.height) / 2);
+  const go = () => {
+    const el = sc.querySelector("span." + F_MARK + "." + F_CUR);
+    if (!el) return false;
+    const r = el.getBoundingClientRect(), b = sc.getBoundingClientRect();
+    if (r.top >= b.top + 4 && r.bottom <= b.bottom - 4) return true;      // already on screen: do not jitter
+    sc.scrollTop += (r.top - b.top) - Math.max(0, (sc.clientHeight - r.height) / 2);
+    return true;
+  };
+  if (go()) return;
+  // CM6 draws only its viewport: a match on a line it has not drawn carries no span
+  // yet — bring the line in, then centre the mark once CM6 has measured and drawn it
+  const st = fState(g), h = st.hits[st.idx], cm = sc === g.lp ? Ed.cm(g) : null;
+  if (!h || h.l == null || !cm) return;
+  Ed.scrollToLine(g, h.l);
+  cm.requestMeasure({ key: "osFindReveal", read: () => null, write: () => { go(); } });
 }
 function fGo(g, d) {                   // R26.11 + R26.13
   const st = fState(g);

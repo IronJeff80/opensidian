@@ -1531,7 +1531,6 @@ Object.assign(Ed, {
     }
     const cm = g.view.cm, a = Ed.off(g, s.a.l, s.a.c), b = Ed.off(g, s.b.l, s.b.c);
     const ins = String(text == null ? "" : text).replace(/\r\n?/g, "\n");
-    if (typeof scLive === "function" && scLive(g)) scShift(g, a, b, ins.length);
     kind = kind || "type"; g.view._snap = null;
     cm.dispatch({ changes: { from: a, to: b, insert: ins }, selection: { anchor: a + ins.length },
                   scrollIntoView: true,
@@ -1619,6 +1618,7 @@ Object.assign(Ed, {
                              ".cm-content": { padding: "0" }, ".cm-line": { padding: "0" } }),
       CMv.EditorView.updateListener.of(u => Ed.onUpdate(G(), v, u)),
       Ed.lpExt ? Ed.lpExt(v, G) : [],
+      Ed.hlExt(v),
     ];
     const cm = new CMv.EditorView({ state: CMs.EditorState.create({ doc: (v.lines || [""]).join("\n"), extensions: v._ext }) });
     const lp = v.lp;
@@ -1633,6 +1633,13 @@ Object.assign(Ed, {
     if (u.docChanged) {
       const t0 = performance.now(), d = u.state.doc;
       g.lpLines = u.state.doc.lines;
+      // R25.13d: the search-jump offsets follow EVERY doc change (typed keys go through
+      // CM6 input, not Ed.replace); last change first, so earlier offsets stay in A coords
+      if (typeof scLive === "function" && scLive(g)) {
+        const ch = [];
+        u.changes.iterChanges((fa, ta, fb, tb, ins) => ch.push([fa, ta, ins.length]));
+        for (let i = ch.length - 1; i >= 0; i--) scShift(g, ch[i][0], ch[i][1], ch[i][2]);
+      }
       Ed.sync(g);
       if (typeof scheduleSave === "function") scheduleSave(g);
       if (typeof showAc === "function") showAc(g);
@@ -1902,6 +1909,39 @@ Ed.lpExt = function (v, G) {
     },
   });
   return [plugin, clicks];
+};
+/* ---------- MARKS painted by main.js (find bar "fd", search jump "sc") ----------
+   A named DecorationSet per view, replaced whole by Ed.hl and mapped through
+   every doc change in between. CM6 owns its contentDOM: wrapping its text nodes
+   in spans (the R17 way) is a DOM mutation its observer reads back as an edit.
+   Each range renders as <span class="cls" data-fh="i">, the census counts
+   them in the live DOM as before (only lines CM6 has drawn carry one). */
+Ed.HL_KEYS = ["fd", "sc"];
+Ed.hlExt = function (v) {
+  const fx = CMs.StateEffect.define();
+  v._hlFx = fx;
+  const field = CMs.StateField.define({
+    create: () => ({}),
+    update(m, tr) {
+      let o = m;
+      if (tr.docChanged) { o = {}; for (const k in m) o[k] = m[k].map(tr.changes); }
+      for (const e of tr.effects) if (e.is(fx)) { o = Object.assign({}, o); o[e.value.k] = e.value.d; }
+      return o;
+    },
+    provide: f => Ed.HL_KEYS.map(k => CMv.EditorView.decorations.from(f, m => m[k] || CMv.Decoration.none)),
+  });
+  return field;
+};
+// replace mark set k with ranges [{from, to, cls, fh}] (absolute doc offsets, clamped)
+Ed.hl = function (g, k, ranges) {
+  const cm = Ed.cm(g), v = g && g.view; if (!cm || !v || !v._hlFx) return;
+  const n = cm.state.doc.length, out = [];
+  for (const r of ranges || []) {
+    const a = Math.max(0, Math.min(n, r.from)), b = Math.max(0, Math.min(n, r.to));
+    if (b <= a) continue;
+    out.push(CMv.Decoration.mark({ class: r.cls, attributes: r.fh == null ? undefined : { "data-fh": String(r.fh) } }).range(a, b));
+  }
+  cm.dispatch({ effects: v._hlFx.of({ k, d: CMv.Decoration.set(out, true) }) });
 };
 // a task checkbox (an LP widget): toggle "[ ]" <-> "[x]" on ITS line, one undo step
 Ed.toggleTask = function (e) {
