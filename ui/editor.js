@@ -1930,7 +1930,21 @@ Ed.hlExt = function (v) {
     },
     provide: f => Ed.HL_KEYS.map(k => CMv.EditorView.decorations.from(f, m => m[k] || CMv.Decoration.none)),
   });
+  v._hlField = field;
   return field;
+};
+// the data-fh ids of set k whose range lies OUTSIDE the lines CM6 has drawn (cm.viewport):
+// those are in the set and paint when their line is drawn, but no DOM span exists yet
+Ed.hlUndrawn = function (g, k) {
+  const cm = Ed.cm(g), v = g && g.view, out = new Set();
+  if (!cm || !v || !v._hlField) return out;
+  const m = cm.state.field(v._hlField, false), d = m && m[k], vp = cm.viewport;
+  if (!d) return out;
+  d.between(0, cm.state.doc.length, (a, b, val) => {
+    const fh = val.spec && val.spec.attributes && val.spec.attributes["data-fh"];
+    if (fh != null && (b < vp.from || a > vp.to)) out.add(fh);
+  });
+  return out;
 };
 // replace mark set k with ranges [{from, to, cls, fh}] (absolute doc offsets, clamped)
 Ed.hl = function (g, k, ranges) {

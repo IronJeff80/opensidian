@@ -897,9 +897,26 @@ async function scJump(g, hits) {
   // MEASURED here and never assumed by the phase.
   // a cm-line's offsetParent is .cm-editor (position: relative), not the scroller's:
   // its top in scroller CONTENT coordinates is read from the two boxes
-  const rt = row ? row.getBoundingClientRect().top - g.lp.getBoundingClientRect().top - g.lp.clientTop + g.lp.scrollTop : -1;
-  const rh = row ? row.offsetHeight : -1;
-  if (row) scCenter(g.lp, rt, rh);
+  // An off-screen line has no cm-line yet (CM6 draws only its viewport), so the
+  // geometry comes from CM6's height map (lineBlockAt covers undrawn lines); once
+  // the scroll has drawn it, the block is re-read from the measured DOM and the
+  // centring corrected if the estimate differed.
+  const cm = Ed.cm(g);
+  const geo = () => {
+    const r = Ed.rowAt(g, p.l);
+    if (r) return [r.getBoundingClientRect().top - g.lp.getBoundingClientRect().top - g.lp.clientTop + g.lp.scrollTop, r.offsetHeight];
+    if (!cm || p.l + 1 > cm.state.doc.lines) return [-1, -1];
+    const b = cm.lineBlockAt(cm.state.doc.line(p.l + 1).from);
+    return [cm.documentTop + b.top - g.lp.getBoundingClientRect().top - g.lp.clientTop + g.lp.scrollTop, b.height];
+  };
+  let [rt, rh] = geo();
+  if (rh >= 0) scCenter(g.lp, rt, rh);
+  if (!row && cm && rh >= 0) {
+    await new Promise(res => cm.requestMeasure({ key: "osScJump", read: () => null, write: () => res() }));
+    await new Promise(res => requestAnimationFrame(() => res()));
+    const [rt2, rh2] = geo();
+    if (rh2 >= 0 && (Math.round(rt2) !== Math.round(rt) || Math.round(rh2) !== Math.round(rh))) { rt = rt2; rh = rh2; scCenter(g.lp, rt, rh); }
+  }
   scInfo = "sc:" + curOf(g) + "@" + p.l + "." + p.c + "|hl:" + scHits(g).length +
            "|top:" + Math.round(g.lp.scrollTop) +
            "|vp:" + Math.round(g.lp.clientHeight) + "x" + Math.round(g.lp.scrollHeight) +
@@ -3343,7 +3360,11 @@ function updateTitle() {          // pane/focus census in the window title (head
   if (scInfo) md += " [" + scInfo + "]";
   if (fg() && scHits(fg()).length) {
     const sc = fg().lp;
-    md += " [scm:" + (sc ? sc.querySelectorAll("span." + SC_MARK).length : -1) +
+    // CM6: distinct hits painted (a hit split by rendered markup is 2 spans, 1 data-fh),
+    // plus hits whose mark sits in the decoration set on a line CM6 has not drawn
+    const scPainted = sc ? new Set([...sc.querySelectorAll("span." + SC_MARK)].map(m => m.dataset.fh)) : null;
+    if (scPainted && Ed.hlUndrawn) for (const fh of Ed.hlUndrawn(fg(), "sc")) scPainted.add(fh);
+    md += " [scm:" + (scPainted ? scPainted.size : -1) +
           "/" + scHits(fg()).length + "]";
   }
   if (md) md += mswTok();                        // R35 perf: the mode switch's own cost (see mswEnd)
@@ -11457,11 +11478,20 @@ function fClose(g, atMatch) {          // R26.14
      [rels:<n>]            children of .reprow — replacement box, Replace, Replace all
      [fr:<text>]           the text in the REPLACEMENT box (R26.16 inheritance)
      [fc:<counter text>]   the counter's own textContent ("3 / 7", "0 / 0", "-" = empty)
-     [fmk:<marked>/<hits>] DISTINCT hits carrying a painted mark / hits found (R26.8)
+     [fmk:<marked>/<hits>] DISTINCT hits carrying a painted mark (lp: or, on a line CM6
+                           has not drawn, a mark in its decoration set) / hits found (R26.8)
      [fcw:<text>]          the painted text of the CURRENT match — a lowercase
                            query selecting "ALPHA" is how R26.4 is observed
      [fsc:<scrollTop>]     the note scroller's own scroll offset (R26.12)
      [fvis:0|1]            is the current match's box inside the scroller's box */
+/* hits that carry a mark: painted spans, plus (lp only) hits whose mark is in the CM6
+   decoration set on a line CM6 has not drawn — no DOM exists for such a line until it
+   scrolls in, where the set paints it. A DRAWN hit still counts only with a painted span. */
+function fMarked(g, marks) {
+  const s = new Set(marks.map(m => m.dataset.fh));
+  if (!fRead(g) && g.lp && Ed.hlUndrawn) for (const fh of Ed.hlUndrawn(g, "fd")) s.add(fh);
+  return s;
+}
 function fTok(g) {
   const st = g && g.find;
   if (!st || !st.open || !g.findEl) return "";
@@ -11483,7 +11513,7 @@ function fTok(g) {
           " [rels:" + rrow.children.length + "]" +
           " [fr:" + (q(rin.value) || "-") + "]" +
           " [fc:" + (q(cnt) || "-") + "]" +
-          " [fmk:" + new Set(marks.map(m => m.dataset.fh)).size + "/" + st.hits.length + "]" +
+          " [fmk:" + fMarked(g, marks).size + "/" + st.hits.length + "]" +
           " [fcw:" + (q(cur.map(m => m.textContent).join("")) || "-") + "]";
   if (surf) {
     t += " [fsc:" + Math.round(surf.scrollTop) + "]";
