@@ -1280,7 +1280,7 @@ function nmwTok() {
   for (const c of R.children) {
     if (++n > 400) break;
     const st = getComputedStyle(c);
-    if (st.display !== "block" || st.position === "absolute" || st.position === "fixed") continue;
+    if (!/^(block|flex|grid|flow-root)$/.test(st.display) || st.position === "absolute" || st.position === "fixed") continue;
     const r = c.getBoundingClientRect();
     if (r.width > 0 && (!col || r.width > col.width + 0.5)) { col = r; colEl = c; }
   }
@@ -1301,6 +1301,35 @@ function tywTok() {
   if (!g || g.active < 0) return "";
   const rd = isReading(g), R = rd ? g.preview : g.lp;
   if (!R || !R.textContent.includes("Heading one Hxg")) return "";
+  const gh = rd ? null : tywGhost(g, R);
+  try { return tywMeasure(rd, R); } finally { if (gh) gh.remove(); }
+}
+/* cm6-editor: CM6 draws only its viewport; R17 drew every row. The want values
+   are read at the TOP of the fixture, where the code-span and blockquote rows
+   are not drawn yet. Those undrawn "Hxg" lines are rendered for the read by the
+   same parser the LP decorations come from (Ed.row / Ed.lpParse), into a hidden
+   shallow clone of CM6's .cm-editor > .cm-scroller > .cm-content > .cm-line
+   chain appended to .lp. As .lp's second child it takes the same column
+   (.lp > *) and carries the same theme classes. It sits outside contentDOM (CM6's
+   observer never sees it) and is removed before the census returns. */
+function tywGhost(g, R) {
+  const cm = typeof Ed !== "undefined" && Ed.cm ? Ed.cm(g) : null;
+  if (!cm || !R.contains(cm.dom)) return null;
+  const d = cm.state.doc, vp = cm.viewport, rows = [];
+  for (let i = 1; i <= d.lines; i++) { const ln = d.line(i); if ((ln.to < vp.from || ln.from > vp.to) && ln.text.includes("Hxg")) rows.push(ln.text); }
+  if (!rows.length) return null;
+  const ed = cm.dom.cloneNode(false), sc = cm.scrollDOM.cloneNode(false), ct = cm.contentDOM.cloneNode(false);
+  ct.removeAttribute("contenteditable"); ed.setAttribute("aria-hidden", "true"); ed.style.visibility = "hidden";
+  for (const t of rows) {
+    const r = Ed.row(g, t, 0), l = document.createElement("div");
+    l.className = "cm-line " + Ed.lpParse(g, t).cls;
+    while (r.firstChild) l.appendChild(r.firstChild);
+    ct.appendChild(l);
+  }
+  sc.appendChild(ct); ed.appendChild(sc); R.appendChild(ed);
+  return ed;
+}
+function tywMeasure(rd, R) {
   const ctx = (tywCanvas = tywCanvas || document.createElement("canvas")).getContext("2d");
   const fnt = el => { const s = getComputedStyle(el); return s.fontStyle + " " + s.fontWeight + " " + s.fontSize + " " + s.fontFamily; };
   const met = (el, ch) => { ctx.font = fnt(el); return ctx.measureText(ch); };
