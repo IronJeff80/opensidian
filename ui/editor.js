@@ -1785,9 +1785,26 @@ Ed.lineAtY = function (g, y) {            // client y -> {l, f}: the line under 
   const f = b.height > 0 ? Math.min(1, Math.max(0, (y - cm.documentTop - b.top) / b.height)) : 0;
   return { l: d.lineAt(b.from).number - 1, f };
 };
-Ed.topLine = function (g, slack) {        // the line at the scroller's top edge (+slack px), fractional
-  if (!g.lp || !Ed.cm(g)) return null;
-  const p = Ed.lineAtY(g, g.lp.getBoundingClientRect().top + (slack == null ? 1 : slack));
+/* the line at the scroller's top edge (+slack px), fractional. DOM FIRST: the
+   drawn rows are the truth the user sees. The height map is only as fresh as
+   CM6's last measure, which runs in a rAF — a Ctrl+E keydown handled after a
+   wheel walk but before that frame read a stale map (gate: lp showed L137,
+   reading landed on L150). The map answers only when y falls in a gap. */
+Ed.topLine = function (g, slack) {
+  const cm = Ed.cm(g); if (!g.lp || !cm) return null;
+  const y = g.lp.getBoundingClientRect().top + (slack == null ? 1 : slack), d = cm.state.doc;
+  for (const el of cm.contentDOM.children) {
+    const r = el.getBoundingClientRect();
+    if (r.bottom <= y) continue;
+    if (r.top > y + 0.5 || r.height <= 0 || el.classList.contains("cm-gap")) break;   // y sits in a gap
+    let a, b;
+    try { a = d.lineAt(cm.posAtDOM(el, 0)).number - 1; b = d.lineAt(cm.posAtDOM(el, el.childNodes.length)).number - 1; }
+    catch (e) { break; }
+    // one element can span several source lines (a block widget): spread y over them
+    const f = Math.min(1, Math.max(0, (y - r.top) / r.height)) * (b - a + 1);
+    return a + Math.min(b - a + 1 - 1e-6, f);
+  }
+  const p = Ed.lineAtY(g, y);
   return p ? p.l + p.f : null;
 };
 Ed.scrollToLine = function (g, line) {    // put the fractional source line at the scroller's top, clamped
