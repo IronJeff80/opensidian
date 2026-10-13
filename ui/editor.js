@@ -1409,12 +1409,17 @@ Ed.rvTaskTok = () => {
     const lb = g.lp.getBoundingClientRect(), r = document.createRange();
     for (let i = 0; i < rows.length && i < 400; i++) {
       const q = rows[i].getBoundingClientRect();
-      if (q.bottom <= lb.top) continue;
-      if (q.top >= lb.bottom) break;
+      // a row CM6 left half under the scroller's top edge (the scroll restored from
+      // reading view lands mid-row) has its centre outside the editor — on the
+      // view header — so the point must be wholly inside g.lp AND hit-test to the row
+      if (q.top < lb.top) continue;
+      if (q.bottom > lb.bottom) break;
       if (rows[i].querySelector("input")) continue;
       const r0 = Ed.firstRect(rows[i], r);
       if (!r0 || !r0.width) continue;
-      return " [rvtaskex:" + Math.round(r0.left + 2) + "," + Math.round(q.top + q.height / 2) + "]";
+      const x = Math.round(r0.left + 2), y = Math.round(q.top + q.height / 2), hit = document.elementFromPoint(x, y);
+      if (!hit || !rows[i].contains(hit)) continue;
+      return " [rvtaskex:" + x + "," + y + "]";
     }
     return "";
   }
