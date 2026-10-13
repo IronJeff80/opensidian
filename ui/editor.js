@@ -2203,8 +2203,8 @@ Object.assign(Ed, {
     g.lpLines = v.cm.state.doc.lines;
     v.note = typeof curOf === "function" ? curOf(g) : null;
     if (caret != null && caret >= 0) Ed.place(g, caret, col || 0);
-    if (typeof perf !== "undefined" && perf.mark)
-      perf.mark("ed_patch", t0, { lines: g.lpLines, patched: did ? 1 : 0, full: false });
+    if (!did && typeof perf !== "undefined" && perf.mark)       // a change marks ed_patch in onUpdate
+      perf.mark("ed_patch", t0, { lines: g.lpLines, patched: 0, full: false });
     return Promise.resolve();
   },
   patchRow() {},                                       // CM6 redraws what changed
@@ -2318,11 +2318,19 @@ Object.assign(Ed, {
   onUpdate(g, v, u) {
     if (!g || g.view !== v) { if (u.docChanged && v.editor) v.editor.value = u.state.doc.toString(); return; }
     if (u.docChanged) {
+      const t0 = performance.now(), d = u.state.doc;
       g.lpLines = u.state.doc.lines;
       Ed.sync(g);
       if (typeof scheduleSave === "function") scheduleSave(g);
       if (typeof showAc === "function") showAc(g);
       if (v._sp) { const sp = v._sp; v._sp = null; if (otel.paint) otel.paint(sp); }
+      if (typeof perf !== "undefined" && perf.mark) {
+        // R18 ed_patch = the JS work after ONE doc change (CM6 redraws only the
+        // lines it touched); "patched" = lines the change spans in the new doc.
+        let n = 0;
+        u.changes.iterChangedRanges((fa, ta, fb, tb) => { n += d.lineAt(tb).number - d.lineAt(fb).number + 1; });
+        perf.mark("ed_patch", t0, { lines: d.lines, patched: n, full: n >= d.lines && d.lines > 3 });
+      }
     }
     if (u.selectionSet || u.docChanged) { const p = Ed.focusPos(g); Ed.mark(g, p ? p.l : -1); }
   },
