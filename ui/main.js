@@ -3354,8 +3354,15 @@ function updateTitle() {          // pane/focus census in the window title (head
      ui/style.css .titlewrap). A phase compares the row count in this token with
      the count from Ed.geom before the click; a mechanism that prepended a node
      would read one higher here and break every positional index silently. */
-  if (titling) md += " [te:" + titling.el.textContent.replace(/[[\]|/]/g, "") +
-                     "/" + (titling.g.lp ? titling.g.lp.children.length : -1) + "]";
+  /* CM6: g.lp holds ONE host (.cm-editor); the positional rows are .cm-content's
+     children (one .cm-line per line, block widgets in between). Count those, plus
+     anything else that landed beside the host in g.lp — a node prepended either
+     into the content or into the scroller still reads one higher. */
+  if (titling) {
+    const tl = titling.g.lp, cm = tl && Ed.cm(titling.g);
+    const rows = !tl ? -1 : cm ? cm.contentDOM.children.length + tl.children.length - 1 : tl.children.length;
+    md += " [te:" + titling.el.textContent.replace(/[[\]|/]/g, "") + "/" + rows + "]";
+  }
   /* R34.18 — the two surfaces, MEASURED, not claimed (see tpType above).
      [tty:<rendered>~<editing>], each side
        font-size/weight/letter-spacing/line-height/colour/family-hash/family-head
