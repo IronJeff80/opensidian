@@ -620,7 +620,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .editor { flex: 1 1 0; min-width: 0;   /* R22 */ background: var(--bg-base); color: var(--text-chrome); border: 0;
           padding: 16px; resize: none;
           font: 13px/1.6 monospace; outline: none }
-.lp { flex: 1 1 0; min-width: 0; overflow-y: auto; overflow-x: hidden }   /* R22: min-width:0 + no h-scroll */   /* padding + type: R15 block below */
+.lp { flex: 1 1 0; min-width: 0; overflow-y: auto; overflow-x: hidden; overflow-anchor: none }   /* CM6 virtualises against this scroller: browser scroll anchoring would follow a reused line element across a viewport redraw (find reveal 1080 -> 0) — CM6 sets the same on its own .cm-scroller */   /* R22: min-width:0 + no h-scroll */   /* padding + type: R15 block below */
 .lp a.wiki { color: var(--accent-blue) }
 .lp a.wiki-unresolved { color: var(--link-unresolved); font-style: italic }
 /* R8.2: one rendered row per line/block; the raw caret row blends in */
