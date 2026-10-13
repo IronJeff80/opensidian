@@ -1632,6 +1632,7 @@ Object.assign(Ed, {
     lp.textContent = ""; lp.appendChild(cm.dom); lp._cm = cm;
     // g.lp.focus() (tab switch, palette close, title edit) = focus the editor
     lp.focus = () => { if (!cm.hasFocus) cm.focus(); };
+    Ed.wheelOwn(lp);
     return lp;
   },
   onUpdate(g, v, u) {
@@ -1797,6 +1798,53 @@ Ed.scrollToLine = function (g, line) {    // put the fractional source line at t
   // the height map holds ESTIMATES for lines never drawn: once CM6 has measured
   // the lines this scroll brought in, land on the real geometry
   cm.requestMeasure({ key: "osScrollLine", read: () => null, write: () => { if (Ed.cm(g) === cm) go(); } });
+};
+/* the editor scroller OWNS its plain vertical wheel. CM6 virtualises: lines it has
+   not drawn carry ESTIMATED (or, after the .lp.src restyle, stale) heights, and when
+   it measures the lines a scroll brings in it keeps the view still by correcting the
+   scroller (`scrollTop += diff` in its measure loop, applied while a wheel event is
+   < 100 ms old). WebKitGTK runs a wheel burst as ONE smooth-scroll animation and a
+   scrollTop write CANCELS it, so scrolling UP into unmeasured lines lost most of
+   every burst (scrollsync: 80 notches up from L91 in source mode landed on L45, then
+   L20; Chromium/Obsidian composes the two). Here the burst is accumulated and walked
+   in RELATIVE steps per frame, so CM6's corrections add to it instead of killing it.
+   Left to the browser: Ctrl (fontwheel), Shift / horizontal intent, and any nested
+   scroller (pdf frame, wide code/table) that can still move in the wheel's direction. */
+Ed.wheelOwn = function (lp) {
+  if (!lp || lp._osWheel) return;
+  lp._osWheel = { pend: 0, raf: 0 };
+  const W = lp._osWheel;
+  const nestedTakes = (t, dy) => {
+    for (let el = t && t.nodeType === 1 ? t : t && t.parentElement; el && el !== lp; el = el.parentElement) {
+      if (el.scrollHeight <= el.clientHeight + 1) continue;
+      const oy = getComputedStyle(el).overflowY;
+      if (oy !== "auto" && oy !== "scroll") continue;
+      if (dy < 0 ? el.scrollTop > 0 : el.scrollTop + el.clientHeight < el.scrollHeight - 1) return true;
+    }
+    return false;
+  };
+  const step = () => {
+    W.raf = 0;
+    const max = Math.max(0, lp.scrollHeight - lp.clientHeight), st = lp.scrollTop;
+    // at an edge the rest of the burst has nowhere to go: drop it (no stored push)
+    if ((W.pend < 0 && st <= 0) || (W.pend > 0 && st >= max)) { W.pend = 0; return; }
+    let d = W.pend / 3;
+    if (Math.abs(d) < 8) d = Math.abs(W.pend) < 8 ? W.pend : Math.sign(W.pend) * 8;
+    W.pend -= d;
+    lp.scrollTop = Math.min(max, Math.max(0, st + d));   // RELATIVE to wherever CM6 left it
+    if (Math.abs(W.pend) >= 0.5) W.raf = requestAnimationFrame(step); else W.pend = 0;
+  };
+  lp.addEventListener("wheel", e => {
+    if (e.ctrlKey || e.shiftKey || e.defaultPrevented) return;
+    if (!lp._cm || Math.abs(e.deltaX) > Math.abs(e.deltaY) || !e.deltaY) return;
+    if (nestedTakes(e.target, e.deltaY)) return;
+    const px = e.deltaMode === 1 ? e.deltaY * (parseFloat(getComputedStyle(lp).lineHeight) || 24)
+             : e.deltaMode === 2 ? e.deltaY * lp.clientHeight : e.deltaY;
+    e.preventDefault();
+    if (Math.sign(px) !== Math.sign(W.pend)) W.pend = 0;   // a reversal starts fresh
+    W.pend += px;
+    if (!W.raf) W.raf = requestAnimationFrame(step);
+  }, { passive: false });
 };
 /* centre source position (l, c) in the scroller through CM6's own scrollIntoView
    effect: CM6 brings the line in, measures it and scrolls INSIDE its measure loop,
