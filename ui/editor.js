@@ -2189,8 +2189,9 @@ Object.assign(Ed, {
     Ed.commit(g);
     Ed.place(g, l, c);
   },
-  render(g, caret, col /*, full */) {
+  render(g, caret, col, full) {
     const t0 = performance.now(), v = g.view;
+    if (full) { Ed.lpBust(); if (v._lpFx) v.cm.dispatch({ effects: v._lpFx.of(null) }); }   // vault changed: links/images re-resolve
     const did = Ed.commit(g);
     g.lpLines = v.cm.state.doc.lines;
     v.note = typeof curOf === "function" ? curOf(g) : null;
@@ -2290,7 +2291,7 @@ Object.assign(Ed, {
       CMv.EditorView.theme({ "&.cm-focused": { outline: "none" }, ".cm-scroller": { fontFamily: "inherit", lineHeight: "inherit", overflow: "visible" },
                              ".cm-content": { padding: "0" }, ".cm-line": { padding: "0" } }),
       CMv.EditorView.updateListener.of(u => Ed.onUpdate(G(), v, u)),
-      Ed.lpExt ? Ed.lpExt() : [],
+      Ed.lpExt ? Ed.lpExt(v, G) : [],
     ];
     const cm = new CMv.EditorView({ state: CMs.EditorState.create({ doc: (v.lines || [""]).join("\n"), extensions: v._ext }) });
     const lp = v.lp;
@@ -2448,4 +2449,134 @@ Ed.scrollToLine = function (g, line) {    // put the fractional source line at t
   // the height map holds ESTIMATES for lines never drawn: once CM6 has measured
   // the lines this scroll brought in, land on the real geometry
   cm.requestMeasure({ key: "osScrollLine", read: () => null, write: () => { if (Ed.cm(g) === cm) go(); } });
+};
+/* ---------- LIVE PREVIEW = CM6 decorations ----------
+   The R17 per-line renderer (Ed.row -> Ed.block/Ed.inline) stays the ONE
+   markdown->class-vocabulary tokenizer; its detached row is read back as
+   ranges: every text-bearing element becomes a mark decoration (same tag,
+   classes, data-*), every text-less leaf (checkbox, image, pdf frame) a
+   widget, the row's own classes (lprow li ord tk) a line decoration. A line's
+   textContent stays === its source line, so caret mapping and the census
+   token grammar are unchanged. Markers (.mk) are hidden by the existing CSS
+   unless their TOKEN is touched by the selection (.rv — R17.6 per token), or
+   the pane is in source mode (.lp.src). Parsed lines are cached by text. */
+Ed._lpc = new Map();
+Ed.lpBust = function () { Ed._lpc.clear(); };
+Ed.lpParse = function (g, text) {
+  let P = Ed._lpc.get(text);
+  if (P) return P;
+  const row = Ed.row(g, text, 0), els = [], wid = [], at = new Map();
+  const walk = (el, c) => {
+    for (const n of el.childNodes) {
+      if (n.nodeType === 3) { c += n.nodeValue.length; continue; }
+      if (n.nodeType !== 1) continue;
+      if (!n.textContent.length) { if (n.nodeName !== "BR") wid.push({ pos: c, k: wid.length }); continue; }
+      const x = { s: c, e: c, el: n }; at.set(n, els.length); els.push(x);
+      c = walk(n, c); x.e = c;
+    }
+    return c;
+  };
+  walk(row, 0);
+  const toks = (row._tok || []).map(t => ({ s: t.s, e: t.e, kind: t.kind,
+    mk: t.mks.map(m => at.get(m)).filter(i => i != null) }));
+  const spec = n => {
+    const attributes = {};
+    for (const a of n.attributes) if (a.name !== "class" && a.name !== "contenteditable") attributes[a.name] = a.value;
+    return { tagName: n.nodeName.toLowerCase(), class: n.className, attributes };
+  };
+  P = { cls: row.className, toks, wid, els: els.map(x => {
+    const sp = spec(x.el), d = CMv.Decoration.mark(sp);
+    const isMk = x.el.classList.contains("mk");
+    return { s: x.s, e: x.e, d, rv: isMk ? CMv.Decoration.mark(Object.assign({}, sp, { class: sp.class + " rv" })) : d };
+  }) };
+  if (Ed._lpc.size > 4000) Ed._lpc.clear();
+  Ed._lpc.set(text, P);
+  return P;
+};
+Ed.lpLeaves = function (row) {            // the text-less leaves of a rendered row, in order
+  const out = [];
+  const walk = el => { for (const n of el.childNodes) if (n.nodeType === 1) { if (!n.textContent.length) { if (n.nodeName !== "BR") out.push(n); } else walk(n); } };
+  walk(row);
+  return out;
+};
+Ed.lpExt = function (v, G) {
+  const { Decoration, ViewPlugin, WidgetType, EditorView } = CMv;
+  const bust = CMs.StateEffect.define();
+  v._lpFx = bust;
+  class Leaf extends WidgetType {
+    constructor(t, k) { super(); this.t = t; this.k = k; }
+    eq(o) { return o.t === this.t && o.k === this.k; }
+    toDOM() { return Ed.lpLeaves(Ed.row(G(), this.t, 0))[this.k] || document.createElement("span"); }
+    ignoreEvent() { return true; }
+  }
+  const lineDeco = new Map();
+  const ld = c => { let d = lineDeco.get(c); if (!d) { d = Decoration.line({ class: c }); lineDeco.set(c, d); } return d; };
+  const build = view => {
+    const g = G(), st = view.state, doc = st.doc, sel = st.selection.main, out = [], labels = [];
+    const cur = doc.lineAt(sel.head).number;
+    let last = -1;
+    for (const { from, to } of view.visibleRanges) {
+      let pos = from;
+      while (pos <= to) {
+        const ln = doc.lineAt(pos);
+        pos = ln.to + 1;
+        if (ln.number <= last) continue;
+        last = ln.number;
+        const P = Ed.lpParse(g, ln.text);
+        let rv = null;
+        if (sel.from <= ln.to && sel.to >= ln.from) {
+          const lo = Math.max(sel.from, ln.from) - ln.from, hi = Math.min(sel.to, ln.to) - ln.from;
+          rv = new Set();
+          for (const t of Ed.tokAt(P.toks, lo, hi)) {
+            for (const i of t.mk) rv.add(i);
+            labels.push((ln.number - 1) + "." + t.s + "-" + t.e + ":" + t.kind);
+          }
+        }
+        out.push(ld(P.cls + (ln.number === cur ? " cur" : "")).range(ln.from));
+        for (let i = 0; i < P.els.length; i++) {
+          const x = P.els[i];
+          if (x.e > x.s) out.push((rv && rv.has(i) ? x.rv : x.d).range(ln.from + x.s, ln.from + x.e));
+        }
+        for (const w of P.wid) out.push(Decoration.widget({ widget: new Leaf(ln.text, w.k), side: 1 }).range(ln.from + w.pos));
+      }
+    }
+    if (g && g.view === v && g.lp) {
+      const sig = labels.join(",");
+      if (g.lp._rvsig !== sig) { g.lp._rvs = labels; g.lp._rvsig = sig; }
+    }
+    return Decoration.set(out, true);
+  };
+  const plugin = ViewPlugin.fromClass(class {
+    constructor(view) { this.decorations = build(view); }
+    update(u) {
+      if (u.docChanged || u.selectionSet || u.viewportChanged || u.transactions.some(t => t.effects.some(e => e.is(bust))))
+        this.decorations = build(u.view);
+    }
+  }, { decorations: p => p.decorations });
+  const clicks = EditorView.domEventHandlers({
+    mousedown: (e) => {
+      const a = e.target && e.target.closest ? e.target.closest("a.tag, a.wl, a.lt, a.url, a.ext") : null;
+      if (!a) return false;
+      if (a.classList.contains("tag")) {
+        e.preventDefault(); e.stopPropagation();
+        if (typeof tagSearch === "function") tagSearch(a.dataset.tag);
+        return true;
+      }
+      if (a.classList.contains("wl")) Ed.linkClick(e, a); else Ed.extClick(e, a);
+      return e.defaultPrevented;
+    },
+  });
+  return [plugin, clicks];
+};
+// a task checkbox (an LP widget): toggle "[ ]" <-> "[x]" on ITS line, one undo step
+Ed.toggleTask = function (e) {
+  e.preventDefault(); e.stopPropagation();
+  const box = e.target, pane = box && box.closest ? box.closest(".pane") : null, g = pane ? pane._g : null, cm = Ed.cm(g);
+  if (!cm) return;
+  let l;
+  try { l = cm.state.doc.lineAt(cm.posAtDOM(box, 0)).number - 1; } catch (_) { return; }
+  const L = Ed.lines(g);
+  Ed.snap(g, "task");
+  L[l] = L[l].replace(/^(\s*(?:[-*+]|\d+\.) )\[( |[xX])\]/, (_, p, ch) => p + (ch === " " ? "[x]" : "[ ]"));
+  Ed.commit(g);
 };
