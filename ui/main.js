@@ -11350,11 +11350,29 @@ function fReveal(g, done) {   // done(): called once the reveal has finished (sy
   // order scJump uses. fGo holds the census until done(), so no title is published
   // with the new counter before the match is on screen.
   Ed.scrollToLine(g, h.l);
-  fRv = "l" + h.l + "|s" + Math.round(sc.scrollTop);
-  let n = 0;
+  fRv = "l" + h.l + "|s" + Math.round(sc.scrollTop) + "/" + Math.round(sc.scrollHeight);
+  // DIAGNOSTIC (find reveal lost its scroll, 805c5264 [frv:..|t0]): every JS write to
+  // the scroller while the reveal is in flight is logged with its caller
+  const P = Object.getOwnPropertyDescriptor(Element.prototype, "scrollTop");
+  const who = () => { const s = String(new Error().stack || "").split("\n").slice(2, 5);
+    return s.map(x => ((x.match(/^\s*(?:at\s+)?([\w$.]+)/) || [])[1] || "?") + ":" +
+      ((x.match(/(\w+)\.js:(\d+):\d+\)?\s*$/) || []).slice(1, 3).join(""))).join(">"); };
+  try {
+    Object.defineProperty(sc, "scrollTop", { configurable: true, get() { return P.get.call(this); },
+      set(v) { if (Math.abs(v - P.get.call(this)) > 1) fRv += "|w" + Math.round(v) + "@" + who(); P.set.call(this, v); } });
+    for (const m of ["scrollTo", "scrollBy"]) sc[m] = function () { fRv += "|" + m + "@" + who(); return Element.prototype[m].apply(this, arguments); };
+  } catch (_) {}
+  let lastE = Math.round(sc.scrollTop);
+  const onS = () => { const tp = Math.round(P.get.call(sc)); if (tp !== lastE) { fRv += "|e" + tp; lastE = tp; } };
+  sc.addEventListener("scroll", onS);
+  const unhook = () => { sc.removeEventListener("scroll", onS); try { delete sc.scrollTop; delete sc.scrollTo; delete sc.scrollBy; } catch (_) {} };
+  let n = 0, lastTop = -1;
   const step = () => cm.requestMeasure({ key: "osFindReveal", read: () => null, write: () => {
+    const tp = Math.round(sc.scrollTop);
+    if (tp !== lastTop) { fRv += "|@" + n + ":" + tp + "/" + Math.round(sc.scrollHeight); lastTop = tp; }
     const ok = Ed.cm(g) === cm && go();
     if (ok || Ed.cm(g) !== cm || ++n > 12) {
+      unhook();
       fRv += "|n" + n + "|f" + (ok ? 1 : 0) + "|t" + Math.round(sc.scrollTop);
       fin(); if (done !== updateTitle) updateTitle(); return;      // callers without done took their census before the draw
     }
