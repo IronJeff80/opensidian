@@ -11320,12 +11320,13 @@ function fSync(g, reset) {             // recompute hits against the current tex
    done on the NOTE SCROLLER only (g.lp), never through scrollIntoView, which
    would also scroll every ancestor — including the window, which R22 says must
    never scroll at all. */
-function fReveal(g) {
+function fReveal(g, done) {   // done(): called once the reveal has finished (sync, or after CM6 drew the line)
+  const fin = () => { if (done) done(); };
   /* Nothing to reveal in reading view: no .fcur is ever painted there, so this
      returns without touching g.preview.scrollTop — R26.24's "does not
      navigate" includes not moving the page under the reader. */
   const sc = fSurf(g);
-  if (!sc) return;
+  if (!sc) return fin();
   const go = () => {
     const el = sc.querySelector("span." + F_MARK + "." + F_CUR);
     if (!el) return false;
@@ -11334,13 +11335,20 @@ function fReveal(g) {
     sc.scrollTop += (r.top - b.top) - Math.max(0, (sc.clientHeight - r.height) / 2);
     return true;
   };
-  if (go()) return;
+  if (go()) return fin();
   // CM6 draws only its viewport: a match on a line it has not drawn carries no span
-  // yet — bring the line in, then centre the mark once CM6 has measured and drawn it
+  // yet — bring the line in, then centre the mark once CM6 has measured and drawn it.
+  // The scroll is drawn in a LATER frame than the measure that set it, so retry per
+  // frame until the span exists (bounded), then report done.
   const st = fState(g), h = st.hits[st.idx], cm = sc === g.lp ? Ed.cm(g) : null;
-  if (!h || h.l == null || !cm) return;
+  if (!h || h.l == null || !cm) return fin();
   Ed.scrollToLine(g, h.l);
-  cm.requestMeasure({ key: "osFindReveal", read: () => null, write: () => { go(); } });
+  let n = 0;
+  const step = () => cm.requestMeasure({ key: "osFindReveal", read: () => null, write: () => {
+    if (Ed.cm(g) !== cm || go() || ++n > 8) { fin(); if (done !== updateTitle) updateTitle(); return; }   // callers without done took their census before the draw
+    requestAnimationFrame(step);
+  } });
+  step();
 }
 function fGo(g, d) {                   // R26.11 + R26.13
   const st = fState(g);
@@ -11349,8 +11357,7 @@ function fGo(g, d) {                   // R26.11 + R26.13
   const n = st.hits.length;
   st.idx = (st.idx + d + n) % n;       // past the last match IS the first: the cycle wraps
   fPaint(g);
-  fReveal(g);
-  updateTitle();
+  fReveal(g, updateTitle);              // census after the match is on screen (CM6 may draw it frames later)
 }
 /* ---------- R26.15–R26.20: replace ---------- */
 /* R26.17: ONE match — the current one — and the cycle moves on to the next.
