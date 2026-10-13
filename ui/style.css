@@ -1034,6 +1034,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .lp .lprow { white-space: pre-wrap; overflow-wrap: anywhere }
 .lp .lprow.lzy { height: calc(var(--line-height-normal, 1.55) * 1em) }   /* audit #10/#12: a lazy row placeholder (Ed.lzy) holds one line of height */
 .lp .mk { display: none }
+.lp:not(.src) .cm-line.blk > .cm-widgetBuffer { display: none }   /* editor.js lpParse .blk: no empty line box above a block embed */
 .lp.src .mk, .lp .mk.rv { display: inline; color: var(--text-chrome-dim) }
 .lp:focus, .lp .lprow:focus { outline: none }
 .lp .tbox { vertical-align: middle }                            /* rendered task checkbox (x offsets: R15.11 below) */

@@ -1915,7 +1915,13 @@ Ed.lpParse = function (g, text) {
     for (const a of n.attributes) if (a.name !== "class" && a.name !== "contenteditable") attributes[a.name] = a.value;
     return { tagName: n.nodeName.toLowerCase(), class: n.className, attributes };
   };
-  P = { cls: row.className, toks, wid, els: els.map(x => {
+  // a row holding a BLOCK leaf (image, missing-image banner, pdf frame) is tagged .blk: CM6 puts an
+  // inline caret buffer (img.cm-widgetBuffer, 1em) before an inline widget, and before a display:block
+  // leaf that buffer alone opens an empty line box — 24 px above every embed that R17 never drew
+  // (osdrop: six image rows pushed the pdf frame to y=737, below a 700 px window). style.css hides it.
+  const BLK = ".vimg, .imgmiss, .pdf-embed";
+  const blk = wid.some(w => w.el.matches && (w.el.matches(BLK) || !!w.el.querySelector(BLK)));
+  P = { cls: row.className + (blk ? " blk" : ""), toks, wid, els: els.map(x => {
     const sp = spec(x.el), d = CMv.Decoration.mark(sp);
     const isMk = x.el.classList.contains("mk");
     return { s: x.s, e: x.e, d, rv: isMk ? CMv.Decoration.mark(Object.assign({}, sp, { class: sp.class + " rv" })) : d };
