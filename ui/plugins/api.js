@@ -1148,7 +1148,13 @@
     },
     getLastOpenFiles() { return []; },
     requestSaveLayout: debounce(() => {}, 0),
-    leftRibbon: { collapsed: false }, rightRibbon: { collapsed: false },
+    leftRibbon: {
+      collapsed: false,
+      get ribbonItemsEl() { return document.getElementById("ribbon"); },
+      // read-only view of plugin ribbon icons (cmdr's "Left Ribbon" tab maps it); a copy, so remove() on it can't detach app buttons
+      get items() { return [...document.querySelectorAll("#ribbon .os-plugin-ribbon")].map(b => ({ id: (b.dataset.plugin || "") + ":" + b.title, title: b.title, icon: (b.firstElementChild && b.firstElementChild.dataset.icon) || "", buttonEl: b })); },
+    },
+    rightRibbon: { collapsed: false },
   });
   Object.defineProperty(workspace, "activeLeaf", { configurable: true, enumerable: true, get() {
     const g = focusedGroup() || allGroups()[0];
