@@ -844,6 +844,11 @@
     if (modelP) return modelP;
     modelP = (async () => {
       await loadMoment();
+      // Obsidian exposes the App as the global `app`, and bundled helper libs read
+      // it bare (periodic-notes' obsidian-daily-notes-interface: "Can't find
+      // variable: app"). Same object a plugin gets as this.app; set only here,
+      // i.e. never in restricted mode.
+      if (!("app" in window)) Object.defineProperty(window, "app", { value: app, configurable: true, enumerable: false, writable: false });
       await buildModel();
       modelOn = true;
       if (!unlisten && be.listen) unlisten = await be.listen("vault-changed", e => applyChange(e.payload));
