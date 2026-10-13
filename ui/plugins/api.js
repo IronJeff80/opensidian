@@ -745,6 +745,15 @@
     requestSaveLayout: debounce(() => {}, 0),
     leftRibbon: { collapsed: false }, rightRibbon: { collapsed: false },
   });
+  // item 5 replaces this with real leaves; for now: one leaf object per main-area pane, so
+  // `app.workspace.activeLeaf` is truthy while a pane exists (sample-plugin gates its command on it)
+  const leafOf = new WeakMap();
+  Object.defineProperty(workspace, "activeLeaf", { configurable: true, enumerable: true, get() {
+    const p = document.querySelector("#main .pane.focused") || document.querySelector("#main .pane");
+    if (!p) return null;
+    let l = leafOf.get(p); if (!l) { l = new WorkspaceLeaf(app); leafOf.set(p, l); }
+    return l;
+  } });
   const vault = new Events();
   const metadataCache = new Events();
   const keymap = {
@@ -885,20 +894,40 @@
     registerCliHandler() {}
   }
 
-  /* ---------------------------------------------------- the API object */
-  const api = Object.freeze({
+  /* ---------------------------------------------------- the API object
+     ES5-callable classes: a TypeScript-to-ES5 bundle (the pinned sample-plugin
+     1.0.0 is one) subclasses with  `_super.apply(this, arguments) || this`, and an
+     ES6 class throws when called without `new`. Every exported class is a plain
+     function F sharing the class's prototype: `new`/`super()` (new.target set) and
+     the ES5 call (new.target unset: construct for this.constructor and RETURN it,
+     which the ES5 pattern adopts as `_this`) both run the real constructor, and
+     `instanceof` is unchanged (F.prototype === Cls.prototype). */
+  function es5(Cls) {
+    const F = function (...args) {
+      const nt = new.target || (this && this.constructor) || F;
+      return Reflect.construct(Cls, args, nt === F ? Cls : nt);
+    };
+    Object.defineProperty(F, "name", { value: Cls.name });
+    F.prototype = Cls.prototype;
+    Object.setPrototypeOf(F, Cls);           // statics (Menu.forEvent) inherit
+    return F;
+  }
+  const X = {
     Events, Component, Plugin, App, Notice, Modal, SuggestModal, FuzzySuggestModal, Scope,
     Setting, SettingTab, PluginSettingTab, BaseComponent, ValueComponent, AbstractTextComponent,
     TextComponent, SearchComponent, TextAreaComponent, MomentFormatComponent, ToggleComponent,
     DropdownComponent, SliderComponent, ColorComponent, ButtonComponent, ExtraButtonComponent,
     Menu, MenuItem, View, ItemView, FileView, EditableFileView, TextFileView, MarkdownView,
     WorkspaceLeaf, MarkdownRenderChild, TAbstractFile, TFile, TFolder,
+  };
+  for (const k of Object.keys(X)) X[k] = es5(X[k]);
+  const api = Object.freeze(Object.assign(X, {
     Platform, apiVersion: API_VERSION, requireApiVersion, setIcon, getIcon, addIcon, removeIcon, getIconIds,
     normalizePath, debounce, prepareFuzzySearch, prepareSimpleSearch, renderMatches,
     parseFrontMatterEntry, parseFrontMatterAliases, parseFrontMatterTags, requestUrl, request: requestUrl,
     htmlToMarkdown, sanitizeHTMLToDom: h => { const t = document.createElement("template"); t.innerHTML = String(h); for (const s of t.content.querySelectorAll("script,iframe,object,embed")) s.remove(); return t.content; },
     Keymap: { isModEvent: e => !!(e && (e.ctrlKey || e.metaKey)), isModifier: (e, m) => !!e && ({ Mod: e.ctrlKey || e.metaKey, Ctrl: e.ctrlKey, Meta: e.metaKey, Shift: e.shiftKey, Alt: e.altKey })[m] },
-  });
+  }));
 
   /* ------------------------------------------------------ the manager */
   let touchT = 0;
