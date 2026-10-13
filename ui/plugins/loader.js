@@ -18,9 +18,10 @@
 
    require(name):
      "obsidian"                 -> the API object (ui/plugins/api.js, via host.api)
-     "@codemirror/*", "@lezer/*" -> window.__osModules[name] (an editor goal provides
-                                   them); absent -> Error "editor extensions not
-                                   supported yet" (the plugin fails cleanly)
+     "@codemirror/*", "@lezer/*" -> window.__osModules[name] (ui/vendor/codemirror/cm6.js:
+                                   the SAME instances ui/editor.js builds its
+                                   EditorView from); a name cm6.js does not ship
+                                   -> Error "editor extensions not supported yet"
      "path"                     -> a small pure POSIX shim (no I/O)
      "fs", "child_process", "electron", anything else -> throws. No shims: a plugin
                                    that needs Node/Electron does not run here (recon §E).
