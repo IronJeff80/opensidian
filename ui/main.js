@@ -3316,6 +3316,7 @@ function xiAgain() {
 }
 function updateTitle() {          // pane/focus census in the window title (headless probe)
   if (fHold > 0) return;          // a find reveal is in flight: fGo republishes when it lands
+  if (twHold > 0) { twDue = true; return; }   // a tab switch is in flight: switchTab republishes after its paint
   rTrack();                      // lgpanes: keep rLeaf current even with the right sidebar closed
   const ps = [...document.querySelectorAll("#main .pane")];
   const nf = document.querySelectorAll("#main .pane.focused").length;
@@ -5437,13 +5438,30 @@ async function lgFollow(src) {
   }
 }
 
+/* cm6-editor (graphperf tabsw_note_ms): the window-title census (updateTitle) is a headless probe,
+   and on a CM6 note it reads row geometry (Ed.geom / rowAt / firstRect), which FORCES the newly
+   shown view's style + layout in the middle of the switch and then walks it (prof qkqhgF2F:
+   updateTitle ~7-8 ms of the switch's ~9-10 ms JS). A tab switch now holds every census call
+   made inside it and publishes ONE census after the switch has painted: the view is laid out
+   once, in its own frame, and the probe reads settled geometry. The title still moves
+   atomically (old census -> full new census, nothing in between), like the fHold find reveal.
+   The graph is untouched: no view is kept, no element changes its box or pointer path. */
+var twHold = 0, twDue = false;
 async function switchTab(g, i) {
   if (i === g.active) return;
-  await act("tab_switch", { kind: g.tabs[i].kind || "note", tabs: g.tabs.length }, async () => {
-    await flushSave(g);
-    g.active = i;
-    await loadActive(g);
-  });
+  twHold++;
+  try {
+    await act("tab_switch", { kind: g.tabs[i].kind || "note", tabs: g.tabs.length }, async () => {
+      await flushSave(g);
+      g.active = i;
+      await loadActive(g);
+    });
+  } finally {
+    // act() queued its paint end (rAF -> setTimeout) before returning: this rAF + timeout run after it
+    requestAnimationFrame(() => setTimeout(() => {
+      if (--twHold === 0 && twDue) { twDue = false; updateTitle(); }
+    }, 0));
+  }
 }
 
 async function openInTab(name, via = "tab") {   // explorer click -> FOCUSED group (R6.3); via:"boot" = auto-open at startup (already inside the boot span)
