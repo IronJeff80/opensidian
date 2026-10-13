@@ -32,6 +32,7 @@
   "use strict";
   const T = window.__TAURI__;
   const invoke = T && T.core && T.core.invoke ? T.core.invoke.bind(T.core) : null;
+  const listen = T && T.event && T.event.listen ? T.event.listen.bind(T.event) : null;   // item 5: vault-changed for the plugin vault model
   const SCHEME = "opensidian-plugin://localhost/";
   const DENIED = new Set(["fs", "fs/promises", "child_process", "electron", "original-fs", "os", "net", "http", "https", "crypto", "module", "worker_threads", "process", "vm"]);
 
@@ -151,6 +152,7 @@
         set: a => invoke("plugins_set", a),
         io: (id, op, data) => invoke("plugin_io", data === undefined ? { id, op } : { id, op, data }),
         invoke,   // api.js's own vault calls (read/modify/...) — never handed to a plugin
+        listen,   // api.js subscribes to vault-changed (Vault create/modify/delete/rename events)
       });
       return true;
     },

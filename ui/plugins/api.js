@@ -18,6 +18,10 @@
        when the first plugin is evaluated: restricted mode (the default) changes
        no prototype and runs no plugin code.
 
+   Item 5 adds the vault model (TFile/TFolder + Vault events from the Rust
+   watcher), a synchronous MetadataCache filled ahead by a sweep, Workspace
+   leaves over the app's tab groups, and the vendored moment (ui/vendor).
+
    Unload contract: everything a plugin registered — commands, ribbon icons,
    status bar items, setting tabs, DOM listeners, intervals, event refs,
    children, styles.css, open modals/notices it owns — is removed by
@@ -715,7 +719,25 @@
   class EditableFileView extends FileView {}
   class TextFileView extends EditableFileView { constructor(leaf) { super(leaf); this.data = ""; } }
   class MarkdownView extends TextFileView { getViewType() { return "markdown"; } }
-  class WorkspaceLeaf extends Events { constructor(app) { super(); this.app = app; this.view = null; } }
+  /* A leaf = one of the app's tab groups (M1: a group IS a leaf; its active tab
+     is the leaf's view). `_g` is the group object, `_nt` a leaf from
+     getLeaf(true)/splitActiveLeaf whose openFile opens a NEW tab in that group. */
+  class WorkspaceLeaf extends Events {
+    constructor(app) {
+      super(); this.app = app;
+      Object.defineProperty(this, "_g", { value: null, writable: true });
+      Object.defineProperty(this, "_nt", { value: false, writable: true });
+      Object.defineProperty(this, "_v", { value: null, writable: true });
+    }
+    get view() { return leafView(this); }
+    getViewState() { const f = groupFile(this._g); return f ? { type: "markdown", state: { file: f.path } } : { type: "empty", state: {} }; }
+    setViewState(vs) { const p = vs && vs.state && vs.state.file; const f = p && vault.getAbstractFileByPath(p); return f instanceof TFile ? this.openFile(f) : Promise.resolve(); }
+    openFile(file, openState) { return openFileIn(this, file, openState); }
+    getDisplayText() { const f = groupFile(this._g); return f ? f.basename : ""; }
+    getIcon() { return "file"; }
+    setPinned() {} togglePinned() {} setGroup() {} detach() {}
+    getEphemeralState() { return {}; } setEphemeralState() {}
+  }
   class MarkdownRenderChild extends Component { constructor(el) { super(); this.containerEl = el; } }
   class TAbstractFile { constructor() { this.vault = null; this.path = ""; this.name = ""; this.parent = null; } }
   class TFile extends TAbstractFile { constructor() { super(); this.basename = ""; this.extension = ""; this.stat = { ctime: 0, mtime: 0, size: 0 }; } }
@@ -734,28 +756,399 @@
     return b;
   };
 
+  /* ------------------------------------- vault model (item 5)
+     TFile/TFolder objects keyed by Obsidian path ("dir/Note.md", "dir",
+     "img.png"); identity survives rename. The app names notes WITHOUT ".md"
+     (index.rs notes_of), so every backend call strips it. Built only when a
+     plugin is about to load (trusted + enabled): restricted mode never lists,
+     reads or parses anything for plugins. Mutations made through the API go to
+     the app's own commands (create_note / write_note / delete_note -> .trash /
+     move_note / create_dir) and are then fed to main.js onVaultChanged, the
+     same path an external edit takes, so open tabs and the tree stay right. */
+  const files = new Map();                      // path -> TFile | TFolder (root not included)
+  const vroot = new TFolder(); vroot.path = "/"; vroot.name = "";
+  let vaultName = "", modelOn = false, modelP = null, unlisten = null;
+  const noteOf = p => (p.endsWith(".md") ? p.slice(0, -3) : null);
+  const inv = (c, a) => be.invoke(c, a);
+  function attach(f, path) {
+    const i = path.lastIndexOf("/"), dir = i < 0 ? "" : path.slice(0, i);
+    f.vault = vault; f.path = path; f.name = path.slice(i + 1);
+    if (f instanceof TFile) { const d = f.name.lastIndexOf("."); f.basename = d > 0 ? f.name.slice(0, d) : f.name; f.extension = d > 0 ? f.name.slice(d + 1).toLowerCase() : ""; }
+    const par = dir ? ensureFolder(dir) : vroot;
+    f.parent = par; if (!par.children.includes(f)) par.children.push(f);
+    files.set(path, f);
+  }
+  function detachF(f) {
+    if (f.parent) { const i = f.parent.children.indexOf(f); if (i >= 0) f.parent.children.splice(i, 1); }
+    if (files.get(f.path) === f) files.delete(f.path);
+  }
+  function ensureFolder(path) {
+    const g = files.get(path); if (g instanceof TFolder) return g;
+    const f = new TFolder(); attach(f, path); return f;
+  }
+  function ensureFile(path) {   // -> [file, created]
+    const g = files.get(path); if (g instanceof TFile) return [g, false];
+    const f = new TFile(); const now = Date.now(); f.stat = { ctime: now, mtime: now, size: 0 }; attach(f, path); return [f, true];
+  }
+  function removeTree(f) {
+    if (f instanceof TFolder) for (const c of f.children.slice()) removeTree(c);
+    detachF(f); caches.delete(f.path);
+  }
+  function movePath(f, np) {
+    const op = f.path; detachF(f); caches.delete(op); attach(f, np);
+    if (f instanceof TFolder) for (const c of f.children.slice()) movePath(c, np + c.path.slice(op.length));
+  }
+  async function buildModel() {
+    const [notes, folders, imgs] = await Promise.all([inv("list_notes"), inv("list_folders"), inv("list_images").catch(() => [])]);
+    const keep = new Set();
+    for (const d of folders || []) { ensureFolder(d); keep.add(d); }
+    for (const n of notes || []) { ensureFile(n + ".md"); keep.add(n + ".md"); }
+    for (const p of imgs || []) { ensureFile(p); keep.add(p); }
+    for (const [p, f] of [...files]) if (!keep.has(p) && files.get(p) === f) removeTree(f);
+  }
+  async function syncFolders() {
+    let ds; try { ds = await inv("list_folders"); } catch (_) { return; }
+    const want = new Set(ds || []);
+    for (const d of want) if (!files.has(d)) { const f = ensureFolder(d); vault.trigger("create", f); }
+    for (const [p, f] of [...files]) if (f instanceof TFolder && !want.has(p) && !f.children.length && files.get(p) === f) { removeTree(f); vault.trigger("delete", f); }
+  }
+  /* one watcher batch (notes only, names without .md) -> Vault events, in
+     Obsidian's order: rename, create, modify, delete; then the cache. */
+  function applyChange(c) {
+    if (!modelOn || !c) return;
+    for (const [o, n] of c.renamed || []) {
+      const f = files.get(o + ".md");
+      if (f) { movePath(f, n + ".md"); vault.trigger("rename", f, o + ".md"); indexFile(f); }
+      else { const [g, made] = ensureFile(n + ".md"); if (made) vault.trigger("create", g); indexFile(g); }
+    }
+    for (const n of c.added || []) { const [f, made] = ensureFile(n + ".md"); if (made) vault.trigger("create", f); indexFile(f); }
+    for (const n of c.modified || []) { const f = files.get(n + ".md"); if (f instanceof TFile) { f.stat.mtime = Date.now(); vault.trigger("modify", f); indexFile(f); } }
+    for (const n of c.removed || []) { const f = files.get(n + ".md"); if (f) { removeTree(f); metadataCache.trigger("deleted", f, null); vault.trigger("delete", f); } }
+    syncFolders();
+  }
+  // an API mutation: tell main.js first (tabs, tree, bookmarks), then the plugins
+  async function changed(c) {
+    const full = Object.assign({ added: [], removed: [], modified: [], renamed: [] }, c);
+    if (typeof onVaultChanged === "function") { try { await onVaultChanged(full); } catch (e) { console.error("[plugin] onVaultChanged:", e); } }
+    applyChange(full);
+  }
+  function mdOnly(f, what) {
+    const n = f instanceof TFile ? noteOf(f.path) : null;
+    if (n == null) throw new Error(what + ": only markdown notes are supported in opensidian M1 (" + (f && f.path) + ")");
+    return n;
+  }
+  /* the runtime a plugin needs before its main.js is evaluated: moment (vendored,
+     pinned — ui/vendor/moment.min.js), the vault model, the vault-changed
+     subscription and the metadata sweep. Idempotent; first enable() pays it. */
+  function ensureModel() {
+    if (modelP) return modelP;
+    modelP = (async () => {
+      await loadMoment();
+      await buildModel();
+      modelOn = true;
+      if (!unlisten && be.listen) unlisten = await be.listen("vault-changed", e => applyChange(e.payload));
+      sweep();
+    })().catch(e => { modelP = null; throw e; });
+    return modelP;
+  }
+  function loadMoment() {
+    if (window.moment) return Promise.resolve();
+    return new Promise(res => {
+      const s = document.createElement("script");
+      s.src = "vendor/moment.min.js"; s.onload = s.onerror = () => res();
+      document.head.appendChild(s);
+    });
+  }
+
+  const vault = new Events();
+  Object.assign(vault, {
+    configDir: ".obsidian",
+    getName() { return vaultName; },
+    getRoot() { return vroot; },
+    getAbstractFileByPath(p) { const n = normalizePath(p); return n === "/" ? vroot : files.get(n) || null; },
+    getFileByPath(p) { const f = vault.getAbstractFileByPath(p); return f instanceof TFile ? f : null; },
+    getFolderByPath(p) { const f = vault.getAbstractFileByPath(p); return f instanceof TFolder ? f : null; },
+    getFiles() { return [...files.values()].filter(f => f instanceof TFile); },
+    getMarkdownFiles() { return [...files.values()].filter(f => f instanceof TFile && f.extension === "md"); },
+    getAllLoadedFiles() { return [vroot, ...files.values()]; },
+    getAllFolders(includeRoot) { const a = [...files.values()].filter(f => f instanceof TFolder); return includeRoot ? [vroot, ...a] : a; },
+    async read(f) { return inv("read_note", { name: mdOnly(f, "read") }); },
+    async cachedRead(f) { return vault.read(f); },
+    async modify(f, data) {
+      const name = mdOnly(f, "modify");
+      await inv("write_note", { name, content: String(data) });
+      await changed({ modified: [name] });
+    },
+    async append(f, data) { const s = await vault.read(f); return vault.modify(f, s + String(data)); },
+    async process(f, fn) { const s = await vault.read(f); const out = fn(s); await vault.modify(f, out); return out; },
+    async create(path, data) {
+      const p = normalizePath(path), name = noteOf(p);
+      if (name == null) throw new Error("create: only markdown notes can be created in opensidian M1 (" + p + ")");
+      if (files.has(p)) throw new Error("File already exists.");
+      await inv("create_note", { name, content: String(data == null ? "" : data) });
+      await changed({ added: [name] });
+      return files.get(p) || ensureFile(p)[0];
+    },
+    async createFolder(path) {
+      const p = normalizePath(path);
+      if (files.has(p)) throw new Error("Folder already exists.");
+      await inv("create_dir", { name: p });
+      const f = ensureFolder(p); vault.trigger("create", f);
+      if (typeof refreshTree === "function") try { await refreshTree(); } catch (_) {}
+      return f;
+    },
+    async delete(f) { const name = mdOnly(f, "delete"); await inv("delete_note", { name }); await changed({ removed: [name] }); },
+    async trash(f) { return vault.delete(f); },    // delete_note already moves to <vault>/.trash
+    async rename(f, newPath) {
+      const old = mdOnly(f, "rename"), np = normalizePath(newPath), nn = noteOf(np);
+      if (nn == null) throw new Error("rename: target must be a .md path (" + np + ")");
+      await inv("move_note", { old, new: nn });
+      await changed({ renamed: [[old, nn]] });
+    },
+    async copy(f, newPath) { const s = await vault.read(f); return vault.create(newPath, s); },
+    getResourcePath() { return ""; },
+    getConfig(k) { return ({ useMarkdownLinks: false, newLinkFormat: "shortest", attachmentFolderPath: "/", newFileLocation: "root", newFileFolderPath: "", alwaysUpdateLinks: false, showUnsupportedFiles: false })[k] ?? null; },
+    adapter: {
+      getName() { return vaultName; },
+      async exists(p) { return !!vault.getAbstractFileByPath(p); },
+      async read(p) { const f = vault.getFileByPath(p); if (!f) throw new Error("ENOENT: " + p); return vault.read(f); },
+      async write(p, s) { const f = vault.getFileByPath(p); return f ? vault.modify(f, s) : vault.create(p, s); },
+    },
+  });
+
+  /* ------------------------------------- metadata cache (item 5)
+     getFileCache is SYNCHRONOUS in Obsidian, so the cache is filled ahead:
+     a sweep over every note when the model is built (yielding between
+     batches, then 'resolved'), and one re-parse per watcher/API change
+     ('changed'). A miss returns null and queues that file. Parsed in JS from
+     the note text: frontmatter (YAML subset), headings, [[links]], ![[embeds]],
+     [md](links), #tags — all with Obsidian-shaped positions. */
+  const caches = new Map();           // path -> CachedMetadata
+  let sweepDone = false;
+  function parseScalar(v) {
+    v = v.trim();
+    if (!v) return null;
+    if ((v[0] === '"' && v.endsWith('"')) || (v[0] === "'" && v.endsWith("'"))) return v.slice(1, -1);
+    if (v[0] === "[" && v.endsWith("]")) return v.slice(1, -1).split(",").map(x => parseScalar(x)).filter(x => x !== null);
+    if (/^(true|false)$/i.test(v)) return /^true$/i.test(v);
+    if (/^(null|~)$/i.test(v)) return null;
+    if (/^-?\d+(\.\d+)?$/.test(v)) return Number(v);
+    return v;
+  }
+  function parseYaml(src) {   // the frontmatter subset: key: scalar | [a, b] | block list
+    const o = {}; let key = null;
+    for (const raw of String(src).split("\n")) {
+      const l = raw.replace(/\r$/, "");
+      if (!l.trim() || /^\s*#/.test(l)) continue;
+      let m;
+      if (key && (m = l.match(/^\s*-\s*(.*)$/))) { if (!Array.isArray(o[key])) o[key] = []; const v = parseScalar(m[1]); if (v !== null) o[key].push(v); continue; }
+      if ((m = l.match(/^([^\s:#][^:]*?)\s*:(?:\s+(.*))?$/))) { key = m[1].trim(); o[key] = parseScalar(m[2] || ""); continue; }
+    }
+    return o;
+  }
+  const stringifyYaml = o => Object.keys(o || {}).map(k => k + ": " + (Array.isArray(o[k]) ? "[" + o[k].join(", ") + "]" : o[k] == null ? "" : String(o[k]))).join("\n") + "\n";
+  function parseMeta(src) {
+    const lines = String(src).split("\n"), out = {};
+    const pos = (line, col, offset) => ({ line, col, offset });
+    let off = 0, i = 0;
+    const lineEnd = n => n.replace(/\r$/, "");
+    if (lines.length > 1 && lineEnd(lines[0]) === "---") {
+      let j = 1, o = lines[0].length + 1;
+      for (; j < lines.length; j++) { if (/^(---|\.\.\.)\s*$/.test(lineEnd(lines[j]))) break; o += lines[j].length + 1; }
+      if (j < lines.length) {
+        out.frontmatter = parseYaml(lines.slice(1, j).join("\n"));
+        out.frontmatterPosition = { start: pos(0, 0, 0), end: pos(j, 3, o + 3) };
+        out.sections = [{ type: "yaml", position: out.frontmatterPosition }];
+        off = o + lines[j].length + 1; i = j + 1;
+      }
+    }
+    let fence = null;
+    const push = (k, v) => { (out[k] || (out[k] = [])).push(v); };
+    for (; i < lines.length; off += lines[i].length + 1, i++) {
+      const raw = lineEnd(lines[i]);
+      const fm = raw.match(/^\s*(`{3,}|~{3,})/);
+      if (fm) { if (!fence) fence = fm[1][0]; else if (fm[1][0] === fence) fence = null; continue; }
+      if (fence) continue;
+      const P = (a, b) => ({ start: pos(i, a, off + a), end: pos(i, b, off + b) });
+      const h = raw.match(/^(#{1,6})\s+(.*?)(?:\s+#+)?\s*$/);
+      if (h) push("headings", { heading: h[2], level: h[1].length, position: P(0, raw.length) });
+      const s = raw.replace(/`[^`]*`/g, m => " ".repeat(m.length));
+      let m; const wl = /(!?)\[\[([^\]\n]+?)\]\]/g;
+      while ((m = wl.exec(s))) {
+        const inner = m[2], bar = inner.indexOf("|"), link = (bar < 0 ? inner : inner.slice(0, bar)).trim();
+        push(m[1] ? "embeds" : "links", { link, original: m[0], displayText: bar < 0 ? link : inner.slice(bar + 1), position: P(m.index, m.index + m[0].length) });
+      }
+      const ml = /(!?)\[([^\]\n]*)\]\(([^)\s]+)\)/g;
+      while ((m = ml.exec(s))) {
+        if (/^[a-z][a-z0-9+.-]*:/i.test(m[3])) continue;   // external URL: not a vault link
+        let link; try { link = decodeURI(m[3]); } catch (_) { link = m[3]; }
+        push(m[1] ? "embeds" : "links", { link, original: m[0], displayText: m[2], position: P(m.index, m.index + m[0].length) });
+      }
+      if (!h) {
+        const tg = /(^|\s)#([\p{L}\p{N}_/-]*[\p{L}_/-][\p{L}\p{N}_/-]*)/gu;
+        while ((m = tg.exec(s))) { const a = m.index + m[1].length; push("tags", { tag: "#" + m[2], position: P(a, a + 1 + m[2].length) }); }
+      }
+    }
+    return out;
+  }
+  function getAllTags(c) {
+    if (!c) return null;
+    const t = (c.tags || []).map(x => x.tag);
+    const ft = c.frontmatter ? parseFrontMatterTags(c.frontmatter) : null;
+    return (ft || []).concat(t);
+  }
+  const parseLinktext = lt => { const s = String(lt), i = s.indexOf("#"); return i < 0 ? { path: s, subpath: "" } : { path: s.slice(0, i), subpath: s.slice(i) }; };
+  const getLinkpath = lt => parseLinktext(lt).path;
+  /* link resolution: exact path, path+".md", then the shortest note whose path
+     ends with it (case-insensitive) — the app resolves [[x]] by full path OR
+     basename (index.rs resolve), and a shortest-path tie-break matches
+     Obsidian's "shortest" link format for unique names. */
+  function resolveLink(lp, src) {
+    let p = getLinkpath(String(lp).split("|")[0]).trim();
+    if (!p) return src ? vault.getFileByPath(src) : null;
+    p = normalizePath(p);
+    for (const c of [p, p + ".md"]) { const f = files.get(c); if (f instanceof TFile) return f; }
+    const lc = p.toLowerCase(), lmd = lc + ".md"; let best = null;
+    for (const f of files.values()) {
+      if (!(f instanceof TFile)) continue;
+      const fp = f.path.toLowerCase();
+      if (fp === lc || fp === lmd || fp.endsWith("/" + lc) || fp.endsWith("/" + lmd)) if (!best || f.path.length < best.path.length) best = f;
+    }
+    return best;
+  }
+  const idxQ = new Set(); let idxT = 0;
+  function indexFile(f) {
+    if (!(f instanceof TFile) || f.extension !== "md") return;
+    idxQ.add(f); if (!idxT) idxT = setTimeout(drainIdx, 0);
+  }
+  async function drainIdx() {
+    const batch = [...idxQ]; idxQ.clear();
+    for (const f of batch) {
+      if (files.get(f.path) !== f) continue;
+      let txt; try { txt = await inv("read_note", { name: noteOf(f.path) }); } catch (_) { continue; }
+      const c = parseMeta(txt); caches.set(f.path, c); f.stat.size = txt.length;
+      metadataCache.trigger("changed", f, txt, c);
+    }
+    idxT = 0;
+    if (idxQ.size) idxT = setTimeout(drainIdx, 0);
+    else if (sweepDone) metadataCache.trigger("resolved");
+  }
+  async function sweep() {
+    const all = vault.getMarkdownFiles();
+    for (let k = 0; k < all.length; k += 16) {
+      await Promise.all(all.slice(k, k + 16).map(async f => {
+        if (caches.has(f.path)) return;
+        try { const t = await inv("read_note", { name: noteOf(f.path) }); caches.set(f.path, parseMeta(t)); f.stat.size = t.length; } catch (_) {}
+      }));
+      await new Promise(r => setTimeout(r, 0));
+    }
+    sweepDone = true; metadataCache.resolved = true;
+    metadataCache.trigger("resolved");
+    touch();
+  }
+  function linkMap(resolved) {
+    const o = {};
+    for (const [p, c] of caches) {
+      const m = {};
+      for (const l of (c.links || []).concat(c.embeds || [])) {
+        const f = resolveLink(l.link, p), k = f ? f.path : getLinkpath(l.link);
+        if (!!f === resolved) m[k] = (m[k] || 0) + 1;
+      }
+      o[p] = m;
+    }
+    return o;
+  }
+  const metadataCache = new Events();
+  Object.assign(metadataCache, {
+    resolved: false,
+    getFileCache(f) { if (!f) return null; const c = caches.get(f.path); if (!c) indexFile(f); return c || null; },
+    getCache(p) { const f = vault.getFileByPath(p); return f ? metadataCache.getFileCache(f) : null; },
+    getFirstLinkpathDest(lp, src) { return resolveLink(lp, src); },
+    getLinkpathDest(lp, src) { const f = resolveLink(lp, src); return f ? [f] : []; },
+    fileToLinktext(f, src, omitMd = true) {
+      const same = vault.getMarkdownFiles().filter(x => x.basename === f.basename).length;
+      const p = same > 1 || f.extension !== "md" ? f.path : f.name;
+      return omitMd && f.extension === "md" ? p.replace(/\.md$/, "") : p;
+    },
+    get resolvedLinks() { return linkMap(true); },
+    get unresolvedLinks() { return linkMap(false); },
+    getBacklinksForFile(f) { const d = new Map(); for (const [p, c] of caches) { const ls = (c.links || []).filter(l => resolveLink(l.link, p) === f); if (ls.length) d.set(p, ls); } return { data: d, keys: () => [...d.keys()], get: k => d.get(k) }; },
+  });
+
+  /* ------------------------------------------- workspace (item 5)
+     Leaves are the app's tab groups (main.js `groups()` / `state.focused`),
+     read at call time. file-open / active-leaf-change are detected by
+     focusTick(), which the [plg:] census runs on every updateTitle — the one
+     place main.js already reports "something on screen changed" — so this
+     needs no new hook in main.js. */
+  const leafOf = new WeakMap();
+  const leafFor = g => { if (!g) return null; let l = leafOf.get(g); if (!l) { l = new WorkspaceLeaf(app); l._g = g; leafOf.set(g, l); } return l; };
+  const allGroups = () => { try { return typeof groups === "function" ? groups() : []; } catch (_) { return []; } };
+  const focusedGroup = () => { try { return typeof state !== "undefined" && state ? state.focused : null; } catch (_) { return null; } };
+  function groupFile(g) {
+    const t = g && g.active >= 0 ? g.tabs[g.active] : null;
+    if (!t || t.kind || !modelOn) return null;
+    const f = files.get(t.name + ".md");
+    return f instanceof TFile ? f : null;
+  }
+  function leafView(l) {
+    const f = groupFile(l._g);
+    if (!l._v) {
+      const mv = new MarkdownView(l); Object.defineProperty(mv, "file", { configurable: true, get: () => groupFile(l._g) });
+      const ev = new View(l); ev.getViewType = () => "empty";
+      l._v = { mv, ev };
+    }
+    return f ? l._v.mv : l._v.ev;
+  }
+  async function openFileIn(leaf, file, openState) {
+    if (!(file instanceof TFile) || file.extension !== "md") return;
+    const name = noteOf(file.path), g = leaf && leaf._g;
+    if (g && g !== focusedGroup() && typeof focusGroup === "function") try { focusGroup(g); } catch (_) {}
+    if (leaf && leaf._nt && typeof openNewTab === "function") { leaf._nt = false; await openNewTab(name, g || undefined); }
+    else if (typeof openInTab === "function") await openInTab(name);
+    const sub = openState && openState.eState && openState.eState.subpath;
+    if (sub && typeof navAnchor === "function") try { await navAnchor(focusedGroup(), sub.replace(/^#/, "")); } catch (_) {}
+    touch();
+  }
+  let lastLeaf = null, lastFile;
+  function focusTick() {
+    if (!modelOn || !layoutReady) return;
+    const l = leafFor(focusedGroup()), f = l ? groupFile(l._g) : null;
+    if (l !== lastLeaf) { lastLeaf = l; queueMicrotask(() => workspace.trigger("active-leaf-change", l)); }
+    if (f !== lastFile) { lastFile = f; queueMicrotask(() => { workspace.trigger("file-open", f); if (l) workspace.trigger("layout-change"); }); }
+  }
   const workspace = new Events();
   Object.assign(workspace, {
     layoutReady: false,
+    containerEl: document.body,
     onLayoutReady(cb) { if (layoutReady) queueMicrotask(() => { try { cb(); } catch (e) { console.error(e); } }); else workspace.on("layout-ready", cb); },
-    iterateAllLeaves() {}, iterateRootLeaves() {},
-    getLeavesOfType() { return []; },
-    getActiveViewOfType() { return null; },
-    getActiveFile() { return null; },
+    iterateAllLeaves(cb) { for (const g of allGroups()) cb(leafFor(g)); },
+    iterateRootLeaves(cb) { for (const g of allGroups()) cb(leafFor(g)); },
+    getLeavesOfType(t) { return allGroups().map(leafFor).filter(l => l && l.view.getViewType() === t); },
+    getActiveViewOfType(C) { const l = workspace.activeLeaf, v = l && l.view; return v && C && v instanceof C ? v : null; },
+    getActiveFile() { return groupFile(focusedGroup()); },
+    getMostRecentLeaf() { return workspace.activeLeaf; },
+    getUnpinnedLeaf() { return workspace.activeLeaf; },
+    getLeaf(newLeaf) { const l = workspace.activeLeaf; if (!newLeaf || !l) return l; const n = new WorkspaceLeaf(app); n._g = l._g; n._nt = true; return n; },
+    splitActiveLeaf() { return workspace.getLeaf(true); },   // M1: a new tab in the focused group, not a split
+    createLeafBySplit() { return workspace.getLeaf(true); },
+    setActiveLeaf(l) { if (l && l._g && typeof focusGroup === "function") try { focusGroup(l._g); } catch (_) {} },
+    revealLeaf(l) { workspace.setActiveLeaf(l); return Promise.resolve(); },
+    async openLinkText(lt, src, newLeaf, openState) {
+      const { path, subpath } = parseLinktext(lt);
+      let f = path ? resolveLink(path, src) : vault.getFileByPath(src || "");
+      if (!f) f = await vault.create(normalizePath(path.endsWith(".md") ? path : path + ".md"), "");
+      const os = Object.assign({}, openState || {}); if (subpath) os.eState = Object.assign({}, os.eState, { subpath });
+      return workspace.getLeaf(newLeaf).openFile(f, os);
+    },
+    getLastOpenFiles() { return []; },
     requestSaveLayout: debounce(() => {}, 0),
     leftRibbon: { collapsed: false }, rightRibbon: { collapsed: false },
   });
-  // item 5 replaces this with real leaves; for now: one leaf object per main-area pane, so
-  // `app.workspace.activeLeaf` is truthy while a pane exists (sample-plugin gates its command on it)
-  const leafOf = new WeakMap();
   Object.defineProperty(workspace, "activeLeaf", { configurable: true, enumerable: true, get() {
-    const p = document.querySelector("#main .pane.focused") || document.querySelector("#main .pane");
-    if (!p) return null;
-    let l = leafOf.get(p); if (!l) { l = new WorkspaceLeaf(app); leafOf.set(p, l); }
-    return l;
+    const g = focusedGroup() || allGroups()[0];
+    return g ? leafFor(g) : null;
   } });
-  const vault = new Events();
-  const metadataCache = new Events();
   const keymap = {
     pushScope(s) { if (s) scopes.push(s); },
     popScope(s) { const i = scopes.lastIndexOf(s); if (i >= 0) scopes.splice(i, 1); },
@@ -921,13 +1314,18 @@
     WorkspaceLeaf, MarkdownRenderChild, TAbstractFile, TFile, TFolder,
   };
   for (const k of Object.keys(X)) X[k] = es5(X[k]);
-  const api = Object.freeze(Object.assign(X, {
+  Object.assign(X, {
     Platform, apiVersion: API_VERSION, requireApiVersion, setIcon, getIcon, addIcon, removeIcon, getIconIds,
     normalizePath, debounce, prepareFuzzySearch, prepareSimpleSearch, renderMatches,
     parseFrontMatterEntry, parseFrontMatterAliases, parseFrontMatterTags, requestUrl, request: requestUrl,
     htmlToMarkdown, sanitizeHTMLToDom: h => { const t = document.createElement("template"); t.innerHTML = String(h); for (const s of t.content.querySelectorAll("script,iframe,object,embed")) s.remove(); return t.content; },
     Keymap: { isModEvent: e => !!(e && (e.ctrlKey || e.metaKey)), isModifier: (e, m) => !!e && ({ Mod: e.ctrlKey || e.metaKey, Ctrl: e.ctrlKey, Meta: e.metaKey, Shift: e.shiftKey, Alt: e.altKey })[m] },
-  }));
+    parseYaml, stringifyYaml, getAllTags, parseLinktext, getLinkpath,
+  });
+  // moment: the vendored build, loaded by ensureModel() before any plugin is evaluated.
+  // A getter, so esbuild's __toESM live bindings and `obsidian.moment` both see it.
+  Object.defineProperty(X, "moment", { enumerable: true, get: () => window.moment });
+  const api = Object.freeze(X);
 
   /* ------------------------------------------------------ the manager */
   let touchT = 0;
@@ -939,6 +1337,7 @@
     const manifest = manifests[id];
     if (!manifest) return host.fail(id, new Error("not installed (no manifest.json)"));
     installDom();
+    try { await ensureModel(); } catch (e) { touch(); return host.fail(id, new Error("vault model: " + (e && e.message || e))); }
     const r = await host.evaluate(id);
     if (!r.ok) { touch(); return r; }
     const ex = r.exports, Cls = ex && (ex.default || ex);
@@ -1005,6 +1404,7 @@
      no plugin script requested. */
   async function boot(vaultPathArg) {
     try {
+      vaultName = String(vaultPathArg || "").replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "";
       app.appId = String(vaultPathArg || "").split("").reduce((h, c) => (Math.imul(h, 31) + c.charCodeAt(0)) | 0, 7).toString(16);
       await refresh();
       layoutReady = true; workspace.layoutReady = true;
@@ -1017,6 +1417,7 @@
      right now — cmds / ribbon / status / tabs counts summed over loaded
      plugins, so an unload phase can assert they drop to 0. */
   function censusTok() {
+    if (modelOn) focusTick();   // file-open / active-leaf-change detection (workspace section)
     if (!be || (!trusted && !host.status.size)) return trusted ? "" : " [plg:R]";
     let c = 0, rb = 0, st = 0, tb = 0;
     for (const r of registry.values()) { c += r.cmds.size; rb += r.ribbon.size; st += r.status.size; tb += r.tabs.size; }
