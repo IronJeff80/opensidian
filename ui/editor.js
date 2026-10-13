@@ -2168,6 +2168,9 @@ Object.assign(Ed, {
   commit(g) {
     const v = g.view, cm = v.cm, L = v.lines;
     if (!cm || !L) return false;
+    // the mirror must be OF the current doc: after setText (or typing since Ed.lines()) the doc moved
+    // on, and diffing a stale mirror dispatched a revert (reloadInPlace -> lpRender undid the reload)
+    if (v._Ld !== cm.state.doc) { v._snap = null; return false; }
     const oldT = cm.state.doc.toString(), newT = L.join("\n");
     if (oldT === newT) { v._Ld = cm.state.doc; return false; }
     const m = Math.min(oldT.length, newT.length);
@@ -2187,7 +2190,7 @@ Object.assign(Ed, {
     v._Ld = null; v._snap = null;
     Ed.sync(g);
   },
-  setAll(g, text) { Ed.snap(g, "cmd"); g.view.lines = String(text).split("\n"); Ed.render(g, -1, 0); },
+  setAll(g, text) { Ed.snap(g, "cmd"); const v = g.view; v.lines = String(text).split("\n"); if (v.cm) v._Ld = v.cm.state.doc; Ed.render(g, -1, 0); },
   snap(g, kind) { g.view._snap = kind; },              // the next commit is its own undo step
   after(g, l, c) {                                     // model changed -> doc + caret
     Ed.commit(g);
