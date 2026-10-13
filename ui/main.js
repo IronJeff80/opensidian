@@ -5556,7 +5556,10 @@ async function navAnchor(g, anchor) {
       if (!Ed.flashLine(g, line)) flash(row);
       return true;
     };
-    if (!centre() && !(Ed.revealAt(g, line, 0) && Ed.flashLine(g, line))) { Ed.scrollToLine(g, line); const cm = Ed.cm(g); if (cm) cm.requestMeasure({ key: "osNavAnchor", read: () => null, write: () => { centre(); } }); }
+    // CM6 present: centre through its own scrollIntoView effect even for a drawn line — a
+    // scrollTop written outside CM6's measure loop can be put back by its next redraw (find
+    // reveal [frv:..|t0]), which left the flashed heading off screen (links blob '')
+    if (!(Ed.cm(g) && Ed.revealAt(g, line, 0) && Ed.flashLine(g, line)) && !centre()) { Ed.scrollToLine(g, line); const cm = Ed.cm(g); if (cm) cm.requestMeasure({ key: "osNavAnchor", read: () => null, write: () => { centre(); } }); }
     if (t.mode === "source") await lpEdit(g, line, 0);  // R12: source puts the caret on the line
   } else {
     let el = null;

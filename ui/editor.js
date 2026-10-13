@@ -1082,18 +1082,22 @@ const Ed = {
      session ends when the pane's mode is applied again (Ed.rvEnd from
      applyMode) — so read -> edit -> read starts a new step. */
   rvToggle(g, l) {
-    const L = Ed.lines(g), nl = Ed.flipTask(L[l]);
+    const L0 = Ed.lines(g), nl = Ed.flipTask(L0[l]);
     if (nl == null) return false;
-    const v = g.view, last = v.undo && v.undo[v.undo.length - 1];
-    if (v.rvSess && last && last.kind === "rvtask" && last.rvs === v.rvSess) v.redo = [];
-    else {
-      Ed.snap(g, "rvtask");
-      v.rvSess = v.rvSess || {};
-      v.undo[v.undo.length - 1].rvs = v.rvSess;
-    }
-    L[l] = nl;
+    const v = g.view, cm = Ed.cm(g);
+    if (!cm) { Ed.snap(g, "rvtask"); L0[l] = nl; Ed.commit(g); Ed.sync(g); if (typeof scheduleSave === "function") scheduleSave(g); return true; }
+    const T = L0.slice(); T[l] = nl;
+    // one undo step per session: while the doc is still the one this session's last toggle
+    // left, take that step back (CM6 history) and commit pre-session -> now as ONE change;
+    // the new change drops the redo entry the take-back made
+    const s = v.rvSess;
+    if (s && s.doc === cm.state.doc && CMc.undoDepth(cm.state) > 0) CMc.undo(cm);
+    const L = Ed.lines(g);
+    L.length = 0; for (const x of T) L.push(x);
+    Ed.snap(g, "rvtask");
+    Ed.commit(g);
+    v.rvSess = { doc: cm.state.doc };
     Ed.sync(g);
-    Ed.render(g, null);                         // keep the hidden lp rows in step with the model
     if (typeof scheduleSave === "function") scheduleSave(g);
     return true;
   },
@@ -1881,7 +1885,15 @@ Ed.lpExt = function (v, G) {
     constructor(t, k, el) { super(); this.t = t; this.k = k; this.el = el; }
     eq(o) { return o.t === this.t && o.k === this.k && o.el === this.el; }
     // the parsed leaf itself (cloned): re-rendering the row here could disagree with the parse
-    toDOM() { return this.el ? this.el.cloneNode(true) : document.createElement("span"); }
+    // except a pdf frame: its loader (Ed.pdfFill) is closures + observers on the ORIGINAL
+    // element, so a clone never loads a page (osdrop [pf:1/0|..p1/0-]) — render it fresh
+    toDOM() {
+      if (this.el && this.el.dataset && this.el.dataset.pdf != null) {
+        const f = Ed.lpLeaves(Ed.row(G(), this.t, 0))[this.k];
+        if (f) return f;
+      }
+      return this.el ? this.el.cloneNode(true) : document.createElement("span");
+    }
     ignoreEvent() { return true; }
   }
   const lineDeco = new Map();
