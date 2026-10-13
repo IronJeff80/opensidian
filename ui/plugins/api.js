@@ -1421,7 +1421,8 @@
     if (!be || (!trusted && !host.status.size)) return trusted ? "" : " [plg:R]";
     let c = 0, rb = 0, st = 0, tb = 0;
     for (const r of registry.values()) { c += r.cmds.size; rb += r.ribbon.size; st += r.status.size; tb += r.tabs.size; }
-    const ids = [...host.status].map(([id, s]) => id + "=" + s.state).join(",");
+    // a failed plugin carries its error (first 80 chars, census-safe) so a red phase says WHY
+    const ids = [...host.status].map(([id, s]) => id + "=" + s.state + (s.state === "failed" && s.error ? "(" + String(s.error).replace(/[[\]|,=()\s]+/g, "_").slice(0, 80) + ")" : "")).join(",");
     const nt = notices.length ? " [pnotice:" + notices.map(n => n.noticeEl.textContent.replace(/[[\]|]/g, "").slice(0, 60)).join("|") + "]" : "";
     const md = openModals.length ? " [pmodal:" + openModals.length + "]" : "";
     return " [plg:" + (trusted ? "T" : "R") + "|" + ids + "] [preg:c" + c + ",r" + rb + ",s" + st + ",t" + tb + "]" + nt + md;
