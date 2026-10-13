@@ -11343,6 +11343,12 @@ function fReveal(g, done) {   // done(): called once the reveal has finished (sy
   const st = fState(g), h = st.hits[st.idx], cm = sc === g.lp ? Ed.cm(g) : null;
   if (!h || h.l == null || !cm) return fin();
   Ed.scrollToLine(g, h.l);
+  // flush CM6's measure cycle NOW (the vendored EditorView.measure: reads the new
+  // scroll position, redraws its viewport, runs scrollToLine's own correction), so the
+  // span exists and the reveal is done inside this keypress, as R17's was; twice,
+  // because the correction can move the scroller once more
+  try { cm.measure(); cm.measure(); } catch (_) {}
+  if (go()) return fin();
   let n = 0;
   const step = () => cm.requestMeasure({ key: "osFindReveal", read: () => null, write: () => {
     if (Ed.cm(g) !== cm || go() || ++n > 8) { fin(); if (done !== updateTitle) updateTitle(); return; }   // callers without done took their census before the draw
