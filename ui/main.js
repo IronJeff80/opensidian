@@ -10196,7 +10196,17 @@ function setTok() {
                        (Math.round(sfpSum / sfpN * 100) / 100) + "/" + sfpN + "]" : "") +
          (sfpW >= 0 ? " [sfpw:" + sfpW + "/" + sfpWMax + "]" : "");
 }
+/* goal/cm6-editor obspal/builtins: the settings modal hands the editor back the way the palette does.
+   R17 painted its caret whether or not it held DOM focus; CM6 draws .cm-cursor only while the
+   editor is focused, so closing settings left a caret-less window and the settings route and
+   the Ctrl+P route differed by exactly the 1x39 caret column (pal_same_window, 39 px). Obsidian
+   returns focus to the editor when a modal closes: snapshot at open, restore at close. */
+let sEdSel = null;
 async function openSettings() {
+  if (!settingsOpen) {                       // BEFORE anything in the modal takes focus; only an editor that HAD focus gets it back
+    const cm = edEditable() && Ed.cm(fg());
+    sEdSel = cm && cm.hasFocus ? edSelSnap() : null;
+  }
   if (!SMODEL) await smodelPrefetch();   // cold open only (prefetched at boot)
   try { slbOn = !!(await inv("strict_line_breaks")); } catch (err) { slbOn = false; }   // goal/linebreak: disk is the truth
   settingsOpen = true; hkRec = null;
@@ -10208,6 +10218,7 @@ async function openSettings() {
   updateTitle();   // the R22 overflow probe, and that is the instrument's cost, not the modal's
 }
 function closeSettings() {
+  const r = sEdSel; sEdSel = null;
   settingsOpen = false; hkRec = null; fontPage = null;
   if (window.__osPluginSettings) __osPluginSettings.close();   // a plugin tab on screen gets its hide()
   /* THE PANE'S OWN MENU GOES WITH IT (goal/theme-1984). Appearance ▸ Themes
@@ -10218,6 +10229,7 @@ function closeSettings() {
      Esc, which is how the smoke phase found it. */
   closeMenu();
   $("settings").hidden = true;
+  edSelRestore(r);
   updateTitle();
 }
 /* the left nav, Obsidian's order and grouping (Options 1-7; the Core plugins entry and
