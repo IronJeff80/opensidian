@@ -623,8 +623,7 @@ async function tocGo(line) {               // scroll + focus the heading at `lin
   if (fg() !== g) focusGroup(g);           // Obsidian 1.13.7: the active leaf moves to the note (docs/tocjump recon, shots 06,16)
   if (isLp(t.mode)) {                     // R12: source mode = lp with reveal
     await lpMove(g, line, 0, "heading");   // raw row = the heading, caret on it
-    const row = Ed.rowAt(g, line);                 // R17: one row per source line
-    if (row) g.lp.scrollTop = row.offsetTop - g.lp.offsetTop;
+    Ed.scrollToLine(g, line);              // the heading line at the top
   } else {
     const k = tocHeads.findIndex(h => h.line === line);
     const el = g.preview.querySelectorAll("h1,h2,h3,h4,h5,h6")[k];
@@ -639,9 +638,7 @@ function tocSync() {                       // highlight the heading at the viewp
   const { g, t } = L;
   let top = 0;                             // first visible source line
   if (isLp(t.mode)) {
-    const st = g.lp.scrollTop + 2;
-    let _i = 0;
-    for (const r of g.lp.children) { if (r.offsetTop - g.lp.offsetTop <= st) top = _i; _i++; }
+    top = Math.floor(Ed.topLine(g, 2) || 0);
   } else {
     const st = g.preview.scrollTop + 2, hs = g.preview.querySelectorAll("h1,h2,h3,h4,h5,h6");
     let k = -1;
@@ -670,8 +667,7 @@ function tjTok() {
   if (g.tabs[g.active] !== t) return " [tj:" + nm + "|bg]";
   let top = 0, st = 0;
   if (isLp(t.mode)) {
-    st = g.lp.scrollTop; let i = 0;
-    for (const r of g.lp.children) { if (r.offsetTop - g.lp.offsetTop <= st + 2) top = i; i++; }
+    st = g.lp.scrollTop; top = Math.floor(Ed.topLine(g, 2) || 0);
   } else {
     st = g.preview.scrollTop; let k = -1;
     g.preview.querySelectorAll("h1,h2,h3,h4,h5,h6").forEach((el, i) => { if (el.offsetTop - g.preview.offsetTop <= st + 2) k = i; });
@@ -4355,10 +4351,7 @@ function ssAnchor(g) {   // the (fractional, 0-based) SOURCE LINE at the top of 
     const a = bl[i] - 1, b = i + 1 < bl.length ? bl[i + 1] - 1 : a + 1;
     return a + f * Math.max(1, b - a);
   }
-  const rows = g.lp.children;
-  if (!rows.length) return null;
-  const [i, f] = ssTopOf(g.lp, rows);
-  return i + f;
+  return Ed.topLine(g, 1);            // CM6 height map: the line under the scroller top
 }
 function ssRestore(g, line) {   // scroll the CURRENT view so `line` is at the top
   const t = g.active >= 0 ? g.tabs[g.active] : null;
@@ -4372,13 +4365,7 @@ function ssRestore(g, line) {   // scroll the CURRENT view so `line` is at the t
     ssScrollTo(g.preview, ch[i], Math.min(1, Math.max(0, (line - a) / Math.max(1, b - a))));
     return;
   }
-  const rows = g.lp.children;
-  if (!rows.length) return;
-  const i = Math.min(rows.length - 1, Math.max(0, Math.floor(line)));
-  // longpos: build the anchor row first (a lazy placeholder is one line tall),
-  // so the fraction lands inside the real row; Ed.wakeView keeps it in place after
-  g.lp._lzyKeep = !!g.lp._lzy;
-  ssScrollTo(g.lp, Ed.rowAt(g, i) || rows[i], Math.min(1, Math.max(0, line - i)));
+  Ed.scrollToLine(g, line);           // CM6 height map, re-landed once the lines are measured
 }
 
 /* ---------- R35 PERF: the mode switch against the 100 ms ceiling ----------

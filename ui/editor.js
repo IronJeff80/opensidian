@@ -2421,3 +2421,31 @@ Ed.crtTok = function () {
     + "|t0=" + (t0 ? R(t0.left) + "," + R(t0.top) : cb ? R(cb.left) + "," + R(cb.top) : "-")
     + "|ae=" + (cm.hasFocus ? 1 : 0) + "|" + lc + "]";
 };
+/* ---------- source line <-> scroller pixels, on CM6's height map ----------
+   R17 walked g.lp.children (one row per line); CM6 renders only its viewport,
+   so line geometry comes from lineBlockAt*, which covers unrendered lines too. */
+Ed.lineAtY = function (g, y) {            // client y -> {l, f}: the line under y, f = fraction into it
+  const cm = Ed.cm(g); if (!cm) return null;
+  const b = cm.lineBlockAtHeight(y - cm.documentTop), d = cm.state.doc;
+  const f = b.height > 0 ? Math.min(1, Math.max(0, (y - cm.documentTop - b.top) / b.height)) : 0;
+  return { l: d.lineAt(b.from).number - 1, f };
+};
+Ed.topLine = function (g, slack) {        // the line at the scroller's top edge (+slack px), fractional
+  if (!g.lp || !Ed.cm(g)) return null;
+  const p = Ed.lineAtY(g, g.lp.getBoundingClientRect().top + (slack == null ? 1 : slack));
+  return p ? p.l + p.f : null;
+};
+Ed.scrollToLine = function (g, line) {    // put the fractional source line at the scroller's top, clamped
+  const cm = Ed.cm(g), lp = g.lp; if (!cm || line == null) return;
+  const d = cm.state.doc, i = Math.min(d.lines - 1, Math.max(0, Math.floor(line))), f = Math.min(1, Math.max(0, line - i));
+  const go = () => {
+    const b = cm.lineBlockAt(d.line(i + 1).from);
+    const dy = cm.documentTop + b.top + f * b.height - lp.getBoundingClientRect().top;
+    const max = Math.max(0, lp.scrollHeight - lp.clientHeight);
+    lp.scrollTop = Math.min(max, Math.max(0, lp.scrollTop + dy));
+  };
+  go();
+  // the height map holds ESTIMATES for lines never drawn: once CM6 has measured
+  // the lines this scroll brought in, land on the real geometry
+  cm.requestMeasure({ key: "osScrollLine", read: () => null, write: () => { if (Ed.cm(g) === cm) go(); } });
+};
