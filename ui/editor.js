@@ -1792,6 +1792,17 @@ Ed.scrollToLine = function (g, line) {    // put the fractional source line at t
   // the lines this scroll brought in, land on the real geometry
   cm.requestMeasure({ key: "osScrollLine", read: () => null, write: () => { if (Ed.cm(g) === cm) go(); } });
 };
+/* centre source position (l, c) in the scroller through CM6's own scrollIntoView
+   effect: CM6 brings the line in, measures it and scrolls INSIDE its measure loop,
+   after its redraw — a scrollTop written outside that loop was seen landing back at
+   0 when the redraw of a bottom-clamped scroll ran (find reveal, [frv:..|t0]).
+   No selection change, no focus. */
+Ed.revealAt = function (g, l, c) {
+  const cm = Ed.cm(g); if (!cm || l == null) return false;
+  const d = cm.state.doc, i = Math.min(d.lines, Math.max(1, l + 1)), ln = d.line(i);
+  cm.dispatch({ effects: CMv.EditorView.scrollIntoView(Math.min(ln.to, ln.from + Math.max(0, c || 0)), { y: "center" }) });
+  return true;
+};
 /* ---------- LIVE PREVIEW = CM6 decorations ----------
    The R17 per-line renderer (Ed.row -> Ed.block/Ed.inline) stays the ONE
    markdown->class-vocabulary tokenizer; its detached row is read back as

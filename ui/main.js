@@ -11343,13 +11343,16 @@ function fReveal(g, done) {   // done(): called once the reveal has finished (sy
   // frame until the span exists (bounded), then report done.
   const st = fState(g), h = st.hits[st.idx], cm = sc === g.lp ? Ed.cm(g) : null;
   if (!h || h.l == null || !cm) { fRv = "nohit"; return fin(); }
+  // The undrawn line is brought in by CM6 ITSELF (Ed.revealAt: a scrollIntoView effect,
+  // centred inside its measure loop, after its redraw). Earlier tries wrote scrollTop
+  // from outside the loop and saw it land back at 0 (0c612980 [frv:..|t0]).
   // No synchronous cm.measure() here: CM6's measure keeps its scroll anchor when it
   // has not yet SEEN a scroll event, so a flush right after a programmatic scrollTop
   // write can put the scroller back (5a79ae48: [fsc:0]). The line is brought in, CM6
   // measures and draws it in its own cycle, and the mark is centred then — the same
   // order scJump uses. fGo holds the census until done(), so no title is published
   // with the new counter before the match is on screen.
-  Ed.scrollToLine(g, h.l);
+  if (!Ed.revealAt(g, h.l, h.c)) Ed.scrollToLine(g, h.l);
   fRv = "l" + h.l + "|s" + Math.round(sc.scrollTop) + "/" + Math.round(sc.scrollHeight);
   // DIAGNOSTIC (find reveal lost its scroll, 805c5264 [frv:..|t0]): every JS write to
   // the scroller while the reveal is in flight is logged with its caller
@@ -11377,7 +11380,11 @@ function fReveal(g, done) {   // done(): called once the reveal has finished (sy
     for (const m of ["setBaseAndExtent", "collapse", "addRange", "removeAllRanges", "extend", "setPosition"]) hookP(Selection.prototype, m, "S" + m.slice(0, 3));
     hookP(Element.prototype, "scrollIntoView", "SIV");
   } catch (_) {}
-  const unhook = () => { sc.removeEventListener("scroll", onS); for (const [p, m, o] of saved) p[m] = o; try { delete sc.scrollTop; delete sc.scrollTo; delete sc.scrollBy; } catch (_) {} };
+  // and every CM6 DOM redraw that moved the scroller (U<before>><after>)
+  const dv = cm.docView, dvU = dv && dv.update;
+  if (dvU) dv.update = function () { const b0 = Math.round(P.get.call(sc)); const r = dvU.apply(this, arguments);
+    const b1 = Math.round(P.get.call(sc)); if (b1 !== b0) fRv += "|U" + b0 + ">" + b1 + "/" + Math.round(sc.scrollHeight); return r; };
+  const unhook = () => { sc.removeEventListener("scroll", onS); if (dvU) delete dv.update; for (const [p, m, o] of saved) p[m] = o; try { delete sc.scrollTop; delete sc.scrollTo; delete sc.scrollBy; } catch (_) {} };
   let n = 0, lastTop = -1;
   const step = () => cm.requestMeasure({ key: "osFindReveal", read: () => null, write: () => {
     const tp = Math.round(sc.scrollTop);
