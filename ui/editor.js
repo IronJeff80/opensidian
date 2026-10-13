@@ -2087,7 +2087,7 @@ Ed.rvTaskTok = () => {
        row that has painted text and no task box (a click there moves the caret,
        never a byte). Ed.geom's [erx:]/[ery:] stop at 40 rows; the rvtask
        fixture is 230 lines, so the Q6 undo step needs its own point. */
-    const rows = g.lp ? g.lp.children : null;
+    const rows = g.lp ? Ed.rows(g) : null;
     if (!rows) return "";
     const lb = g.lp.getBoundingClientRect(), r = document.createRange();
     for (let i = 0; i < rows.length && i < 400; i++) {
@@ -2123,3 +2123,301 @@ document.addEventListener("scroll", e => {
   clearTimeout(rvTaskScT);
   rvTaskScT = setTimeout(() => { rvTaskScT = null; if (typeof updateTitle === "function") updateTitle(); }, 60);
 }, true);
+
+/* ======================================================================
+   CM6 EDITOR CORE (cm6-editor) — CodeMirror 6 is the view and the model.
+   One EditorView per tab view (mkView -> Ed.mount). Its state.doc is the
+   source of truth; Ed.lines(g) is a lazily rebuilt string[] mirror so the
+   model-level helpers above (enter/indent/toggles/renumber, replace-all,
+   insdate) keep mutating an array: they call Ed.snap, mutate, then
+   Ed.after/Ed.render, and Ed.commit turns the difference into ONE change
+   dispatched as its own undo step. g.lp stays the pane scroller (div.lp: display,
+   vkeep, scrollTop, the title band, every `.lp ...` selector) and view.dom is
+   its only child: CM6 runs auto-height and virtualises against that scroller. The CM6 module objects are the vendored registry's
+   (window.__osModules), the same instances plugins will require.
+   ====================================================================== */
+const CM6 = window.__osModules || {};
+const CMs = CM6["@codemirror/state"], CMv = CM6["@codemirror/view"], CMc = CM6["@codemirror/commands"];
+Object.assign(Ed, {
+  cm(g) { return g && g.view && g.view.cm || null; },
+  view(g) { return Ed.cm(g); },                        // the Obsidian Editor shim's accessor (future)
+  /* ---------- model ---------- */
+  lines(g) {
+    const v = g.view, cm = v && v.cm;
+    if (!cm) { if (!v.lines) v.lines = [""]; return v.lines; }
+    const d = cm.state.doc;
+    if (v._Ld !== d) { v.lines = d.toJSON(); v._Ld = d; }
+    return v.lines;
+  },
+  text(g) { const cm = Ed.cm(g); return cm ? cm.state.doc.toString() : Ed.lines(g).join("\n"); },
+  sync(g) { g.editor.value = Ed.text(g); },            // persistence bridge only
+  off(g, l, c) {                                       // (line,col) -> doc offset, clamped
+    const d = g.view.cm.state.doc, n = Math.max(1, Math.min(l + 1, d.lines)), ln = d.line(n);
+    return ln.from + Math.max(0, Math.min(c, ln.length));
+  },
+  lc(g, o) { const ln = g.view.cm.state.doc.lineAt(o); return { l: ln.number - 1, c: o - ln.from }; },
+  offOf(g, l, c) { return Ed.off(g, l, c); },
+  offsetOf(g, p) { return Ed.off(g, p.l, p.c); },
+  placeOffset(g, o) { const p = Ed.lc(g, Math.max(0, Math.min(o, g.view.cm.state.doc.length))); Ed.place(g, p.l, p.c); },
+  /* a model-level caller mutated the Ed.lines array in place: dispatch the
+     difference as ONE minimal change (common prefix/suffix), its own undo step */
+  commit(g) {
+    const v = g.view, cm = v.cm, L = v.lines;
+    if (!cm || !L) return false;
+    const oldT = cm.state.doc.toString(), newT = L.join("\n");
+    if (oldT === newT) { v._Ld = cm.state.doc; return false; }
+    const m = Math.min(oldT.length, newT.length);
+    let p = 0, s = 0;
+    while (p < m && oldT.charCodeAt(p) === newT.charCodeAt(p)) p++;
+    while (s < m - p && oldT.charCodeAt(oldT.length - 1 - s) === newT.charCodeAt(newT.length - 1 - s)) s++;
+    const kind = v._snap || "edit"; v._snap = null;
+    cm.dispatch({ changes: { from: p, to: oldT.length - s, insert: newT.slice(p, newT.length - s) },
+                  annotations: [CMc.isolateHistory.of("full"), CMs.Transaction.userEvent.of("os." + kind)] });
+    v.lines = L; v._Ld = cm.state.doc;                 // the caller's array IS the doc now
+    return true;
+  },
+  setText(g, t) {                                      // load / external replace: fresh history
+    const v = g.view, s = String(t == null ? "" : t);
+    if (!v.cm) { v.lines = s.split("\n"); Ed.sync(g); return; }
+    v.cm.setState(CMs.EditorState.create({ doc: s, extensions: v._ext }));
+    v._Ld = null; v._snap = null;
+    Ed.sync(g);
+  },
+  setAll(g, text) { Ed.snap(g, "cmd"); g.view.lines = String(text).split("\n"); Ed.render(g, -1, 0); },
+  snap(g, kind) { g.view._snap = kind; },              // the next commit is its own undo step
+  after(g, l, c) {                                     // model changed -> doc + caret
+    Ed.commit(g);
+    Ed.place(g, l, c);
+  },
+  render(g, caret, col /*, full */) {
+    const t0 = performance.now(), v = g.view;
+    const did = Ed.commit(g);
+    g.lpLines = v.cm.state.doc.lines;
+    v.note = typeof curOf === "function" ? curOf(g) : null;
+    if (caret != null && caret >= 0) Ed.place(g, caret, col || 0);
+    if (typeof perf !== "undefined" && perf.mark)
+      perf.mark("ed_patch", t0, { lines: g.lpLines, patched: did ? 1 : 0, full: false });
+    return Promise.resolve();
+  },
+  patchRow() {},                                       // CM6 redraws what changed
+  replace(g, s, text, kind) {                          // splice [a,b) with `text`
+    const cm = g.view.cm, a = Ed.off(g, s.a.l, s.a.c), b = Ed.off(g, s.b.l, s.b.c);
+    const ins = String(text == null ? "" : text).replace(/\r\n?/g, "\n");
+    if (typeof scLive === "function" && scLive(g)) scShift(g, a, b, ins.length);
+    kind = kind || "type"; g.view._snap = null;
+    cm.dispatch({ changes: { from: a, to: b, insert: ins }, selection: { anchor: a + ins.length },
+                  scrollIntoView: true,
+                  annotations: kind === "type" ? [CMs.Transaction.userEvent.of("input.type")]
+                    : [CMc.isolateHistory.of("full"), CMs.Transaction.userEvent.of("os." + kind)] });
+  },
+  slice(g, s) { return g.view.cm.state.sliceDoc(Ed.off(g, s.a.l, s.a.c), Ed.off(g, s.b.l, s.b.c)); },
+  /* ---------- selection, in model coords {l, c} ---------- */
+  sel(g) {
+    const cm = Ed.cm(g); if (!cm) return null;
+    const r = cm.state.selection.main, a = Ed.lc(g, r.from), b = Ed.lc(g, r.to);
+    return { a, b, empty: r.empty };
+  },
+  caret(g) { const s = Ed.sel(g); return s ? s.b : null; },
+  caretLC(g) { const c = Ed.caret(g) || { l: 0, c: 0 }; return [c.l, c.c]; },
+  focusPos(g) { const cm = Ed.cm(g); return cm ? Ed.lc(g, cm.state.selection.main.head) : null; },
+  place(g, l, c, focus) {                              // caret to (line,col); never scrolls (R17)
+    const cm = Ed.cm(g); if (!cm) return;
+    cm.dispatch({ selection: { anchor: Ed.off(g, l, c) } });
+    if (focus !== false && !cm.hasFocus) cm.focus();
+    Ed.mark(g, Ed.focusPos(g).l);
+  },
+  extendTo(g, l, c) {
+    const cm = Ed.cm(g); if (!cm) return;
+    cm.dispatch({ selection: { anchor: cm.state.selection.main.anchor, head: Ed.off(g, l, c) } });
+    Ed.mark(g, l);
+  },
+  selectAll(g) {
+    const cm = Ed.cm(g); if (!cm) return;
+    cm.dispatch({ selection: { anchor: 0, head: cm.state.doc.length } });
+    Ed.census();
+  },
+  undo(g) { const cm = Ed.cm(g); if (cm) CMc.undo(cm); },
+  redo(g) { const cm = Ed.cm(g); if (cm) CMc.redo(cm); },
+  focus(g) { const cm = Ed.cm(g); if (cm) cm.focus(); },
+  pos(g, node, off) {                                  // DOM position -> {l, c}
+    const cm = Ed.cm(g); if (!cm || !node || !cm.contentDOM.contains(node)) return null;
+    try { return Ed.lc(g, cm.posAtDOM(node, off)); } catch (_) { return null; }
+  },
+  rowOf(node) {
+    const e = node && (node.nodeType === 3 ? node.parentElement : node);
+    return e && e.closest ? e.closest(".cm-line") : null;
+  },
+  rowAt(g, l) {                                        // the rendered line l (null off the viewport)
+    const cm = Ed.cm(g); if (!cm) return null;
+    const d = cm.state.doc; if (l < 0 || l >= d.lines) return null;
+    const from = d.line(l + 1).from, vp = cm.viewport;
+    if (from < vp.from || from > vp.to) return null;
+    try { const { node } = cm.domAtPos(from); return Ed.rowOf(node); } catch (_) { return null; }
+  },
+  rows(g) { const cm = Ed.cm(g); return cm ? cm.contentDOM.querySelectorAll(".cm-line") : []; },
+  wake(g, l) { return Ed.rowAt(g, l); },
+  wakeView() {},                                       // CM6 renders its own viewport
+  reveal() {},                                         // LP reveal = decorations (selection-driven)
+  /* ---------- census readers on CM6 geometry ---------- */
+  rvTok(g) {
+    if (!g.lp) return "";
+    if (g.lp.classList.contains("src")) return " [rv:src]";
+    return " [rv:" + ((g.lp._rvs && g.lp._rvs.length) ? g.lp._rvs.join(",") : "-") + "]";
+  },
+  /* ---------- wiring ---------- */
+  G(v) { const p = v.cm && v.cm.dom.closest(".pane"); return p && p._g ? p._g : v.g; },
+  mount(v) {
+    const G = () => Ed.G(v);
+    v._ext = [
+      CMc.history({ newGroupDelay: Ed.UNDO_IDLE_MS }),
+      // R17.8: only an uninterrupted TYPING burst coalesces; every other edit
+      // kind (CM6's own paste/drop/cut included) is its own undo step
+      CMs.EditorState.transactionExtender.of(tr => tr.docChanged && !tr.isUserEvent("input.type")
+        && !tr.isUserEvent("undo") && !tr.isUserEvent("redo") && tr.annotation(CMc.isolateHistory) == null
+        ? { annotations: CMc.isolateHistory.of("full") } : null),
+      CMv.EditorView.domEventHandlers({
+        keydown: (e) => { Ed.onKey(G(), e); return e.defaultPrevented; },
+        beforeinput: (e) => {
+          const g = G();
+          if (g && !v._sp && !e.isComposing && typeof otel !== "undefined" && otel.begin)
+            v._sp = otel.begin("key_to_paint", { key: e.inputType, note_lines: g.lpLines || 0 });
+          return false;
+        },
+        blur: () => { if (typeof hideAc === "function") setTimeout(hideAc, 100); return false; },
+      }),
+      CMv.EditorView.lineWrapping,
+      CMv.EditorView.contentAttributes.of({ spellcheck: "false", autocorrect: "off", autocapitalize: "off" }),
+      CMv.EditorView.theme({ "&.cm-focused": { outline: "none" }, ".cm-scroller": { fontFamily: "inherit", lineHeight: "inherit", overflow: "visible" },
+                             ".cm-content": { padding: "0" }, ".cm-line": { padding: "0" } }),
+      CMv.EditorView.updateListener.of(u => Ed.onUpdate(G(), v, u)),
+      Ed.lpExt ? Ed.lpExt() : [],
+    ];
+    const cm = new CMv.EditorView({ state: CMs.EditorState.create({ doc: (v.lines || [""]).join("\n"), extensions: v._ext }) });
+    const lp = v.lp;
+    v.cm = cm; v._Ld = null;
+    lp.textContent = ""; lp.appendChild(cm.dom); lp._cm = cm;
+    // g.lp.focus() (tab switch, palette close, title edit) = focus the editor
+    lp.focus = () => { if (!cm.hasFocus) cm.focus(); };
+    return lp;
+  },
+  onUpdate(g, v, u) {
+    if (!g || g.view !== v) { if (u.docChanged && v.editor) v.editor.value = u.state.doc.toString(); return; }
+    if (u.docChanged) {
+      g.lpLines = u.state.doc.lines;
+      Ed.sync(g);
+      if (typeof scheduleSave === "function") scheduleSave(g);
+      if (typeof showAc === "function") showAc(g);
+      if (v._sp) { const sp = v._sp; v._sp = null; if (otel.paint) otel.paint(sp); }
+    }
+    if (u.selectionSet || u.docChanged) { const p = Ed.focusPos(g); Ed.mark(g, p ? p.l : -1); }
+  },
+  /* keys CM6 does not own: Enter (list continuation), Backspace/Delete (model
+     deletes), Tab, Home/End, raw-column arrows, undo/redo, select-all — the
+     R17 semantics, now on the CM6 selection */
+  onKey(g, e) {
+    if (!g || e.isComposing) return;
+    if (typeof acKeydown === "function") { acKeydown(g, e); if (e.defaultPrevented) return; }
+    const s = Ed.sel(g); if (!s) return;
+    const mod = e.ctrlKey || e.metaKey;
+    if (e.key === "Enter" && !mod && !e.altKey) {
+      e.preventDefault();
+      if (e.shiftKey) Ed.softBreak(g, s); else Ed.enter(g, s);
+      return;
+    }
+    if ((e.key === "Backspace" || e.key === "Delete") && !e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      return Ed.del(g, s, e.key === "Delete", mod);
+    }
+    if (e.key === "Tab" || e.code === "Tab") { e.preventDefault(); return Ed.indent(g, s, e.shiftKey); }
+    if (e.key === "Enter" && mod) { e.preventDefault(); return; }
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (k === "a" && mod) { e.preventDefault(); return Ed.selectAll(g); }
+    if (k === "z" && mod) { e.preventDefault(); return e.shiftKey ? Ed.redo(g) : Ed.undo(g); }
+    if (k === "y" && mod) { e.preventDefault(); return Ed.redo(g); }
+    if (e.key === "Home" || e.key === "End" || e.key === "ArrowLeft" || e.key === "ArrowRight") Ed.cmStart();
+    if (e.key === "Home" || e.key === "End") {
+      e.preventDefault();
+      const f = Ed.focusPos(g) || s.b, h = Ed.homeCol(g, f.l);
+      const c = e.key === "End" ? Ed.lines(g)[f.l].length : (f.c === h ? 0 : h);
+      if (e.shiftKey) Ed.extendTo(g, f.l, c); else Ed.place(g, f.l, c);
+      return Ed.cmEnd(g);
+    }
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      if (mod || e.altKey) { Ed.cmT0 = -1; return; }
+      const back = e.key === "ArrowLeft";
+      if (!e.shiftKey && !s.empty) { e.preventDefault(); const p = back ? s.a : s.b; Ed.place(g, p.l, p.c); return Ed.cmEnd(g); }
+      const f = (e.shiftKey && Ed.focusPos(g)) || (back ? s.a : s.b);
+      const n = Ed.step(g, f.l, f.c, back);
+      if (!n) { Ed.cmT0 = -1; return; }
+      e.preventDefault();
+      if (e.shiftKey) Ed.extendTo(g, n.l, n.c); else Ed.place(g, n.l, n.c);
+      return Ed.cmEnd(g);
+    }
+    Ed.cmT0 = -1;
+  },
+});
+/* ---------- census producers on CM6 geometry (same token grammar) ---------- */
+// the client box of source line l: the rendered .cm-line, or the height map's
+// block for a line outside the viewport
+Ed.lineBox = function (g, l) {
+  const cm = Ed.cm(g), row = Ed.rowAt(g, l);
+  if (row) return row.getBoundingClientRect();
+  const b = cm.lineBlockAt(cm.state.doc.line(l + 1).from), c = cm.contentDOM.getBoundingClientRect();
+  const top = cm.documentTop + b.top;
+  return { top, bottom: top + b.height, height: b.height, left: c.left, right: c.right, width: c.width };
+};
+Ed.geom = function (g) {
+  const cm = Ed.cm(g);
+  if (!cm || !g.lp || !g.lp.isConnected) return "";
+  const n = cm.state.doc.lines;
+  if (n > 40) return "";
+  const b = cm.contentDOM.getBoundingClientRect();   // the text column
+  let ys = "", xs = "", cb = "";
+  const r = document.createRange();
+  for (let i = 0; i < n; i++) {
+    const q = Ed.lineBox(g, i), row = Ed.rowAt(g, i);
+    ys += (i ? "," : "") + Math.round(q.top + q.height / 2);
+    const box = row && row.querySelector("input.tbox");
+    if (box) {
+      const bb = box.getBoundingClientRect();
+      if (bb.width) cb += (cb ? "," : "") + i + "@" + Math.round(bb.left + bb.width / 2);
+    }
+    const r0 = row ? Ed.firstRect(row, r) : null;
+    xs += (i ? "," : "") + Math.round(r0 ? r0.left : q.left);
+  }
+  return " [edx:" + Math.round(b.left) + "] [erx:" + xs + "] [ery:" + ys + "]"
+    + (cb ? " [ecb:" + cb + "]" : "");
+};
+Ed.caretXY = function (g) {               // caret rect relative to the pane box
+  const cm = Ed.cm(g), pr = g.pane.getBoundingClientRect();
+  const c = cm && cm.coordsAtPos(cm.state.selection.main.head);
+  return c ? [c.left - pr.left, c.bottom - pr.top] : [16, 16];
+};
+Ed.crtTok = function () {
+  const g = typeof fg === "function" ? fg() : null, lp = g && g.lp, cm = Ed.cm(g);
+  if (!lp || !cm || !lp.isConnected || !lp.getClientRects().length) return "";
+  const R = Math.round, s = window.getSelection(), cs = getComputedStyle(lp), b = lp.getBoundingClientRect();
+  const ox = R(b.left + lp.clientLeft + parseFloat(cs.paddingLeft)), oy = R(b.top + lp.clientTop + parseFloat(cs.paddingTop) - lp.scrollTop);
+  let k = "none", x = 0, y = 0, h = 0, lc = "-";
+  if (s && s.rangeCount && s.focusNode) {
+    const n = s.focusNode;
+    if (!lp.contains(n)) k = "out";
+    else {
+      k = n === lp || n === cm.contentDOM || n === cm.dom ? "lp"
+        : n.nodeType === 3 ? (n.parentElement && n.parentElement.getClientRects().length ? "txt" : "hid")
+        : n.nodeName === "BR" ? "br" : n.classList && n.classList.contains("cm-line") ? "row" : "el";
+      const r = document.createRange();
+      try { r.setStart(n, s.focusOffset); r.collapse(true); } catch (_) { /* a stale offset: no rect */ }
+      const q = r.getClientRects(), c = q.length ? q[0] : r.getBoundingClientRect();
+      x = R(c.left); y = R(c.top); h = R(c.height);
+      const p = Ed.pos(g, n, s.focusOffset);
+      if (p) lc = p.l + "." + p.c;
+    }
+  }
+  const r0 = Ed.rowAt(g, 0), cb = r0 ? r0.getBoundingClientRect() : null;
+  const t0 = r0 ? Ed.firstRect(r0, document.createRange()) : null;
+  return " [crt:" + k + "|" + x + "," + y + "," + h + "|lp=" + ox + "," + oy
+    + "|col=" + (cb ? R(cb.left) + "," + R(cb.right) : "-")
+    + "|t0=" + (t0 ? R(t0.left) + "," + R(t0.top) : cb ? R(cb.left) + "," + R(cb.top) : "-")
+    + "|ae=" + (cm.hasFocus ? 1 : 0) + "|" + lc + "]";
+};

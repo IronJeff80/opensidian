@@ -2330,8 +2330,8 @@ function mkView(g) {
   const pv = document.createElement("div"); pv.className = "preview";
   lp.classList.toggle("is-readable-line-width", rlwOn); pv.classList.toggle("is-readable-line-width", rlwOn);   // minimalmargin
   v.editor = ed; v.lp = lp; v.preview = pv;
-  v.lines = [""];                                 // R17: the MODEL (source of truth)
-  Ed.mount(v);                                    // R17: lp is the contenteditable view
+  v.lines = [""];                                 // the seed doc (CM6 state.doc is the model)
+  Ed.mount(v);                                    // cm6-editor: a CM6 EditorView inside lp (the scroller)
   // R17: click below the last row (empty pane space) = caret at the end of
   // the note, like Obsidian; rows themselves get the native caret placement
   lp.addEventListener("mousedown", e => {
