@@ -2152,10 +2152,14 @@ Object.assign(Ed, {
   text(g) { const cm = Ed.cm(g); return cm ? cm.state.doc.toString() : Ed.lines(g).join("\n"); },
   sync(g) { g.editor.value = Ed.text(g); },            // persistence bridge only
   off(g, l, c) {                                       // (line,col) -> doc offset, clamped
+    if (!Ed.cm(g)) { const L = Ed.lines(g), n = Math.max(0, Math.min(l, L.length - 1)); let o = 0;   // a cm-less model (selfTest fixtures)
+      for (let i = 0; i < n; i++) o += L[i].length + 1; return o + Math.max(0, Math.min(c, L[n].length)); }
     const d = g.view.cm.state.doc, n = Math.max(1, Math.min(l + 1, d.lines)), ln = d.line(n);
     return ln.from + Math.max(0, Math.min(c, ln.length));
   },
-  lc(g, o) { const ln = g.view.cm.state.doc.lineAt(o); return { l: ln.number - 1, c: o - ln.from }; },
+  lc(g, o) {
+    if (!Ed.cm(g)) { const L = Ed.lines(g); let l = 0; while (l < L.length - 1 && o > L[l].length) { o -= L[l].length + 1; l++; } return { l, c: Math.min(o, L[l].length) }; }
+    const ln = g.view.cm.state.doc.lineAt(o); return { l: ln.number - 1, c: o - ln.from }; },
   offOf(g, l, c) { return Ed.off(g, l, c); },
   offsetOf(g, p) { return Ed.off(g, p.l, p.c); },
   placeOffset(g, o) { const p = Ed.lc(g, Math.max(0, Math.min(o, g.view.cm.state.doc.length))); Ed.place(g, p.l, p.c); },
@@ -2202,6 +2206,13 @@ Object.assign(Ed, {
   },
   patchRow() {},                                       // CM6 redraws what changed
   replace(g, s, text, kind) {                          // splice [a,b) with `text`
+    if (!Ed.cm(g)) {                                   // a cm-less model (selfTest fixtures): splice the array
+      const L = Ed.lines(g), A = s.a, B = s.b, ins = String(text == null ? "" : text).replace(/\r\n?/g, "\n").split("\n");
+      const head = L[A.l].slice(0, A.c), tail = (L[B.l] || "").slice(B.c);
+      L.splice(A.l, B.l - A.l + 1, ...(ins.length === 1 ? [head + ins[0] + tail] : [head + ins[0], ...ins.slice(1, -1), ins[ins.length - 1] + tail]));
+      Ed.snap(g, kind || "type");
+      return Ed.after(g, A.l + ins.length - 1, ins.length === 1 ? A.c + ins[0].length : ins[ins.length - 1].length);
+    }
     const cm = g.view.cm, a = Ed.off(g, s.a.l, s.a.c), b = Ed.off(g, s.b.l, s.b.c);
     const ins = String(text == null ? "" : text).replace(/\r\n?/g, "\n");
     if (typeof scLive === "function" && scLive(g)) scShift(g, a, b, ins.length);
@@ -2211,7 +2222,7 @@ Object.assign(Ed, {
                   annotations: kind === "type" ? [CMs.Transaction.userEvent.of("input.type")]
                     : [CMc.isolateHistory.of("full"), CMs.Transaction.userEvent.of("os." + kind)] });
   },
-  slice(g, s) { return g.view.cm.state.sliceDoc(Ed.off(g, s.a.l, s.a.c), Ed.off(g, s.b.l, s.b.c)); },
+  slice(g, s) { if (!Ed.cm(g)) return Ed.text(g).slice(Ed.off(g, s.a.l, s.a.c), Ed.off(g, s.b.l, s.b.c)); return g.view.cm.state.sliceDoc(Ed.off(g, s.a.l, s.a.c), Ed.off(g, s.b.l, s.b.c)); },
   /* ---------- selection, in model coords {l, c} ---------- */
   sel(g) {
     const cm = Ed.cm(g); if (!cm) return null;
