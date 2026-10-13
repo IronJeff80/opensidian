@@ -10172,6 +10172,7 @@ function setTok() {
          snavlTok() +
          " [spane:" + sPane + "/" + sRowsShown + "/" + sEnabledShown + "]" +
          svtTok() + ssnTok() + slbTok() + sqfTok() + fontSetTok() +
+         (window.__osPluginSettings ? __osPluginSettings.tok() : "") +
          (sfpMs >= 0 ? " [sfp:" + sfpMs + "/" + sfpMax + "/" +
                        (Math.round(sfpSum / sfpN * 100) / 100) + "/" + sfpN + "]" : "") +
          (sfpW >= 0 ? " [sfpw:" + sfpW + "/" + sfpWMax + "]" : "");
@@ -10189,6 +10190,7 @@ async function openSettings() {
 }
 function closeSettings() {
   settingsOpen = false; hkRec = null; fontPage = null;
+  if (window.__osPluginSettings) __osPluginSettings.close();   // a plugin tab on screen gets its hide()
   /* THE PANE'S OWN MENU GOES WITH IT (goal/theme-1984). Appearance ▸ Themes
      opens a .ctxmenu anchored to a control INSIDE this modal; .ctxmenu is
      position:fixed at z-index 60, so a menu left open when the modal is hidden
@@ -10199,8 +10201,9 @@ function closeSettings() {
   $("settings").hidden = true;
   updateTitle();
 }
-/* the left nav, Obsidian's order and grouping (Options 1-7; the Core/Community plugins
-   entries and the Core plugins group are gone, goal/noplugins) — built ONCE from the model, never re-created on a tab
+/* the left nav, Obsidian's order and grouping (Options 1-7; the Core plugins entry and
+   group are gone, goal/noplugins; Community plugins + its per-plugin group come back from
+   ui/plugins/settings.js, plugin-loader) — built ONCE from the model, never re-created on a tab
    switch: selection is a class toggle, so clicking a nav entry costs one pane
    build and nothing else. */
 function buildSettingsNav() {
@@ -10221,11 +10224,13 @@ function buildSettingsNav() {
     d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); showSettingsPage(e.id); } };
     nav.appendChild(d);
   }
+  if (window.__osPluginSettings) __osPluginSettings.nav(nav);   // plugin-loader: Community plugins entry + its per-plugin group
   nav.dataset.built = "1";
 }
 /* `id` is a pane id from the model ("general", "hotkeys", ...);
    an Obsidian ENTRY NAME is accepted too, so older call sites keep working. */
 function showSettingsPage(id) {
+  if (window.__osPluginSettings && __osPluginSettings.show(id)) return;   // plugin-loader: "community" / "plg:<id>" panes (ui/plugins/settings.js)
   fontPage = null;                      // fontset: any pane switch leaves the font chooser
   const e = SMODEL.nav.find(n => n.id === id) || SMODEL.nav.find(n => n.entry === id);
   const pane = e ? e.id : "hotkeys";

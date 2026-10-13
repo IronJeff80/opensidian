@@ -1188,14 +1188,15 @@
     enablePlugin: id => enable(id), disablePlugin: id => disable(id),
     enablePluginAndSave: id => setEnabled(id, true), disablePluginAndSave: id => setEnabled(id, false),
   };
-  const setting = {   // Settings modal hook — main.js fills open/openTabById in item 6
+  const tabsChanged = () => { const s = window.__osPluginSettings; if (s) try { s.tabsChanged(); } catch (e) { console.error(e); } };
+  const setting = {   // Settings modal hook — ui/plugins/settings.js renders the tabs (item 6)
     activeTab: null, pluginTabs: [],
-    open() { if (typeof cmdSettings === "function") cmdSettings(); },
+    open() { if (typeof openSettings === "function" && typeof settingsOpen !== "undefined" && !settingsOpen) openSettings(); },
     close() { if (typeof closeSettings === "function") closeSettings(); },
     openTabById(id) { if (typeof openPluginSettingTab === "function") return openPluginSettingTab(id); setting.open(); },
     closeActiveTab() { if (setting.activeTab) { try { setting.activeTab.hide(); } catch (_) {} setting.activeTab = null; } },
-    addSettingTab(t) { setting.pluginTabs.push(t); },
-    removeSettingTab(t) { const i = setting.pluginTabs.indexOf(t); if (i >= 0) setting.pluginTabs.splice(i, 1); },
+    addSettingTab(t) { setting.pluginTabs.push(t); tabsChanged(); },
+    removeSettingTab(t) { const i = setting.pluginTabs.indexOf(t); if (i >= 0) { setting.pluginTabs.splice(i, 1); tabsChanged(); } },
   };
   const app = {
     appId: "",
@@ -1401,6 +1402,7 @@
   async function setEnabled(id, on) {
     await be.set({ id, on: !!on });
     await refresh();
+    if (!trusted) { touch(); return { ok: true, id }; }   // restricted: the choice is saved, nothing runs
     return on ? enable(id) : disable(id);
   }
   async function setRestricted(restricted) {
