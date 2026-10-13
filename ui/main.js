@@ -7,7 +7,8 @@
 /* otel (R18): every invoke carries the innermost open UI action span as the
    `otel` arg, so backend spans nest under it (commands without the param
    ignore it). ui/otel.js owns ids, buffering and the 250ms batched IPC. */
-const inv = (c, a) => { const x = otel.ctx(); return window.__TAURI__.core.invoke(c, x ? Object.assign({ otel: x }, a) : a); };
+const TAURI = window.__TAURI__;   // plugin-loader item 7: captured at load; ui/plugins/loader.js deletes window.__TAURI__ before any plugin runs (security.md)
+const inv = (c, a) => { const x = otel.ctx(); return TAURI.core.invoke(c, x ? Object.assign({ otel: x }, a) : a); };
 /* perf-spans shim over otel: mark(name, t0, extra) = a span that started at
    t0 and ends now; push(name, ms, extra) = an already-measured span (graph
    frames); both no-ops once the backend said telemetry is off. */
@@ -3864,7 +3865,7 @@ function pushTitle(t) {
     if (tWant !== cur) pushTitle(tWant);
   };
   try {
-    window.__TAURI__.window.getCurrentWindow().setTitle(cur).catch(() => {}).then(fin);
+    TAURI.window.getCurrentWindow().setTitle(cur).catch(() => {}).then(fin);
   } catch (e) { fin(); }
   setTimeout(fin, 500);
 }
@@ -7781,7 +7782,7 @@ const CMDS = [
      stable id for "a directory that may not exist in the next vault". The mode
      toggle below IS a registry row and keeps its binding. */
   ["workspace:close",          "Close current tab",                   ["ctrl+w"],               cmdCloseTab],
-  ["window:close",             "Close window",                        ["ctrl+shift+w"],         () => window.__TAURI__.window.getCurrentWindow().close()],
+  ["window:close",             "Close window",                        ["ctrl+shift+w"],         () => TAURI.window.getCurrentWindow().close()],
   ["command-palette:open",     "Open command palette",                ["ctrl+p"],               () => cmdPalette()],
   ["file-explorer:new-file",   "Create new note",                     ["ctrl+n"],               cmdNewNote],
   ["file-explorer:new-file-in-new-pane", "Create note to the right",  ["ctrl+shift+n"],         async () => { await splitWith(fg(), "row", null); await cmdNewNote(); }],
@@ -9949,11 +9950,11 @@ async function onVaultChanged(c) {
   if (rightOpen) rSchedule();
   updateTitle();
 }
-window.__TAURI__.event.listen("vault-changed", e => onVaultChanged(e.payload));
-window.__TAURI__.event.listen("vault-css-changed", e => onVaultCssChanged(e.payload));  // themefs item 6: hot reload
+TAURI.event.listen("vault-changed", e => onVaultChanged(e.payload));
+TAURI.event.listen("vault-css-changed", e => onVaultCssChanged(e.payload));  // themefs item 6: hot reload
 // R31.1: a real OS drop arrives here, from Rust, never from a DOM drop event.
 // osdrop: the payload is [paths, x, y] (main.rs R31.1), x/y physical px in the webview
-window.__TAURI__.event.listen("drop-files", e => { const p = e.payload || []; attachDrop(p[0] || [], { x: p[1], y: p[2] }); });
+TAURI.event.listen("drop-files", e => { const p = e.payload || []; attachDrop(p[0] || [], { x: p[1], y: p[2] }); });
 
 $("vswitch").onclick = showPicker;
 

@@ -27,7 +27,9 @@
 
    Privileges: the Tauri invoke handle is captured HERE, at boot, into this
    closure. Only host.grant() (one call, made by api.js before any plugin can
-   load) receives it; see /workspace/goal/plugin-loader/security.md. */
+   load) receives it. Before the first plugin script is requested, seal() deletes
+   window.__TAURI__ and narrows window.__osPluginHost to {censusTok}; see
+   /workspace/goal/plugin-loader/security.md. */
 (function () {
   "use strict";
   const T = window.__TAURI__;
@@ -99,6 +101,29 @@
     },
   });
 
+  /* item 7, the seal: runs ONCE, right before the first plugin script is
+     requested (evaluate). Everything the app needs was captured at load time
+     (main.js TAURI/inv, otel.js, this closure, api.js's grant, settings.js's
+     host), so from here on:
+       - window.__TAURI__ is deleted (withGlobalTauri assigns it plainly; if a
+         future Tauri makes it non-configurable we overwrite it, and the census
+         says so),
+       - window.__osPluginHost becomes a frozen facade with censusTok only: no
+         grant, no setRestricted/setEnabled/enable/evaluate/status for plugin code.
+     This is defence in depth, not a sandbox: plugins share the page's realm
+     (main.js top-level bindings, __TAURI_INTERNALS__). See security.md. */
+  let sealed = false;
+  function seal() {
+    if (sealed) return;
+    sealed = true;
+    try { delete window.__TAURI__; } catch (_) {}
+    if ("__TAURI__" in window) { try { Object.defineProperty(window, "__TAURI__", { value: undefined, writable: false, configurable: false }); } catch (_) {} }
+    const facade = Object.freeze({ censusTok: () => (host.censusTok ? host.censusTok() : "") + sealTok() });
+    try { Object.defineProperty(window, "__osPluginHost", { value: facade, configurable: false, writable: false, enumerable: false }); } catch (e) { console.error("[plugin] seal host:", e); }
+  }
+  // [pseal:<__TAURI__ still visible 0|1>,<public host keys>] — after the seal only
+  const sealTok = () => " [pseal:" + (window.__TAURI__ ? 1 : 0) + "," + Object.keys(window.__osPluginHost || {}).length + "]";
+
   function fail(id, err) {
     const msg = (err && err.message) || String(err);
     status.set(id, { state: "failed", error: msg });
@@ -111,6 +136,7 @@
   function evaluate(id) {
     if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/.test(id)) return Promise.resolve(fail(id, new Error("bad plugin id")));
     if (pending.has(id)) return Promise.resolve(fail(id, new Error("already loading")));
+    seal();   // item 7: no plugin script is ever requested while __TAURI__ / the full host are public
     status.set(id, { state: "loading" });
     return new Promise(resolve => {
       const s = document.createElement("script");
@@ -158,5 +184,6 @@
     },
     snapshot: () => [...status].map(([id, s]) => id + "=" + s.state).join(","),
   };
-  Object.defineProperty(window, "__osPluginHost", { value: host, configurable: false, writable: false, enumerable: false });
+  // configurable until seal() swaps in the public facade (item 7)
+  Object.defineProperty(window, "__osPluginHost", { value: host, configurable: true, writable: false, enumerable: false });
 })();

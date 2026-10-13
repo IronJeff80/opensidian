@@ -31,6 +31,7 @@
          otel.flush()                          -> ship the buffer now
          otel.now()                            -> performance.now() */
 (function () {
+  const TAURI = window.__TAURI__;   // plugin-loader item 7: captured at load; the loader deletes the global before any plugin runs
   const hex = (n, w) => Math.floor(n).toString(16).padStart(w, "0").slice(-w);
   let seq = 0;
   const rnd = () => hex(Math.random() * 0x100000000, 8);
@@ -91,10 +92,10 @@
     },
     flush() {
       if (timer) { clearTimeout(timer); timer = null; }
-      if (!buf.length || on === false || flushing || !window.__TAURI__) return;
+      if (!buf.length || on === false || flushing || !TAURI) return;
       const spans = buf.splice(0, buf.length);
       flushing = true;
-      window.__TAURI__.core.invoke("log_spans", { spans })
+      TAURI.core.invoke("log_spans", { spans })
         .then(en => { on = !!en; if (!on) buf.length = 0; })
         .catch(() => {})
         .finally(() => { flushing = false; if (buf.length) arm(); });
