@@ -8654,34 +8654,6 @@ const graphRendererPref = () => graphPrefP || (graphPrefP = inv("graph_renderer_
   const r = (p && p.renderer) || localStorage.getItem("opensidian.graphRenderer");
   return { renderer: r === "gl" || r === "2d" ? r : null, loseCtx: !!(p && p.lose_ctx) };
 }));
-/* cm6-editor (graphperf tabsw_note_ms A=7.25 B=11.0): a graph tab used to display:none the note
-   view it covers, so the switch back made WebKit lay out the whole CM6 view again (prof v3: a
-   forced layout of 1-9 ms at the first geometry read of the switch) and CM6 re-measure it. The
-   view the graph covers now stays LAID OUT the way modeswitch opt10 keeps a view: in flow, at
-   its own width, moved off the pane (.vkeep transform: not painted, not hit), while the canvas
-   goes out of flow over the same box (.content.gkeep > .graph) — the canvas has no children, so
-   that containing-block change is free, and the note view never changes its box. A view that
-   is already kept by a mode switch (.vk2) or not shown falls back to display:none. */
-function gKeep(g) {
-  const C = g.content;
-  if (C.classList.contains("gkeep")) return;
-  const el = !C.classList.contains("vk2") && [g.lp, g.preview].find(e => e.style.display !== "none");
-  for (const e of [g.lp, g.preview]) if (e !== el) e.style.display = "none";
-  if (!el) return;
-  el.classList.add("vkeep"); C.classList.add("gkeep");
-  const ae = document.activeElement; if (ae && el.contains(ae) && ae.blur) ae.blur();
-  if (!el._vkFocus) {
-    el._vkFocus = true;
-    el.addEventListener("focusin", e => { if (el.classList.contains("vkeep") && e.target.blur) e.target.blur(); });
-  }
-}
-function gUnkeep(g) {              // leaving the graph: a kept view that is not g's view now goes display:none
-  const C = g.content;
-  if (!C.classList.contains("gkeep")) return;
-  C.classList.remove("gkeep");
-  for (const el of C.querySelectorAll(":scope > .vkeep"))
-    if (el !== g.lp && el !== g.preview) { el.classList.remove("vkeep"); el.style.display = "none"; }
-}
 function showEditor(g) {
   g.graphOn = false; g.graphRefresh = null; g.graphRedraw = null; g.graphAnimate = null; g.graphAnimState = null; g.graphRc = null; cancelAnimationFrame(g.sim); g.graphRenderer = null;
   if (g.ro) { g.ro.disconnect(); g.ro = null; }
@@ -8689,7 +8661,6 @@ function showEditor(g) {
   perf.flush();                    // ship buffered graph_frame samples of the closed sim
   g.graph.hidden = true; if (g.glcv) g.glcv.hidden = true;
   gcUnbind(g); g.gfF = null; g.gfApply = null;   // the graph-controls card belongs to a graph view
-  gUnkeep(g);
   applyMode(g);
 }
 $("graphbtn").onclick = cmdGlobalGraph;
@@ -8715,8 +8686,8 @@ async function startGraph(g, cfg) {
   const sgMs = perf.now() - openT0;     // graphperf: click -> startGraph (0 unless a click time was handed over); v0.6.1 started the lg settle clock HERE, so [sg] lets the A/B compare like with like
   hideAc();
   g.status.hidden = true;
-  g.editor.style.display = "none";
-  gKeep(g);                        // cm6-editor (graphperf tabsw_note): the note view under the graph stays laid out
+  g.editor.style.display = "none"; g.preview.style.display = "none";
+  g.lp.style.display = "none";
   const cv = g.graph; cv.hidden = false;
   cv.width = cv.clientWidth; cv.height = cv.clientHeight;
   const fetchP = cfg.fetch(), prefP = graphRendererPref();   // backend works while the renderer comes up

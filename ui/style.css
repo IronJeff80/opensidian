@@ -658,9 +658,6 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
    is neither painted nor hit; its layout and scroll offset stay. */
 .content.vk2 > .lp, .content.vk2 > .preview { position: absolute; inset: 0 }
 .content > .vkeep { transform: translateX(-200vw) }
-/* cm6-editor (graphperf tabsw_note): while a graph covers a kept note view (ui/main.js gKeep) the
-   canvas is the one out of flow, over the same box it filled as the sole flex item */
-.content.gkeep > .graph { position: absolute; inset: 0 }
 /* one rule covers both wikilink states: the unresolved anchor carries
    `class="wiki wiki-unresolved"` (main.rs:1336-1343), never wiki-unresolved
    alone — :733 adds only colour + italic */
