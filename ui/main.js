@@ -623,7 +623,7 @@ async function tocGo(line) {               // scroll + focus the heading at `lin
   if (fg() !== g) focusGroup(g);           // Obsidian 1.13.7: the active leaf moves to the note (docs/tocjump recon, shots 06,16)
   if (isLp(t.mode)) {                     // R12: source mode = lp with reveal
     await lpMove(g, line, 0, "heading");   // raw row = the heading, caret on it
-    Ed.scrollToLine(g, line);              // the heading line at the top
+    if (!Ed.revealTop(g, line)) Ed.scrollToLine(g, line);   // the heading line at the top (CM6 scroll effect)
   } else {
     const k = tocHeads.findIndex(h => h.line === line);
     const el = g.preview.querySelectorAll("h1,h2,h3,h4,h5,h6")[k];
@@ -3438,7 +3438,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   // byte (getAttribute, not .src: the property is absolutised and would hide a disagreement).
   if (md && ft && !ft.kind && fg()) {
     const rv = ft.mode === "reading" ? fg().preview : fg().lp;
-    const ims = rv ? [...rv.querySelectorAll("img:not(.pdf-page)")] : [];      // pdfembed: frame pages are [pf:]'s
+    const ims = rv ? [...rv.querySelectorAll("img:not(.pdf-page):not(.cm-widgetBuffer)")] : [];  // pdfembed: frame pages are [pf:]'s; CM6 caret buffers are not images
     const nmiss = rv ? rv.querySelectorAll(".imgmiss:not(.pdfmiss)").length : 0;
     if (ims.length || nmiss) {
       // the title only MOVES in updateTitle (see noteErr's note), and an image decodes
@@ -5524,10 +5524,10 @@ async function navAnchor(g, anchor) {
       if (!row) return false;
       const rt = row.getBoundingClientRect().top - g.lp.getBoundingClientRect().top - g.lp.clientTop + g.lp.scrollTop;
       g.lp.scrollTop = rt - (g.lp.clientHeight - row.offsetHeight) / 2;
-      flash(row);
+      if (!Ed.flashLine(g, line)) flash(row);
       return true;
     };
-    if (!centre()) { Ed.scrollToLine(g, line); const cm = Ed.cm(g); if (cm) cm.requestMeasure({ key: "osNavAnchor", read: () => null, write: () => { centre(); } }); }
+    if (!centre() && !(Ed.revealAt(g, line, 0) && Ed.flashLine(g, line))) { Ed.scrollToLine(g, line); const cm = Ed.cm(g); if (cm) cm.requestMeasure({ key: "osNavAnchor", read: () => null, write: () => { centre(); } }); }
     if (t.mode === "source") await lpEdit(g, line, 0);  // R12: source puts the caret on the line
   } else {
     let el = null;

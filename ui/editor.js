@@ -1805,6 +1805,25 @@ Ed.revealAt = function (g, l, c) {
   cm.dispatch({ effects: CMv.EditorView.scrollIntoView(Math.min(ln.to, ln.from + Math.max(0, c || 0)), { y: "center" }) });
   return true;
 };
+/* put source line l at the scroller's top through CM6's own scrollIntoView effect
+   (y=start): like revealAt, the scroll happens inside CM6's measure loop, so the
+   redraw cannot put a bottom-clamped scrollTop back to 0 (tj [top:0|st:0]). */
+Ed.revealTop = function (g, l) {
+  const cm = Ed.cm(g); if (!cm || l == null) return false;
+  const d = cm.state.doc, ln = d.line(Math.min(d.lines, Math.max(1, Math.floor(l) + 1)));
+  cm.dispatch({ effects: CMv.EditorView.scrollIntoView(ln.from, { y: "start" }) });
+  return true;
+};
+/* flash source line l: a LINE DECORATION, because CM6 owns every .cm-line's class
+   attribute and wipes a class written on the element at its next redraw. */
+Ed.flashLine = function (g, l) {
+  const v = g && g.view; if (!v || !v.cm || !v._lpFx) return false;
+  const me = g._fl = { l, fade: false }, bump = () => { if (Ed.cm(g) === v.cm) v.cm.dispatch({ effects: v._lpFx.of(null) }); };
+  bump();
+  setTimeout(() => { if (g._fl === me) { me.fade = true; bump(); } }, 400);
+  setTimeout(() => { if (g._fl === me) { g._fl = null; bump(); } }, 2400);
+  return true;
+};
 /* ---------- LIVE PREVIEW = CM6 decorations ----------
    The R17 per-line renderer (Ed.row -> Ed.block/Ed.inline) stays the ONE
    markdown->class-vocabulary tokenizer; its detached row is read back as
@@ -1825,7 +1844,7 @@ Ed.lpParse = function (g, text) {
     for (const n of el.childNodes) {
       if (n.nodeType === 3) { c += n.nodeValue.length; continue; }
       if (n.nodeType !== 1) continue;
-      if (!n.textContent.length) { if (n.nodeName !== "BR") wid.push({ pos: c, k: wid.length }); continue; }
+      if (!n.textContent.length) { if (n.nodeName !== "BR") wid.push({ pos: c, k: wid.length, el: n }); continue; }
       const x = { s: c, e: c, el: n }; at.set(n, els.length); els.push(x);
       c = walk(n, c); x.e = c;
     }
@@ -1859,9 +1878,10 @@ Ed.lpExt = function (v, G) {
   const bust = CMs.StateEffect.define();
   v._lpFx = bust;
   class Leaf extends WidgetType {
-    constructor(t, k) { super(); this.t = t; this.k = k; }
-    eq(o) { return o.t === this.t && o.k === this.k; }
-    toDOM() { return Ed.lpLeaves(Ed.row(G(), this.t, 0))[this.k] || document.createElement("span"); }
+    constructor(t, k, el) { super(); this.t = t; this.k = k; this.el = el; }
+    eq(o) { return o.t === this.t && o.k === this.k && o.el === this.el; }
+    // the parsed leaf itself (cloned): re-rendering the row here could disagree with the parse
+    toDOM() { return this.el ? this.el.cloneNode(true) : document.createElement("span"); }
     ignoreEvent() { return true; }
   }
   const lineDeco = new Map();
@@ -1887,12 +1907,13 @@ Ed.lpExt = function (v, G) {
             labels.push((ln.number - 1) + "." + t.s + "-" + t.e + ":" + t.kind);
           }
         }
-        out.push(ld(P.cls + (ln.number === cur ? " cur" : "")).range(ln.from));
+        const fl = g && g._fl && g._fl.l === ln.number - 1 ? (g._fl.fade ? " navflash fade" : " navflash") : "";
+        out.push(ld(P.cls + (ln.number === cur ? " cur" : "") + fl).range(ln.from));
         for (let i = 0; i < P.els.length; i++) {
           const x = P.els[i];
           if (x.e > x.s) out.push((rv && rv.has(i) ? x.rv : x.d).range(ln.from + x.s, ln.from + x.e));
         }
-        for (const w of P.wid) out.push(Decoration.widget({ widget: new Leaf(ln.text, w.k), side: 1 }).range(ln.from + w.pos));
+        for (const w of P.wid) out.push(Decoration.widget({ widget: new Leaf(ln.text, w.k, w.el), side: 1 }).range(ln.from + w.pos));
       }
     }
     if (g && g.view === v && g.lp) {
