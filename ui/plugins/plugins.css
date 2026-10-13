@@ -1,0 +1,81 @@
+/* opensidian, a vault-compatible markdown notes app.
+   Copyright (C) 2026 Jendrik Poloczek
+   SPDX-License-Identifier: GPL-3.0-or-later
+   plugin-loader (recon M1): the surfaces the community plugin API creates —
+   Notice toasts, Modal / SuggestModal, Setting rows and controls, plugin ribbon
+   icons and status bar items, plugin menus. Obsidian's own class names (themes
+   and plugin styles.css target them); colours are theme tokens only, never
+   literals (same rule as scripts/lint-colors.sh). Nothing here matches an
+   element unless a plugin created it. */
+.notice-container { position: fixed; top: 38px; right: 12px; z-index: 80; display: flex;
+  flex-direction: column; align-items: flex-end; gap: 6px; pointer-events: none }
+.notice-container .notice { pointer-events: auto; max-width: 360px; padding: 10px 14px;
+  background: var(--bg-elevated); color: var(--text-chrome); border: 1px solid var(--border);
+  border-radius: 6px; box-shadow: 0 4px 14px var(--shadow-popover); font-size: 13px;
+  white-space: pre-wrap; cursor: pointer }
+
+.os-plugin-modal.modal-container { position: fixed; inset: 0; z-index: 70; display: flex;
+  align-items: flex-start; justify-content: center; padding-top: 12vh }
+.os-plugin-modal .modal-bg { position: absolute; inset: 0; background: var(--scrim) }
+.os-plugin-modal .modal { position: relative; min-width: 360px; max-width: min(640px, 92vw);
+  max-height: 76vh; overflow: auto; padding: 18px 20px; background: var(--bg-elevated);
+  color: var(--text-chrome); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 28px var(--shadow-popover) }
+.os-plugin-modal .modal-close-button { position: absolute; top: 8px; right: 10px; width: 20px;
+  height: 20px; cursor: pointer; color: var(--text-chrome-muted) }
+.os-plugin-modal .modal-close-button::before { content: "\2715"; font-size: 14px }
+.os-plugin-modal .modal-title { font-weight: 600; font-size: 15px; margin: 0 24px 10px 0 }
+.os-plugin-modal .modal-title:empty { display: none }
+.os-plugin-modal .modal.prompt { padding: 0; width: 560px }
+.os-plugin-modal .prompt-input { width: 100%; box-sizing: border-box; padding: 10px 14px; border: 0;
+  border-bottom: 1px solid var(--border); background: var(--bg-elevated); color: var(--text-chrome); font-size: 14px; outline: none }
+.os-plugin-modal .prompt-results { max-height: 50vh; overflow: auto; padding: 4px 0 }
+.os-plugin-modal .suggestion-item { padding: 6px 14px; cursor: pointer; font-size: 13px }
+.os-plugin-modal .suggestion-item.is-selected { background: var(--border) }
+.os-plugin-modal .suggestion-empty { padding: 8px 14px; color: var(--text-chrome-muted); font-size: 13px }
+.os-plugin-modal .suggestion-highlight { color: var(--text-accent); font-weight: 600 }
+.os-plugin-modal .prompt-instructions { display: flex; gap: 12px; padding: 6px 14px; font-size: 12px; color: var(--text-chrome-muted) }
+.os-plugin-modal .prompt-instructions:empty { display: none }
+.os-plugin-modal .prompt-instruction-command { font-weight: 600; margin-right: 4px }
+
+.setting-item { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border) }
+.setting-item:first-child { border-top: 0 }
+.setting-item-info { flex: 1 1 auto; min-width: 0 }
+.setting-item-name { font-size: 14px; color: var(--text-chrome) }
+.setting-item-description { font-size: 12px; color: var(--text-chrome-muted); margin-top: 2px }
+.setting-item-description:empty { display: none }
+.setting-item-control { flex: 0 0 auto; display: flex; align-items: center; gap: 8px }
+.setting-item-heading .setting-item-name { font-weight: 600 }
+.setting-item.is-disabled { opacity: .5; pointer-events: none }
+.setting-item-control input[type=text], .setting-item-control input[type=search],
+.setting-item-control textarea, .setting-item-control select.dropdown {
+  background: var(--bg-base); color: var(--text-chrome); border: 1px solid var(--border);
+  border-radius: 4px; padding: 4px 8px; font-size: 13px }
+.setting-item-control button, .os-plugin-modal button { background: var(--bg-surface); color: var(--text-chrome);
+  border: 1px solid var(--border); border-radius: 4px; padding: 4px 12px; font-size: 13px; cursor: pointer }
+.setting-item-control button.mod-cta, .os-plugin-modal button.mod-cta { background: var(--bg-button-primary); color: var(--text-on-accent) }
+.setting-item-control button.mod-warning, .os-plugin-modal button.mod-warning { color: var(--text-error) }
+.checkbox-container { position: relative; width: 34px; height: 18px; border-radius: 9px;
+  background: var(--border); cursor: pointer; flex: 0 0 auto }
+.checkbox-container::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px;
+  height: 14px; border-radius: 50%; background: var(--text-chrome-muted); transition: left .1s }
+.checkbox-container.is-enabled { background: var(--interactive-accent) }
+.checkbox-container.is-enabled::after { left: 18px; background: var(--text-on-accent) }
+.checkbox-container input { display: none }
+.checkbox-container.is-disabled { opacity: .5; pointer-events: none }
+.extra-setting-button, .clickable-icon { cursor: pointer; color: var(--text-chrome-muted) }
+.extra-setting-button svg, .setting-item-control button svg { width: 16px; height: 16px; vertical-align: middle }
+
+#ribbon .os-plugin-ribbon svg { width: 18px; height: 18px; display: block; margin: 0 auto }
+
+.os-plugin-statusbar { position: fixed; right: 0; bottom: 0; z-index: 30; display: flex; gap: 10px;
+  padding: 2px 10px; font-size: 12px; color: var(--text-chrome-muted); background: var(--bg-sidebar);
+  border-top: 1px solid var(--border); border-left: 1px solid var(--border); border-top-left-radius: 6px }
+.os-plugin-statusbar:empty { display: none }
+body.os-has-plugin-status #main .status { bottom: 30px }
+
+.os-plugin-menu .menu-item { display: flex; align-items: center; gap: 6px }
+.os-plugin-menu .menu-item-icon:empty { display: none }
+.os-plugin-menu .menu-item-icon svg { width: 14px; height: 14px; display: block }
+.os-plugin-menu .menu-item.is-label { cursor: default; color: var(--text-chrome-muted) }
+.os-plugin-menu .menu-item.mod-warning { color: var(--text-error) }

@@ -9807,6 +9807,9 @@ async function enterVault() {
   }
   perf.mark("boot", 0, { notes: names.length });   // perf: page start -> vault ready (first note rendered)
   switchReveal();   // item 14: a switch-started window shows itself only now, at the old window's rect
+  // plugin-loader: enabled community plugins load once the vault is on screen (after the boot
+  // mark), unawaited. Restricted mode (the default) = one plugins_state call, no plugin code.
+  if (window.__osPluginHost && __osPluginHost.boot) __osPluginHost.boot(vaultPath);
 }
 /* ---------- R11 external edits (backend watcher -> `vault-changed`) ---------- */
 // tab.base = the bytes we last loaded from / saved to disk. bufOf(g) = the
