@@ -11575,7 +11575,7 @@ function fTok(g) {
   let t = " [find:1] [fels:" + row.children.length + "]" +
           " [fvels:" + [...row.children].filter(c => !c.hidden).length + "]" +
           " [fbar:" + (fRead(g) ? "read" : "full") + "]" +
-          " [ffoc:" + (a === inp ? "q" : a === rin ? "r" : a === g.lp ? "lp" : "-") + "]" +
+          " [ffoc:" + (a === inp ? "q" : a === rin ? "r" : g.lp && (a === g.lp || g.lp.contains(a)) ? "lp" : "-") + "]" +
           " [fq:" + (q(inp.value) || "-") + "]" +
           " [frep:" + (st.rep && !rrow.hidden ? 1 : 0) + "]" +
           " [rels:" + rrow.children.length + "]" +

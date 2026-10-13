@@ -1563,8 +1563,10 @@ Object.assign(Ed, {
     cm.dispatch({ selection: { anchor: 0, head: cm.state.doc.length } });
     Ed.census();
   },
-  undo(g) { const cm = Ed.cm(g); if (cm) CMc.undo(cm); },
-  redo(g) { const cm = Ed.cm(g); if (cm) CMc.redo(cm); },
+  // R17 undo/redo re-rendered the caret into the note, which took the keyboard there
+  // (find bar Ctrl+Z hands focus back to the text, R26.20) — CM6 history does not focus
+  undo(g) { const cm = Ed.cm(g); if (cm) { CMc.undo(cm); if (!cm.hasFocus) cm.focus(); } },
+  redo(g) { const cm = Ed.cm(g); if (cm) { CMc.redo(cm); if (!cm.hasFocus) cm.focus(); } },
   focus(g) { const cm = Ed.cm(g); if (cm) cm.focus(); },
   pos(g, node, off) {                                  // DOM position -> {l, c}
     const cm = Ed.cm(g); if (!cm || !node || !cm.contentDOM.contains(node)) return null;
