@@ -153,8 +153,11 @@
       });
       // a script that 403s/404s fires onerror; one that loads but never defines
       // (syntax error, refused wrapper) fires onload with nothing pending resolved
-      s.onerror = () => fin(fail(id, new Error("main.js refused or missing (restricted mode, not enabled, or not installed)")));
-      s.onload = () => setTimeout(() => fin(fail(id, new Error("main.js did not define a plugin (syntax error?)"))), 0);
+      // fail() WRITES status, so it must only run when nothing settled first: an
+      // eager fin(fail(..)) after a factory that threw overwrote the real error
+      // (e.g. require("@codemirror/..")) with "did not define" (plgprobe caught it)
+      s.onerror = () => { if (!done) fin(fail(id, new Error("main.js refused or missing (restricted mode, not enabled, or not installed)"))); };
+      s.onload = () => setTimeout(() => { if (!done) fin(fail(id, new Error("main.js did not define a plugin (syntax error?)"))); }, 0);
       s.src = SCHEME + encodeURIComponent(id) + "/main.js?n=" + (++seq);
       document.head.appendChild(s);
     });
