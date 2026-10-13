@@ -3286,7 +3286,8 @@ function xiAgain() {
   requestAnimationFrame(() => { xiPending = false; updateTitle(); });
 }
 function updateTitle() {          // pane/focus census in the window title (headless probe)
-  rTrack();                       // lgpanes: keep rLeaf current even with the right sidebar closed
+  if (fHold > 0) return;          // a find reveal is in flight: fGo republishes when it lands
+  rTrack();                      // lgpanes: keep rLeaf current even with the right sidebar closed
   const ps = [...document.querySelectorAll("#main .pane")];
   const nf = document.querySelectorAll("#main .pane.focused").length;
   const fx = (state.root.fractions || []).map(f => f.toFixed(2)).join(",");
@@ -11341,29 +11342,46 @@ function fReveal(g, done) {   // done(): called once the reveal has finished (sy
   // The scroll is drawn in a LATER frame than the measure that set it, so retry per
   // frame until the span exists (bounded), then report done.
   const st = fState(g), h = st.hits[st.idx], cm = sc === g.lp ? Ed.cm(g) : null;
-  if (!h || h.l == null || !cm) return fin();
+  if (!h || h.l == null || !cm) { fRv = "nohit"; return fin(); }
+  // No synchronous cm.measure() here: CM6's measure keeps its scroll anchor when it
+  // has not yet SEEN a scroll event, so a flush right after a programmatic scrollTop
+  // write can put the scroller back (5a79ae48: [fsc:0]). The line is brought in, CM6
+  // measures and draws it in its own cycle, and the mark is centred then — the same
+  // order scJump uses. fGo holds the census until done(), so no title is published
+  // with the new counter before the match is on screen.
   Ed.scrollToLine(g, h.l);
-  // flush CM6's measure cycle NOW (the vendored EditorView.measure: reads the new
-  // scroll position, redraws its viewport, runs scrollToLine's own correction), so the
-  // span exists and the reveal is done inside this keypress, as R17's was; twice,
-  // because the correction can move the scroller once more
-  try { cm.measure(); cm.measure(); } catch (_) {}
-  if (go()) return fin();
+  fRv = "l" + h.l + "|s" + Math.round(sc.scrollTop);
   let n = 0;
   const step = () => cm.requestMeasure({ key: "osFindReveal", read: () => null, write: () => {
-    if (Ed.cm(g) !== cm || go() || ++n > 8) { fin(); if (done !== updateTitle) updateTitle(); return; }   // callers without done took their census before the draw
+    const ok = Ed.cm(g) === cm && go();
+    if (ok || Ed.cm(g) !== cm || ++n > 12) {
+      fRv += "|n" + n + "|f" + (ok ? 1 : 0) + "|t" + Math.round(sc.scrollTop);
+      fin(); if (done !== updateTitle) updateTitle(); return;      // callers without done took their census before the draw
+    }
     requestAnimationFrame(step);
   } });
-  step();
+  requestAnimationFrame(step);
 }
+/* [frv:] the last lp find reveal: l<line>|s<scrollTop after the line was brought in>
+   |n<frames waited>|f<mark found 0/1>|t<final scrollTop> (diagnostic, no phase asserts it) */
+var fRv = "-";
+/* fGo holds the census while a reveal is in flight: CM6 draws an off-screen line a
+   frame or more after the counter changed, and a title published in between would
+   carry [fc:i / n] beside the pre-scroll [fsc:]/[fvis:] — R17 revealed inside the
+   keypress, so the counter never led the scroll. Bounded: released after 500 ms. */
+var fHold = 0;
 function fGo(g, d) {                   // R26.11 + R26.13
   const st = fState(g);
   if (!st.open || !st.hits.length) return;
   if (fRead(g)) return;                // R26.24: reading view counts, it does not navigate
   const n = st.hits.length;
   st.idx = (st.idx + d + n) % n;       // past the last match IS the first: the cycle wraps
-  fPaint(g);
-  fReveal(g, updateTitle);              // census after the match is on screen (CM6 may draw it frames later)
+  let rel = false;
+  const release = () => { if (rel) return; rel = true; fHold--; updateTitle(); };
+  fHold++;
+  setTimeout(release, 500);
+  try { fPaint(g); } catch (e) { release(); throw e; }
+  fReveal(g, release);                  // census after the match is on screen (CM6 may draw it frames later)
 }
 /* ---------- R26.15–R26.20: replace ---------- */
 /* R26.17: ONE match — the current one — and the cycle moves on to the next.
@@ -11534,6 +11552,7 @@ function fTok(g) {
       const r = cur[0].getBoundingClientRect(), b = surf.getBoundingClientRect();
       t += " [fvis:" + (r.top >= b.top - 1 && r.bottom <= b.bottom + 1 ? 1 : 0) + "]";
     } else t += " [fvis:-]";
+    t += " [frv:" + fRv + "]";
   }
   return t;
 }
