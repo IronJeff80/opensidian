@@ -50,7 +50,7 @@
     const r = (abs ? "/" : "") + out.join("/");
     return r || (abs ? "/" : ".");
   };
-  const path = Object.freeze({
+  const path = {
     sep: "/", delimiter: ":",
     normalize: p => norm(String(p)),
     join: (...a) => norm(a.filter(x => x !== "").join("/") || "."),
@@ -64,8 +64,9 @@
       let i = 0; while (i < f.length && i < t.length && f[i] === t[i]) i++;
       return [...f.slice(i).map(() => ".."), ...t.slice(i)].join("/");
     },
-  });
-  path.posix = path;
+  };
+  path.posix = path;            // BEFORE the freeze: strict mode throws on a frozen object (iter-2 bug: the whole loader died at boot)
+  Object.freeze(path);
 
   function makeRequire(id) {
     return function require(name) {
