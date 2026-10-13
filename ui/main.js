@@ -3831,7 +3831,7 @@ function updateTitle() {          // pane/focus census in the window title (head
             (saveErr ? " [saveerr:" + saveErr + "]" : "") +             // F1: a save that did not land
             " [armed:" + groups().filter(h => h.saveT).length + "]" +   // F2: groups holding a live save timer
             menuTok() +
-            (navInfo ? " [" + navInfo + "]" : "") +
+            (navInfo ? " [" + navInfo + "]" + (nvRv ? " [nvr:" + nvRv + "]" : "") : "") +
             (revealInfo ? " [bmrv:" + revealInfo + "]" : "") +      // bmmenu: "Reveal file in navigation" ran (bmReveal) — not merely "the Files pane is showing"
             (acItems.length ? " [ac:" + acKind + ":" + acItems.length + "]" : "") +
             " [pane:" + sidePane + "]" +
@@ -5491,7 +5491,7 @@ async function rowOpen(name, ev) {
   return navigate(g, name);                                  // REQ-1/2/3 (+ R13.3 linked members follow)
 }
 async function navigate(g, name, anchor) { // wikilink / graph click: replace g's ACTIVE tab, push history
-  navInfo = "";
+  navInfo = ""; nvRv = "";
   await act("note_open", { via: "link", tabs: g.tabs.length }, async sp => {
     await flushSave(g);
     if (g.active < 0) { g.tabs.push(mkTab(name)); g.active = 0; }
@@ -5511,7 +5511,7 @@ async function navigate(g, name, anchor) { // wikilink / graph click: replace g'
    flash it ~2 s. LP centers the row (Obsidian), reading/source put it at the
    top. Unresolvable anchor -> note stays at the top. [nav:<anchor>@<line>]
    in the census reports the line that was hit (headless probe). */
-let navInfo = "";
+let navInfo = "", nvRv = "";   // nvRv: [nvr:] the last LP heading-nav reveal, per frame n:drawn,scrollTop|f<centred>
 function anchorLine(text, anchor) {  // 0-based source line of the target, or -1
   const L = text.split("\n");
   if (anchor.startsWith("^")) {
@@ -5547,19 +5547,40 @@ async function navAnchor(g, anchor) {
   if (line < 0) return updateTitle();
   if (isLp(t.mode)) {
     // CM6 draws only the viewport: a line it has not drawn is brought in first and
-    // centred once CM6 has measured it; a drawn line is centred on its real box now
+    // centred once CM6 has measured it; a drawn line is centred on its real box
+    const sc = g.lp, cm = Ed.cm(g);
     const centre = () => {
       const row = Ed.rowAt(g, line);
       if (!row) return false;
-      const rt = row.getBoundingClientRect().top - g.lp.getBoundingClientRect().top - g.lp.clientTop + g.lp.scrollTop;
-      g.lp.scrollTop = rt - (g.lp.clientHeight - row.offsetHeight) / 2;
-      if (!Ed.flashLine(g, line)) flash(row);
+      const rt = row.getBoundingClientRect().top - sc.getBoundingClientRect().top - sc.clientTop + sc.scrollTop;
+      sc.scrollTop = rt - (sc.clientHeight - row.offsetHeight) / 2;
       return true;
     };
-    // CM6 present: centre through its own scrollIntoView effect even for a drawn line — a
-    // scrollTop written outside CM6's measure loop can be put back by its next redraw (find
-    // reveal [frv:..|t0]), which left the flashed heading off screen (links blob '')
-    if (!(Ed.cm(g) && Ed.revealAt(g, line, 0) && Ed.flashLine(g, line)) && !centre()) { Ed.scrollToLine(g, line); const cm = Ed.cm(g); if (cm) cm.requestMeasure({ key: "osNavAnchor", read: () => null, write: () => { centre(); } }); }
+    const centred = () => {          // the target row's middle within the middle half of the scroller
+      const row = Ed.rowAt(g, line); if (!row) return false;
+      const r = row.getBoundingClientRect(), b = sc.getBoundingClientRect();
+      return Math.abs(r.top + r.height / 2 - b.top - sc.clientTop - sc.clientHeight / 2) < sc.clientHeight / 4;
+    };
+    if (!cm) { if (!centre()) Ed.scrollToLine(g, line); flash(Ed.rowAt(g, line)); }
+    else {
+      // One scrollIntoView dispatch was not enough: the heading stayed at scrollTop 0 after
+      // a wikilink opened the note (links blob '') — the effect raced the note load's own
+      // measure. Same shape as the find reveal: ask CM6, then check per frame INSIDE its
+      // measure loop until the row is drawn and centred (re-ask / centre on its real box),
+      // bounded. [nvr:] logs the frames (diagnostic, no phase asserts it).
+      Ed.revealAt(g, line, 0); Ed.flashLine(g, line);
+      nvRv = "s" + Math.round(sc.scrollTop);
+      let n = 0;
+      const step = () => cm.requestMeasure({ key: "osNavAnchor", read: () => null, write: () => {
+        if (Ed.cm(g) !== cm) { nvRv += "|gone"; return updateTitle(); }
+        const ok = centred(), drawn = !!Ed.rowAt(g, line);
+        nvRv += "|" + n + ":" + (drawn ? 1 : 0) + "," + Math.round(sc.scrollTop);
+        if (ok || ++n > 12) { nvRv += "|f" + (ok ? 1 : 0); return updateTitle(); }
+        if (!drawn) Ed.revealAt(g, line, 0); else centre();
+        requestAnimationFrame(step);
+      } });
+      requestAnimationFrame(step);
+    }
     if (t.mode === "source") await lpEdit(g, line, 0);  // R12: source puts the caret on the line
   } else {
     let el = null;
