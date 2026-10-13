@@ -1,47 +1,27 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-/* R17 EDITOR CORE (v0.6) — the model/view engine behind Live Preview and
-   source mode. Replaces the "caret row becomes a textarea" hybrid (R8.2),
-   which re-rendered the whole note per keystroke and mangled list markers
-   (USER FEEDBACK v0.5 #1 #9).
+/* EDITOR — CodeMirror 6 is the editor (CM6 EDITOR CORE, below the literal).
+   This literal holds what CM6 does not own:
 
-   MODEL   v.lines[] is the source of truth. The hidden textarea g.editor
-           stays ONLY as the persistence bridge: it is written FROM the model
-           (Ed.sync) and never read on the hot path.
-   VIEW    one contenteditable (.lp) per pane, ONE DOM row per source line.
-           A row's textContent is EXACTLY its source line (markers live in
-           span.mk, hidden by CSS unless the row holds the caret or the pane
-           is in source mode) — so the token map is just "walk the text nodes
-           and accumulate lengths", and hidden markers can never shift the
-           caret. A keystroke patches at most a handful of rows; the document
-           is never innerHTML'd.
-   INPUT   beforeinput -> mutate the model -> patch the dirty rows -> restore
-           the caret at (line,col). Nothing is applied by the browser itself
-           (except IME composition, which is reconciled on compositionend).
-   RUST    the Rust renderer is used for reading mode and for block-level
-           things on demand — never per keystroke.
+   TOKENIZER  Ed.row/Ed.block/Ed.inline render ONE source line into DOM with
+              the source-mode class vocabulary (mk h bq hr tbl task li code wl
+              lt url tag b i bi s hl fence — mirrors src-tauri/src/srcmode.rs
+              marker for marker). Live Preview (Ed.lpExt) reads that DOM back
+              as CM6 decorations; Ed.nodes maps a rendered row's text nodes to
+              source columns (search marks), Ed.tok/tokAt the per-token map
+              that drives the per-token marker reveal.
+   EDIT OPS   list/task/indent/renumber helpers (Ed.enter, Ed.del, Ed.indent,
+              Ed.toggleList, ...) mutate the Ed.lines(g) mirror; Ed.commit turns
+              the difference into one CM6 transaction.
+   EMBEDS     image / PDF embed elements and the resolve sets for wikilinks.
+   CENSUS     [cm:] [sel:] [rv:] [crt:] ... producers for the gate probes.
 
-   The inline renderer mirrors src-tauri/src/srcmode.rs marker for marker
-   (same class vocabulary: mk h bq hr tbl task li code wl lt url tag b i bi
-   s hl fence), so source mode is the same engine with the markers revealed. */
+   The former model/view engine (one contenteditable row per line, beforeinput
+   -> model -> dirty-row patching, its own undo stack, lazy rows) is gone:
+   CM6 owns input, selection, undo, IME, virtualisation and painting. */
 const Ed = {
   cur: null,            // {g, l} row currently holding the caret (census/geometry)
   _tk: null,            // R17.6 token map under construction (Ed.row owns it)
-  // the REVEAL SET lives on the pane's .lp element (g.lp._rv = the marker spans
-  // carrying .rv, g.lp._rvs = their "<l>.<s>-<e>:<kind>" labels for the census),
-  // so two panes never clear each other's reveal.
-  composing: false,
   UNDO_IDLE_MS: 2000,   // R17.8: idle gap that CLOSES an undo group
-
-  /* ---------- model ---------- */
-  lines(g) { const v = g.view; if (!v.lines) v.lines = [""]; return v.lines; },
-  text(g) { return Ed.lines(g).join("\n"); },
-  sync(g) { g.editor.value = Ed.text(g); },          // persistence bridge only
-  setText(g, t) {                                     // load / external replace
-    const v = g.view;
-    v.lines = String(t == null ? "" : t).split("\n");
-    v.undo = []; v.redo = [];
-    Ed.sync(g);
-  },
 
   /* ---------- inline renderer: one row per source line ---------- */
   el(tag, cls) { const e = document.createElement(tag); if (cls) e.className = cls; return e; },
@@ -724,96 +704,6 @@ const Ed = {
     const last = map[map.length - 1];
     return [last.n, last.len];
   },
-
-  /* ---------- caret + selection ----------
-     THE POSITIONAL CONTRACT, and what R34 had to do to keep it: model line `l`
-     IS `g.lp.children[l]`, index for index, with nothing else in that list.
-     R32 kept the inline title out of it by drawing it as a ::before; R34 makes
-     that title a rename surface (ui/main.js openTitleEdit) WITHOUT joining the
-     list — the caret box is appended to `.content`, a sibling of the scroller,
-     and the ::before stays exactly where it is (visibility:hidden) so the box
-     it reserves, and therefore row 0's y, never moves. Anything editable put
-     inside .lp — prepended, appended or absolutely positioned — is a child,
-     and rowAt() then returns the wrong node for every line after it.
-     That is not a comment you have to trust: the census publishes
-     [te:<text>/<children>] while the title is open and [ery:] gives one entry
-     per child, phase `title` section F asserts both are unchanged, and
-     docs/negctl-title-rename/README.md (control T1) is the committed run where
-     making the box a child reads `[te:…/5]` on a 4-line note and goes red. */
-  rowAt(g, l) { const r = g.lp.children[l] || null; return r && r._lzy ? Ed.wake(g, l) : r; },
-  /* LAZY ROWS (audit #10/#12). A 75k-line note used to build, lay out and census
-     75k rows at open (~3.4 s on the box). Past LAZY_AT lines a row that is not
-     near the top or the caret is a placeholder: an empty div.lprow.lzy one line
-     tall (style.css). It is still the child at its index, so the positional
-     contract above holds and rowAt() is the one door: it builds the real row
-     the first time anything addresses that line. wakeView() builds what a
-     scroll brings into view. The model (Ed.lines) is the truth either way —
-     copy, save and select-all read the model, never the placeholder. */
-  LAZY_AT: 2000, LAZY_HEAD: 300, LAZY_NEAR: 100,
-  lzy() { const r = document.createElement("div"); r.className = "lprow lzy"; r._lzy = true; return r; },
-  wake(g, l) {
-    const r = g.lp.children[l];
-    if (!r || !r._lzy) return r || null;
-    const f = Ed.row(g, Ed.lines(g)[l], l);
-    r.replaceWith(f);
-    return f;
-  },
-  wakeView(g) {                                  // build the placeholders in (and near) the viewport
-    const lp = g && g.lp, rows = lp && lp.children;
-    if (!rows || !rows.length || !lp._lzy) return;
-    for (let pass = 0; pass < 3; pass++) {
-      const base = rows[0].offsetTop, top = lp.scrollTop, bot = top + 2 * (lp.clientHeight || 800);
-      let lo = 0, hi = rows.length - 1;
-      while (lo < hi) { const m = (lo + hi + 1) >> 1; if (rows[m].offsetTop - base <= top) lo = m; else hi = m - 1; }
-      const todo = [];
-      for (let i = Math.max(0, lo - 40); i < rows.length && rows[i].offsetTop - base <= bot; i++)
-        if (rows[i]._lzy) todo.push(i);
-      if (!todo.length) return;
-      // longpos: keep the row at the top in place. Rows built ABOVE it (lo-40..lo)
-      // grow from one-line placeholders to their real height and would push it
-      // down while scrollTop stays put — the view jumps to earlier lines.
-      // Only until the USER scrolls (lp._lzyKeep, cleared by wheel/touch/nav keys):
-      // writing scrollTop mid-wheel cancels the smooth-scroll animation and eats the wheel.
-      const keep = lp._lzyKeep, a = rows[lo], ay = a.offsetTop - base, ah = a.offsetHeight || 1;
-      const af = Math.min(1, Math.max(0, (top - ay) / ah));
-      for (const i of todo) Ed.wake(g, i);       // one batch, then re-measure: built rows may wrap taller
-      const b = rows[lo], by = b.offsetTop - rows[0].offsetTop + af * b.offsetHeight;
-      if (keep && Math.abs(by - top) >= 1) lp.scrollTop = by;
-      if (typeof scHits === "function" && scHits(g).length) scMarks(g);   // the search flash covers built rows too
-    }
-  },
-  indexOf(row) { return row && row.parentNode ? Array.prototype.indexOf.call(row.parentNode.children, row) : -1; },
-  rowOf(node) {
-    if (!node) return null;
-    const e = node.nodeType === 3 ? node.parentElement : node;
-    return e && e.closest ? e.closest(".lprow") : null;
-  },
-  pos(g, node, off) {                            // DOM position -> {l, c}
-    let row = Ed.rowOf(node);
-    if (!row && node === g.lp) {
-      row = g.lp.children[Math.min(off, g.lp.children.length - 1)];
-      return row ? { l: Ed.indexOf(row), c: 0 } : null;
-    }
-    if (!row || !g.lp.contains(row)) return null;
-    return { l: Ed.indexOf(row), c: Ed.colOf(row, node, off) };
-  },
-  sel(g) {                                       // model selection, a <= b
-    const s = window.getSelection();
-    if (!s || !s.rangeCount) return null;
-    const r = s.getRangeAt(0);
-    if (!g.lp.contains(r.startContainer)) return null;
-    const a = Ed.pos(g, r.startContainer, r.startOffset);
-    if (!a) return null;
-    const b = r.collapsed ? a : (Ed.pos(g, r.endContainer, r.endOffset) || a);
-    return { a, b, empty: a.l === b.l && a.c === b.c };
-  },
-  caret(g) { const s = Ed.sel(g); return s ? s.b : null; },
-  caretLC(g) { const c = Ed.caret(g) || { l: 0, c: 0 }; return [c.l, c.c]; },
-  focusPos(g) {                                  // the MOVING end of the selection
-    const s = window.getSelection();
-    if (!s || !s.focusNode || !g.lp.contains(s.focusNode)) return null;
-    return Ed.pos(g, s.focusNode, s.focusOffset);
-  },
   // Home target for a line (R17.5 M64-M68): CONTENT start, i.e. after a list /
   // task / quote marker + its indent. A heading is NOT a marker line — its "# "
   // stays part of the text, so Home is col 0 there (M68).
@@ -833,47 +723,6 @@ const Ed = {
     }
     if (c < (L[l] || "").length) return { l, c: c + 1 };
     return l < L.length - 1 ? { l: l + 1, c: 0 } : null;
-  },
-  extendTo(g, l, c) {                            // Shift+Home/End: keep the anchor, move the focus
-    const row = Ed.rowAt(g, l);
-    if (!row) return;
-    const [node, off] = Ed.posOf(row, c, true);
-    const s = window.getSelection();
-    if (!s.rangeCount) return Ed.place(g, l, c);
-    try { s.extend(node, off); } catch (_) { return Ed.place(g, l, c); }
-    Ed.mark(g, l);
-  },
-  place(g, l, c, focus) {                        // caret to (line,col)
-    const L = Ed.lines(g);
-    l = Math.max(0, Math.min(l, L.length - 1));
-    c = Math.max(0, Math.min(c, L[l].length));
-    const row = Ed.rowAt(g, l);
-    if (!row) return;
-    Ed.reveal(g, { l, c }, { l, c });             // markers first: offsets stay valid
-    const [node, off] = Ed.posOf(row, c, true);
-    const s = window.getSelection();
-    const r = document.createRange();
-    try { r.setStart(node, off); } catch (_) { r.selectNodeContents(row); r.collapse(true); }
-    r.collapse(true);
-    s.removeAllRanges(); s.addRange(r);
-    if (focus !== false && document.activeElement !== g.lp) g.lp.focus({ preventScroll: true });
-    Ed.mark(g, l);
-  },
-  // Ctrl+A over the MODEL, not over the painted text: the browser's own
-  // select-all starts at the first VISIBLE character, so on a note that opens
-  // with "# Title" it silently drops the hidden "# " and a copy would come
-  // back without the heading marker. The range is set on the raw text nodes,
-  // hidden or not.
-  selectAll(g) {
-    const L = Ed.lines(g), first = Ed.rowAt(g, 0), last = Ed.rowAt(g, L.length - 1);
-    if (!first || !last) return;
-    const [n0, o0] = Ed.posOf(first, 0, true);
-    const [n1, o1] = Ed.posOf(last, L[L.length - 1].length, true);
-    const r = document.createRange();
-    try { r.setStart(n0, o0); r.setEnd(n1, o1); } catch (_) { return; }
-    const s = window.getSelection();
-    s.removeAllRanges(); s.addRange(r);
-    Ed.census();
   },
   /* R17.6 / R17.7 REVEAL — PER TOKEN, not per row.
      "a marker is hidden iff the selection does NOT intersect that token's raw
@@ -930,80 +779,6 @@ const Ed = {
     const touch = lo === hi ? (t => lo >= t.s && lo <= t.e) : (t => lo < t.e && hi > t.s);
     return toks.filter(touch);
   },
-  reveal(g, a, b) {
-    const lp = g.lp;
-    const prev = lp.querySelector(".lprow.cur");
-    const row = a ? Ed.rowAt(g, a.l) : null;
-    if (prev !== row) { if (prev) prev.classList.remove("cur"); if (row) row.classList.add("cur"); }
-    const mks = [], labels = [];
-    if (a) {
-      if (!b) b = a;
-      if (b.l < a.l || (b.l === a.l && b.c < a.c)) { const t = a; a = b; b = t; }
-      const L = Ed.lines(g);
-      for (let l = a.l; l <= b.l && l < lp.children.length; l++) {
-        const toks = lp.children[l] && lp.children[l]._tok;
-        if (!toks || !toks.length) continue;
-        const len = (L[l] || "").length;
-        for (const t of Ed.tokAt(toks, l === a.l ? a.c : 0, l === b.l ? b.c : len)) {
-          for (const m of t.mks) mks.push(m);
-          labels.push(l + "." + t.s + "-" + t.e + ":" + t.kind);
-        }
-      }
-    }
-    /* Idempotence is load-bearing, not an optimisation: making a marker visible
-       relayouts the row, WebKit can re-fire selectionchange off that, and a
-       reveal that always remove-then-adds the class would then chase its own
-       tail. Same set => not one DOM write. (Ed.render clears the signature: new
-       rows carry no .rv, so the set is stale even when its labels match.) */
-    const sig = labels.join(",");
-    if (lp._rvsig === sig) return;
-    for (const el of (lp._rv || [])) el.classList.remove("rv");
-    for (const m of mks) m.classList.add("rv");
-    lp._rv = mks; lp._rvs = labels; lp._rvsig = sig;
-  },
-  /* R17.6/R17.7 census: the REVEAL SET — which tokens are showing their raw
-     markers right now, as "<line>.<start>-<end>:<kind>", "-" for none, "src" in
-     source mode. Without this the smoke could only see the caret ROW, which is
-     exactly how the reveal scope drifted from per-token to per-row unnoticed.
-
-     It reads the PAINTED state (computed `display` of one marker per token),
-     NOT `lp._rvs`: the scope lives half in JS and half in ONE CSS rule, and a
-     revert of that rule alone would leave the bookkeeping perfectly correct
-     while the whole row reveals on screen. Probing the rendered style is what
-     makes the negative control (docs/negctl-lp-reveal/) bite.
-
-     The probe marker is the first NON-`.lim` one: `.mk.lim` is the list bullet
-     box, which is `display: inline-block` with transparent ink even while
-     FOLDED (R15.10), so it can never answer "is this marker's text showing?".
-     Its sibling `.lisp` (the marker's trailing space) can.
-
-     Rows scanned = the ones the selection touches plus the caret row. Census
-     runs deferred and coalesced (30ms), off the keystroke and off the
-     caret-move measurement — but a getComputedStyle per token is still a
-     layout read, so it stays bounded to the rows R17.6/R17.7 govern. */
-  rvRows(g) {
-    const out = [], add = l => { if (l >= 0 && l < g.lp.children.length && out.indexOf(l) < 0) out.push(l); };
-    const s = Ed.sel(g);
-    if (s) for (let l = s.a.l; l <= s.b.l && l - s.a.l < 64; l++) add(l);
-    const cur = g.lp.querySelector(".lprow.cur");
-    if (cur) add(Ed.indexOf(cur));
-    return out.sort((x, y) => x - y);
-  },
-  rvTok(g) {
-    if (!g.lp) return "";
-    if (g.lp.classList.contains("src")) return " [rv:src]";
-    const out = [];
-    for (const l of Ed.rvRows(g)) {
-      const toks = g.lp.children[l] && g.lp.children[l]._tok;
-      if (!toks) continue;
-      for (const t of toks) {
-        const probe = t.mks.filter(m => !m.classList.contains("lim"))[0] || t.mks[0];
-        if (!probe) continue;
-        if (getComputedStyle(probe).display !== "none") out.push(l + "." + t.s + "-" + t.e + ":" + t.kind);
-      }
-    }
-    return " [rv:" + (out.length ? out.join(",") : "-") + "]";
-  },
   mark(g, l) {                                   // census + autocomplete state
     Ed.census();                                 // selection moved even if the LINE did not
     if (g.lpActive && l >= 0 && g.lpActive.l0 === l) return;   // nothing moved: no title churn
@@ -1023,133 +798,6 @@ const Ed = {
       Ed._ct = null;
       if (typeof updateTitle === "function") updateTitle();
     }, 30);
-  },
-
-  /* ---------- view: dirty-row patching ---------- */
-  render(g, caret, col, full) {
-    const v = g.view, lp = g.lp, L = Ed.lines(g), old = v.rowSrc;
-    g.lpLines = L.length;
-    lp._rv = []; lp._rvsig = null;      // patched rows carry no .rv: the reveal set is stale by construction
-    const t0 = performance.now();
-    let touched = 0;
-    if (full || !old || lp.children.length !== old.length) {
-      const frag = document.createDocumentFragment();
-      // audit #10/#12: past LAZY_AT lines only the head and the caret's
-      // neighbourhood are built; the rest are one-line placeholders (Ed.lzy)
-      // that rowAt() and a scroll build on demand
-      const lazy = L.length > Ed.LAZY_AT, near = caret != null && caret >= 0 ? caret : 0;
-      for (let i = 0; i < L.length; i++)
-        frag.appendChild(!lazy || i < Ed.LAZY_HEAD || Math.abs(i - near) < Ed.LAZY_NEAR ? Ed.row(g, L[i], i) : Ed.lzy());
-      lp.textContent = "";
-      lp.appendChild(frag);
-      lp._lzy = lazy; lp._lzyKeep = lazy;        // a placed view: wakeView keeps its top row until the user scrolls
-      if (lazy) requestAnimationFrame(() => Ed.wakeView(g));
-      touched = L.length;
-    } else {
-      let p = 0, s = 0;
-      const on = old.length, nn = L.length;
-      while (p < on && p < nn && old[p] === L[p]) p++;
-      while (s < on - p && s < nn - p && old[on - 1 - s] === L[nn - 1 - s]) s++;
-      for (let k = on - s - p; k > 0; k--) lp.children[p].remove();
-      if (nn - s > p) {
-        const frag = document.createDocumentFragment();
-        for (let i = p; i < nn - s; i++) frag.appendChild(Ed.row(g, L[i], i));
-        lp.insertBefore(frag, lp.children[p] || null);
-        touched = nn - s - p;
-      }
-    }
-    v.rowSrc = L.slice();
-    v.note = typeof curOf === "function" ? curOf(g) : null;
-    if (caret != null && caret >= 0) Ed.place(g, caret, col || 0);
-    else {
-      Ed.reveal(g, null);
-      /* caret00: a rebuild WITHOUT a caret request must not strand the live
-         selection. Removing the row that held it moves the DOM boundary onto
-         the parent (DOM "remove" steps: the range becomes (.lp, index)), so
-         after an in-place note change with the editor focused (history
-         back/forward, follow link: loadActive -> lpRender(g, -1, 0, true))
-         the caret position is .lp ITSELF, between block rows. That position
-         has no line box: the range has no client rect and WebKit paints the
-         caret at the editor box's corner — the "caret at (0,0) of the note".
-         Re-seat it in a real row: document start after a full rebuild (a new
-         note), the row the boundary now points at after a patch. Focus is
-         left as it is (place(..., false)): this keeps a caret, it never
-         takes one. */
-      const s = window.getSelection();
-      if (s && s.rangeCount && (s.anchorNode === lp || s.focusNode === lp) && lp.children.length) {
-        const p = full || touched === L.length ? { l: 0, c: 0 } : (Ed.pos(g, lp, s.focusOffset) || { l: 0, c: 0 });
-        Ed.place(g, p.l, p.c, false);
-      }
-    }
-    if (typeof perf !== "undefined" && perf.mark)
-      // R18: this is the JS row patch, NOT the old per-keystroke Rust render.
-      // "lp_render" stays reserved for the IPC span (docs/perf.md '## EDITOR':
-      // its count must be 0 while typing) — reusing the name here would make
-      // that check unfalsifiable.
-      perf.mark("ed_patch", t0, { lines: L.length, patched: touched, full: !!full || !old });
-    return Promise.resolve();
-  },
-  // re-render exactly one row (IME reconcile / self-heal)
-  patchRow(g, l) {
-    const row = Ed.rowAt(g, l);
-    if (!row) return;
-    const fresh = Ed.row(g, Ed.lines(g)[l], l);
-    if (row.classList.contains("cur")) fresh.classList.add("cur");
-    row.replaceWith(fresh);
-    g.view.rowSrc[l] = Ed.lines(g)[l];
-  },
-
-  /* ---------- edits ---------- */
-  snap(g, kind) {                                // undo entry, coalesced
-    const v = g.view, now = Date.now();
-    if (!v.undo) { v.undo = []; v.redo = []; }
-    v.redo = [];
-    const last = v.undo[v.undo.length - 1];
-    // R17.8 M79/M80: an uninterrupted typing burst is ONE step (spaces do not
-    // split it); the group is closed by an IDLE TIMER (gap since the last
-    // keystroke, refreshed per key), never by a char count. Enter/del/paste/
-    // indent each stay their own step.
-    if (last && last.kind === kind && kind === "type" && now - last.t < Ed.UNDO_IDLE_MS) { last.t = now; return; }
-    v.undo.push({ lines: Ed.lines(g).slice(), caret: Ed.caret(g), kind, t: now });
-    if (v.undo.length > 300) v.undo.shift();
-  },
-  after(g, l, c) {                               // model changed -> view + bridge
-    Ed.sync(g);
-    Ed.render(g, l, c);
-    if (typeof scheduleSave === "function") scheduleSave(g);
-    if (typeof showAc === "function") showAc(g);
-  },
-  replace(g, s, text, kind) {                    // splice [a,b) with `text`
-    const L = Ed.lines(g);
-    Ed.snap(g, kind || "type");
-    const a = s.a, b = s.b;
-    const head = L[a.l].slice(0, a.c), tail = (L[b.l] || "").slice(b.c);
-    const ins = String(text == null ? "" : text).replace(/\r\n?/g, "\n").split("\n");
-    /* R25.13d: the search flash is "a range that FOLLOWS subsequent edits", so
-       its absolute offsets are mapped through the splice HERE — the one edit
-       choke point — before the model changes under them. Called by name, the
-       same way this file calls updateTitle: editor.js owns the text, main.js
-       owns the decoration, and neither imports the other.
-       GUARDED on there being a flash at all: Ed.offOf walks the line array, and
-       this runs on EVERY keystroke (R18). With no flash — the whole measured
-       typing path — it costs one typeof and one property read. */
-    if (typeof scLive === "function" && scLive(g))
-      scShift(g, Ed.offOf(g, a.l, a.c), Ed.offOf(g, b.l, b.c), ins.join("\n").length);
-    const mid = ins.length === 1 ? [head + ins[0] + tail]
-      : [head + ins[0]].concat(ins.slice(1, -1), [ins[ins.length - 1] + tail]);
-    L.splice(a.l, b.l - a.l + 1, ...mid);
-    const cl = a.l + ins.length - 1;
-    const cc = ins.length === 1 ? a.c + ins[0].length : ins[ins.length - 1].length;
-    Ed.after(g, cl, cc);
-  },
-  // (line, col) -> absolute UTF-16 offset into the model, counting the newline
-  // each line ends with. The inverse of main.js scLC; the unit is the one the
-  // backend's search payload uses (src-tauri/src/main.rs lines_with_offsets).
-  offOf(g, l, c) {
-    const L = Ed.lines(g);
-    let o = 0;
-    for (let i = 0; i < l && i < L.length; i++) o += L[i].length + 1;
-    return o + c;
   },
   /* ---------- R17.1/R17.2: the structural prefix of a source line ----------
      ind  leading whitespace — the indent string, copied VERBATIM on continue
@@ -1450,36 +1098,6 @@ const Ed = {
     return true;
   },
   rvEnd(g) { if (g && g.view) g.view.rvSess = null; },
-  undo(g) {
-    const v = g.view;
-    if (!v.undo || !v.undo.length) return;
-    const e = v.undo.pop();
-    v.redo.push({ lines: Ed.lines(g).slice(), caret: Ed.caret(g) });
-    v.lines = e.lines.slice();
-    const c = e.caret || { l: 0, c: 0 };
-    Ed.sync(g); Ed.render(g, c.l, c.c);
-    if (typeof scheduleSave === "function") scheduleSave(g);
-  },
-  redo(g) {
-    const v = g.view;
-    if (!v.redo || !v.redo.length) return;
-    const e = v.redo.pop();
-    v.undo.push({ lines: Ed.lines(g).slice(), caret: Ed.caret(g), kind: "redo", t: Date.now() });
-    v.lines = e.lines.slice();
-    const c = e.caret || { l: 0, c: 0 };
-    Ed.sync(g); Ed.render(g, c.l, c.c);
-    if (typeof scheduleSave === "function") scheduleSave(g);
-  },
-  // clipboard/selection helper: the SOURCE text of a selection (hidden
-  // markers included — Selection.toString() would drop them)
-  slice(g, s) {
-    const L = Ed.lines(g);
-    if (s.a.l === s.b.l) return (L[s.a.l] || "").slice(s.a.c, s.b.c);
-    const out = [L[s.a.l].slice(s.a.c)];
-    for (let l = s.a.l + 1; l < s.b.l; l++) out.push(L[l]);
-    out.push((L[s.b.l] || "").slice(0, s.b.c));
-    return out.join("\n");
-  },
   // [[ autocomplete: replace [start, caret) with [[name]] through the model
   acInsert(g, start, name) {
     const s = Ed.sel(g);
@@ -1489,171 +1107,11 @@ const Ed = {
     if (a < 0) return;
     Ed.replace(g, { a: { l, c: a }, b: { l, c: s.b.c }, empty: false }, "[[" + name + "]]", "ac");
   },
-  toggleTask(e, row) {
-    e.preventDefault(); e.stopPropagation();
-    const g = row.closest(".pane") ? row.closest(".pane")._g : null;
-    if (!g) return;
-    const l = Ed.indexOf(row), L = Ed.lines(g);
-    Ed.snap(g, "task");
-    L[l] = L[l].replace(/^(\s*(?:[-*+]|\d+\.) )\[( |[xX])\]/, (_, p, ch) => p + (ch === " " ? "[x]" : "[ ]"));
-    Ed.sync(g);
-    Ed.patchRow(g, l);
-    if (typeof scheduleSave === "function") scheduleSave(g);
-  },
   linkClick(e, a) {
     if (typeof wikiClick === "function") wikiClick(e, a);
   },
   extClick(e, a) {
     if (typeof extClick === "function") extClick(e, a);
-  },
-
-  /* ---------- wiring ---------- */
-  mount(v) {
-    const lp = v.lp;
-    lp.contentEditable = "true";
-    lp.spellcheck = false;
-    lp.setAttribute("autocorrect", "off");
-    const G = () => (lp.closest(".pane") ? lp.closest(".pane")._g : v.g);
-    lp.addEventListener("beforeinput", e => Ed.onInput(G(), e));
-    lp.addEventListener("keydown", e => Ed.onKey(G(), e));
-    lp.addEventListener("paste", e => {
-      const g = G(), s = Ed.sel(g);
-      e.preventDefault();
-      if (!s) return;
-      const txt = (e.clipboardData && e.clipboardData.getData("text/plain")) || "";
-      if (txt) Ed.replace(g, s, txt, "paste");
-    });
-    lp.addEventListener("copy", e => Ed.onCopy(G(), e, false));
-    lp.addEventListener("cut", e => Ed.onCopy(G(), e, true));
-    lp.addEventListener("compositionstart", () => { Ed.composing = true; });
-    lp.addEventListener("compositionend", () => {
-      Ed.composing = false;
-      Ed.heal(G());
-    });
-    lp.addEventListener("input", e => {          // self-heal: nothing may diverge
-      if (Ed.composing || e.inputType === "insertCompositionText") return;
-      Ed.heal(G());
-    });
-    lp.addEventListener("blur", () => { if (typeof hideAc === "function") setTimeout(hideAc, 100); });
-    for (const ev of ["wheel", "touchstart", "pointerdown"])   // the user moves the view: stop anchoring (wakeView)
-      lp.addEventListener(ev, () => { lp._lzyKeep = false; }, { passive: true });
-    lp.addEventListener("keydown", e => { if (/^(Page|Arrow(Up|Down)$|Home$|End$)/.test(e.key)) lp._lzyKeep = false; });
-    lp.addEventListener("scroll", () => {       // lazy rows: build what scrolls into view, once per frame
-      if (!lp._lzy || lp._lzyRaf) return;
-      lp._lzyRaf = requestAnimationFrame(() => { lp._lzyRaf = 0; Ed.wakeView(G()); });
-    }, { passive: true });
-  },
-  // a row the browser edited behind our back -> take its text as the truth
-  heal(g) {
-    if (!g || !g.view || !g.view.rowSrc) return;
-    const L = Ed.lines(g), rows = g.lp.children;
-    if (rows.length !== L.length) { Ed.render(g, -1, 0, true); return; }
-    const s = Ed.sel(g);
-    const l = s ? s.b.l : -1;
-    if (l < 0 || l >= L.length) return;
-    const txt = rows[l].textContent;
-    if (txt === L[l]) return;
-    L[l] = txt; g.view.rowSrc[l] = txt;
-    Ed.sync(g);
-    if (typeof scheduleSave === "function") scheduleSave(g);
-  },
-  onCopy(g, e, cut) {
-    const s = Ed.sel(g);
-    if (!s || s.empty) return;
-    e.preventDefault();
-    e.clipboardData.setData("text/plain", Ed.slice(g, s));
-    if (cut) Ed.replace(g, s, "", "del");
-  },
-  onKey(g, e) {
-    if (!g) return;
-    if (typeof acKeydown === "function") {
-      acKeydown(g, e);
-      if (e.defaultPrevented) return;
-    }
-    const s = Ed.sel(g);
-    if (!s) return;
-    // X11 sends shift+Tab as ISO_Left_Tab, so e.key is NOT "Tab" for the
-    // outdent half of R17.2 — the physical key (e.code) is what identifies it
-    // (chordOf() normalises the same way for the global keymap).
-    if (e.key === "Tab" || e.code === "Tab") { e.preventDefault(); return Ed.indent(g, s, e.shiftKey); }
-    // R17.4 M45 / R17.10 M92: in 1.13.7 Ctrl+Enter is "follow link under
-    // cursor", NOT the task toggle — it must leave the bytes alone. Without
-    // this guard the webview turns it into an insertParagraph.
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); return; }
-    // Shift+key arrives UPPERCASE (e.key is the produced character): Ctrl+Shift+Z
-    // is "Z", so a lowercase-only compare silently loses redo (R17.8 M83).
-    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-    if (k === "a" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); return Ed.selectAll(g); }
-    if (k === "z" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); return e.shiftKey ? Ed.redo(g) : Ed.undo(g); }
-    if (k === "y" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); return Ed.redo(g); }
-    // Ctrl+L (M46-M51) is NOT bound here: it is the palette command
-    // editor:toggle-checklist-status, dispatched on document keydown. Binding
-    // it in both places would toggle twice and cancel itself out.
-    // PERF: Home/End/arrows are pure CARET MOVES — the interaction the per-token
-    // reveal runs on. Time them to first paint (census [cm:], R18 100ms ceiling).
-    if (e.key === "Home" || e.key === "End" || e.key === "ArrowLeft" || e.key === "ArrowRight") Ed.cmStart();
-    if (e.key === "Home" || e.key === "End") {
-      e.preventDefault();
-      const f = Ed.focusPos(g) || s.b;                      // shift-extend moves the FOCUS, not s.b
-      const h = Ed.homeCol(g, f.l);
-      const c = e.key === "End" ? Ed.lines(g)[f.l].length : (f.c === h ? 0 : h);
-      if (e.shiftKey) Ed.extendTo(g, f.l, c); else Ed.place(g, f.l, c);
-      return Ed.cmEnd(g);
-    }
-    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-      /* R17.5 M69-M71: horizontal motion is a MODEL move — one RAW column at a
-         time (a hidden marker is a caret stop, not a jump), and at a line edge
-         it crosses to the RAW end/start of the neighbour row. Native motion
-         cannot do the crossing: the row it lands on is still folded, so the
-         browser stops at the last VISIBLE character and the caret lands before
-         the hidden markers instead of after them. */
-      if (e.ctrlKey || e.metaKey || e.altKey) { Ed.cmT0 = -1; return; }   // word/doc moves stay native
-      const back = e.key === "ArrowLeft";
-      if (!e.shiftKey && !s.empty) {                          // a plain arrow collapses to the edge
-        e.preventDefault();
-        const p = back ? s.a : s.b;
-        Ed.place(g, p.l, p.c);
-        return Ed.cmEnd(g);
-      }
-      const f = (e.shiftKey && Ed.focusPos(g)) || (back ? s.a : s.b);
-      const n = Ed.step(g, f.l, f.c, back);
-      if (!n) { Ed.cmT0 = -1; return; }                       // document edge: nothing to do
-      e.preventDefault();
-      if (e.shiftKey) Ed.extendTo(g, n.l, n.c); else Ed.place(g, n.l, n.c);
-      return Ed.cmEnd(g);
-    }
-    Ed.cmT0 = -1;                                            // not a caret move after all
-  },
-  onInput(g, e) {
-    if (!g) return;
-    if (Ed.composing || e.inputType === "insertCompositionText") return;   // IME: native, reconciled on end
-    const s = Ed.sel(g);
-    if (!s) return;
-    const sp = typeof otel !== "undefined" && otel.begin
-      ? otel.begin("key_to_paint", { key: e.inputType, note_lines: g.lpLines || 0 })
-      : null;
-    e.preventDefault();
-    switch (e.inputType) {
-      case "insertText": Ed.replace(g, s, e.data || "", "type"); break;
-      case "insertParagraph": Ed.enter(g, s); break;
-      case "insertLineBreak": Ed.softBreak(g, s); break;
-      case "deleteContentBackward": Ed.del(g, s, false, false); break;
-      case "deleteContentForward": Ed.del(g, s, true, false); break;
-      case "deleteWordBackward": Ed.del(g, s, false, true); break;
-      case "deleteWordForward": Ed.del(g, s, true, true); break;
-      case "deleteByCut": if (!s.empty) Ed.replace(g, s, "", "del"); break;
-      case "insertFromPaste": {
-        const txt = (e.dataTransfer && e.dataTransfer.getData("text/plain")) || "";
-        if (txt) Ed.replace(g, s, txt, "paste");
-        break;
-      }
-      case "historyUndo": Ed.undo(g); break;
-      case "historyRedo": Ed.redo(g); break;
-      default:
-        if (e.inputType.startsWith("delete")) Ed.del(g, s, /Forward/.test(e.inputType), false);
-        else if (e.data) Ed.replace(g, s, e.data, "type");
-    }
-    if (sp && otel.paint) otel.paint(sp);
   },
 
   /* ---------- self test (census [edt:...]) ---------- */
@@ -1881,24 +1339,6 @@ Ed.field = function (g) {
   };
   return f;
 };
-Ed.setAll = function (g, text) {          // whole-document replace (undoable)
-  Ed.snap(g, "cmd");
-  g.view.lines = String(text).split("\n");
-  Ed.sync(g);
-  Ed.render(g, -1, 0);
-};
-Ed.offsetOf = function (g, p) {           // (line,col) -> document char offset
-  const L = Ed.lines(g);
-  let o = 0;
-  for (let i = 0; i < p.l && i < L.length; i++) o += L[i].length + 1;
-  return o + p.c;
-};
-Ed.placeOffset = function (g, o) {        // document char offset -> caret
-  const L = Ed.lines(g);
-  let l = 0;
-  while (l < L.length - 1 && o > L[l].length) { o -= L[l].length + 1; l++; }
-  Ed.place(g, l, o);
-};
 /* The FIRST client rect of selectNodeContents(row).getClientRects(), without
    asking for all the others. A range's rects come in document order — a
    top-level child element's border boxes, then the text rects inside it — so
@@ -1914,137 +1354,10 @@ Ed.firstRect = function (row, r) {
   }
   return null;
 };
-/* Headless probe (R17 smoke): the geometry the `edit` phase clicks with.
-   [edx:<left>] + [ery:<centre y per row>] let a test address a SOURCE LINE
-   instead of guessing a pixel — row heights differ per line (headings, list
-   items), so a fixed pitch goes stale on any type change. Capped at 40 rows:
-   the 500-line perf note never pays the layout read, so this stays off the
-   measured keystroke path. */
-Ed.geom = function (g) {
-  const rows = g.lp ? g.lp.children : null;
-  if (!rows || !rows.length || rows.length > 40) return "";
-  const b = rows[0].getBoundingClientRect();   // the ROW box (= the text column), not the padded container
-  let ys = "", xs = "", cb = "";
-  const r = document.createRange();
-  for (let i = 0; i < rows.length; i++) {
-    const q = rows[i].getBoundingClientRect();
-    ys += (i ? "," : "") + Math.round(q.top + q.height / 2);
-    /* [ecb:<row>@<x>] = centre of the rendered task checkbox on that row. It
-       is an <input>, so it is invisible to the range rects above, and its x
-       moves with the hidden "- [ ] " run — the lp phase used to click a
-       constant 315 for it. */
-    const box = rows[i].querySelector("input.tbox");
-    if (box) {
-      const bb = box.getBoundingClientRect();
-      if (bb.width) cb += (cb ? "," : "") + i + "@" + Math.round(bb.left + bb.width / 2);
-    }
-    /* [erx:] = where the row's first PAINTED character starts, which is NOT
-       the row box: a folded list row hides its "- " and paints a ::before
-       bullet instead, so the row box left is inside that bullet and a click
-       there lands on the pseudo-element, not on column 2. Range client rects
-       skip display:none text and generated content, so this is the only
-       honest "visual start of this source line". */
-    const r0 = Ed.firstRect(rows[i], r);
-    xs += (i ? "," : "") + Math.round(r0 ? r0.left : q.left);
-  }
-  return " [edx:" + Math.round(b.left) + "] [erx:" + xs + "] [ery:" + ys + "]"
-    + (cb ? " [ecb:" + cb + "]" : "");
-};
 Ed.selTok = function (g) {                // [sel:<l>.<c>-<l>.<c>] model range
   const s = Ed.sel(g);
   return s ? " [sel:" + s.a.l + "." + s.a.c + "-" + s.b.l + "." + s.b.c + "]" : "";
 };
-Ed.caretXY = function (g) {               // caret rect relative to the pane box
-  const s = window.getSelection();
-  const pr = g.pane.getBoundingClientRect();
-  if (!s || !s.rangeCount || !g.lp.contains(s.anchorNode)) return [16, 16];
-  let r = s.getRangeAt(0).getBoundingClientRect();
-  if (!r.width && !r.height) {            // collapsed range in an empty node
-    const row = Ed.rowOf(s.anchorNode) || g.lp;
-    r = row.getBoundingClientRect();
-  }
-  return [r.left - pr.left, r.bottom - pr.top];
-};
-/* caret00: [crt:] — where the DOM selection puts the caret of the focused
-   pane's editor, against the box it must never sit at the corner of.
-     [crt:<k>|<x>,<y>,<h>|lp=<x>,<y>|col=<x0>,<x1>|t0=<x>,<y>|ae=<0|1>|<l>.<c>]
-   k   = what the selection's focus node is: txt (a painted text node), hid (a
-         text node with no box — inside a display:none marker), br (a row's
-         <br>), row (a row element), lp (the editor ITSELF — no row chosen),
-         out (the selection is outside this editor), none (no selection)
-   x,y,h = the collapsed range's first client rect (0,0,0 = the engine has no
-         rect for that position); lp = the content-box origin of the scroller
-         (client px, scroll applied); col = row 0's box (the text column);
-         t0 = the first painted glyph of the note (document position 0);
-         ae = the editor holds DOM focus; l.c = the model position, or "-". */
-Ed.crtTok = function () {
-  const g = typeof fg === "function" ? fg() : null, lp = g && g.lp;
-  if (!lp || !lp.isConnected || !lp.getClientRects().length) return "";
-  const R = Math.round, s = window.getSelection(), cs = getComputedStyle(lp), b = lp.getBoundingClientRect();
-  const ox = R(b.left + lp.clientLeft + parseFloat(cs.paddingLeft)), oy = R(b.top + lp.clientTop + parseFloat(cs.paddingTop) - lp.scrollTop);
-  let k = "none", x = 0, y = 0, h = 0, lc = "-";
-  if (s && s.rangeCount && s.focusNode) {
-    const n = s.focusNode;
-    if (!lp.contains(n)) k = "out";
-    else {
-      k = n === lp ? "lp" : n.nodeType === 3 ? (n.parentElement && n.parentElement.getClientRects().length ? "txt" : "hid")
-        : n.nodeName === "BR" ? "br" : n.classList && n.classList.contains("lprow") ? "row" : "el";
-      const r = document.createRange();
-      try { r.setStart(n, s.focusOffset); r.collapse(true); } catch (_) { /* a stale offset: no rect */ }
-      const q = r.getClientRects(), c = q.length ? q[0] : r.getBoundingClientRect();
-      x = R(c.left); y = R(c.top); h = R(c.height);
-      const p = Ed.pos(g, n, s.focusOffset);
-      if (p) lc = p.l + "." + p.c;
-    }
-  }
-  const r0 = lp.children[0], cb = r0 ? r0.getBoundingClientRect() : null;
-  const t0 = r0 ? Ed.firstRect(r0, document.createRange()) : null;
-  return " [crt:" + k + "|" + x + "," + y + "," + h + "|lp=" + ox + "," + oy
-    + "|col=" + (cb ? R(cb.left) + "," + R(cb.right) : "-")
-    + "|t0=" + (t0 ? R(t0.left) + "," + R(t0.top) : cb ? R(cb.left) + "," + R(cb.top) : "-")
-    + "|ae=" + (document.activeElement === lp ? 1 : 0) + "|" + lc + "]";
-};
-
-/* R17.6/R17.7: reveal follows the SELECTION, per token. Selection moves the
-   browser handles natively (arrows, clicks, drag-select) land here — no
-   re-render, just the `.rv` class flip + the [mode:lp:<line>] [rv:] census.
-
-   The old "same line? nothing to do" short-circuit is GONE on purpose: with a
-   per-token reveal a move WITHIN a line changes the reveal set (col 10 -> col
-   15 opens `*ital*`), so bailing on the line number is exactly the bug this
-   replaces. Ed.mark still guards the title churn on the line number. */
-document.addEventListener("selectionchange", () => {
-  const s = window.getSelection();
-  if (!s || !s.anchorNode) return;
-  const row = Ed.rowOf(s.anchorNode);
-  // caret00: a selection ON the editor element (no row) republishes [crt:] too
-  if (!row && s.anchorNode.classList && s.anchorNode.classList.contains("lp")) { Ed.census(); return; }
-  const lp = row ? row.parentElement : null;
-  if (!lp || !lp.classList.contains("lp")) return;
-  const pane = lp.closest(".pane"), g = pane ? pane._g : null;
-  if (!g || g.lp !== lp) return;
-  const l = Ed.indexOf(row);
-  const ms = Ed.sel(g);
-  Ed.reveal(g, ms && ms.a, ms && ms.b);
-  /* THE CACHE MAY NOT OUTLIVE THE STATE IT CACHES (2026-09-19, tabclose).
-     Ed.cur is a module-level memo of "the caret is already on this row of this
-     pane", and the ONLY writer that keeps it in step with g.lpActive is
-     Ed.mark. Anything that nulls g.lpActive behind mark's back — dropTab()
-     (main.js: the watcher removing the active tab) and the per-tab view
-     restore (main.js: g.lpActive = v.lpActive on a tab switch) — leaves Ed.cur
-     pointing at a row of a note that is gone, and this short-circuit then
-     swallows the very click that should have re-armed the raw row: the caret
-     lands (the selection moves, [sel:0.16-0.16]) and [mode:lp] stays without a
-     line FOREVER, because every later click on the same row number is
-     short-circuited too. Measured on :123 at 738a530: after an external delete
-     closed a tab, five clicks on the next note's line 0 produced no raw row.
-     So the memo is only trusted when g.lpActive AGREES with it — one condition
-     here instead of an invalidation call every caller must remember. */
-  if (Ed.cur && Ed.cur.g === g && Ed.cur.l === l && g.lpActive && g.lpActive.l0 === l) { Ed.census(); return; }
-  Ed.cur = { g, l };
-  Ed.mark(g, l);
-});
-
 /* rvtask R3/R4: reading-view task checkbox click. ONE delegated listener: the
    renderer (src-tauri main.rs emit) gives each reading-view box data-line = its
    0-based FILE line, so duplicate / nested / quoted / numbered items map
@@ -2125,7 +1438,7 @@ document.addEventListener("scroll", e => {
 }, true);
 
 /* ======================================================================
-   CM6 EDITOR CORE (cm6-editor) — CodeMirror 6 is the view and the model.
+   CM6 EDITOR CORE — CodeMirror 6 is the view and the model.
    One EditorView per tab view (mkView -> Ed.mount). Its state.doc is the
    source of truth; Ed.lines(g) is a lazily rebuilt string[] mirror so the
    model-level helpers above (enter/indent/toggles/renumber, replace-all,
