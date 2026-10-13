@@ -11365,11 +11365,23 @@ function fReveal(g, done) {   // done(): called once the reveal has finished (sy
   let lastE = Math.round(sc.scrollTop);
   const onS = () => { const tp = Math.round(P.get.call(sc)); if (tp !== lastE) { fRv += "|e" + tp; lastE = tp; } };
   sc.addEventListener("scroll", onS);
-  const unhook = () => { sc.removeEventListener("scroll", onS); try { delete sc.scrollTop; delete sc.scrollTo; delete sc.scrollBy; } catch (_) {} };
+  // native scrollers: focus() and DOM-selection writes reveal their target
+  const ae = () => { const a = document.activeElement; return a ? a.tagName.toLowerCase() + "." + String(a.className || "").split(" ")[0] : "-"; };
+  const sel0 = document.getSelection(), anc = () => { const n = sel0 && sel0.anchorNode; return !n ? "-" : sc.contains(n) ? "in" : "out"; };
+  fRv += "|a" + ae() + "|sel" + anc();
+  const saved = [];
+  const hookP = (proto, m, tag) => { const o = proto[m]; saved.push([proto, m, o]);
+    proto[m] = function () { fRv += "|" + tag + "@" + who(); return o.apply(this, arguments); }; };
+  try {
+    hookP(HTMLElement.prototype, "focus", "F");
+    for (const m of ["setBaseAndExtent", "collapse", "addRange", "removeAllRanges", "extend", "setPosition"]) hookP(Selection.prototype, m, "S" + m.slice(0, 3));
+    hookP(Element.prototype, "scrollIntoView", "SIV");
+  } catch (_) {}
+  const unhook = () => { sc.removeEventListener("scroll", onS); for (const [p, m, o] of saved) p[m] = o; try { delete sc.scrollTop; delete sc.scrollTo; delete sc.scrollBy; } catch (_) {} };
   let n = 0, lastTop = -1;
   const step = () => cm.requestMeasure({ key: "osFindReveal", read: () => null, write: () => {
     const tp = Math.round(sc.scrollTop);
-    if (tp !== lastTop) { fRv += "|@" + n + ":" + tp + "/" + Math.round(sc.scrollHeight); lastTop = tp; }
+    if (tp !== lastTop) { fRv += "|@" + n + ":" + tp + "/" + Math.round(sc.scrollHeight) + "," + ae() + "," + anc(); lastTop = tp; }
     const ok = Ed.cm(g) === cm && go();
     if (ok || Ed.cm(g) !== cm || ++n > 12) {
       unhook();
