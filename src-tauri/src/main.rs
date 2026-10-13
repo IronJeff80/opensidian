@@ -26,6 +26,7 @@ mod index;
 mod migrate;
 mod outline;
 mod pdf;
+mod plugins;
 mod qscreate;
 mod perf;
 mod sandbox;
@@ -5373,6 +5374,30 @@ fn main() {
             .expect("img response");
             responder.respond(res)
         })
+        // plugin-loader (recon M1): community plugin main.js, CJS-wrapped and
+        // confined by plugins::serve (rules 1-5 in plugins.rs). Every refusal is
+        // a bodiless 403 — restricted mode, not enabled, escape attempt alike.
+        .register_uri_scheme_protocol(plugins::SCHEME, |ctx, req| {
+            use tauri::Manager;
+            let root = cur_vault(&ctx.app_handle().state::<Vault>());
+            let trusted = root.as_deref().is_some_and(|r| plugins::is_trusted(&cfg_value(), r));
+            let b = tauri::http::Response::builder();
+            match plugins::serve(root.as_deref(), req.uri().path(), trusted) {
+                plugins::Served::Js(body) => b
+                    .status(200)
+                    .header("Content-Type", "text/javascript; charset=utf-8")
+                    .header("X-Content-Type-Options", "nosniff")
+                    .header("Cache-Control", "no-store")
+                    .body(body),
+                plugins::Served::Missing => b.status(404).body(Vec::new()),
+                plugins::Served::Refused(why) => {
+                    eprintln!("[plugin] refused {}: {why}", req.uri().path());
+                    b.status(403).body(Vec::new())
+                }
+            }
+            .expect("plugin response")
+            .map(std::borrow::Cow::Owned)
+        })
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
@@ -8274,7 +8299,7 @@ mod tests {
             .to_string();
         assert_eq!(
             csp,
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+            "default-src 'self'; script-src 'self' opensidian-plugin:; style-src 'self' 'unsafe-inline'; \
              img-src 'self' data: opensidian-img:; font-src 'self'; \
              connect-src ipc: http://ipc.localhost",
             "the CSP changed — if that was deliberate, say why in the commit message"
@@ -8286,6 +8311,10 @@ mod tests {
         // no wildcard, no http(s) origin anywhere in the image directive
         assert!(!img.contains('*'), "img-src wildcard re-enables remote beacons: {img}");
         assert!(!img.contains("http"), "img-src names a remote origin: {img}");
+        // plugin-loader: script-src widens by ONE scheme token, ours — no eval, no blob:
+        let script = csp.split("; ").find(|d| d.starts_with("script-src ")).unwrap();
+        assert_eq!(script, format!("script-src 'self' {}:", plugins::SCHEME));
+        assert!(!csp.contains("unsafe-eval") && !csp.contains("blob:"), "{csp}");
     }
 
     /// S4: picker commands refuse system trees and dot-components, keep the
