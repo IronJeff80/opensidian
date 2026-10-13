@@ -38,34 +38,39 @@
 .os-plugin-modal .prompt-instructions:empty { display: none }
 .os-plugin-modal .prompt-instruction-command { font-weight: 600; margin-right: 4px }
 
-.setting-item { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border) }
-.setting-item:first-child { border-top: 0 }
-.setting-item-info { flex: 1 1 auto; min-width: 0 }
-.setting-item-name { font-size: 14px; color: var(--text-chrome) }
-.setting-item-description { font-size: 12px; color: var(--text-chrome-muted); margin-top: 2px }
-.setting-item-description:empty { display: none }
-.setting-item-control { flex: 0 0 auto; display: flex; align-items: center; gap: 8px }
-.setting-item-heading .setting-item-name { font-weight: 600 }
-.setting-item.is-disabled { opacity: .5; pointer-events: none }
-.setting-item-control input[type=text], .setting-item-control input[type=search],
-.setting-item-control textarea, .setting-item-control select.dropdown {
+/* Setting / toggle / icon classes are Obsidian's names, and the app's own graph controls card reuses
+   them (main.js gcSlider/gcToggle, style.css .graph-controls): unscoped, these rules leaked into the
+   graph card (gate ggpanel L2). They apply ONLY where plugin UI is built: a plugin settings tab
+   (#spage) and plugin modals. :where() keeps the original specificity. */
+:where(#spage, .os-plugin-modal) .setting-item { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border) }
+:where(#spage, .os-plugin-modal) .setting-item:first-child { border-top: 0 }
+:where(#spage, .os-plugin-modal) .setting-item-info { flex: 1 1 auto; min-width: 0 }
+:where(#spage, .os-plugin-modal) .setting-item-name { font-size: 14px; color: var(--text-chrome) }
+:where(#spage, .os-plugin-modal) .setting-item-description { font-size: 12px; color: var(--text-chrome-muted); margin-top: 2px }
+:where(#spage, .os-plugin-modal) .setting-item-description:empty { display: none }
+:where(#spage, .os-plugin-modal) .setting-item-control { flex: 0 0 auto; display: flex; align-items: center; gap: 8px }
+:where(#spage, .os-plugin-modal) .setting-item-heading .setting-item-name { font-weight: 600 }
+:where(#spage, .os-plugin-modal) .setting-item.is-disabled { opacity: .5; pointer-events: none }
+:where(#spage, .os-plugin-modal) .setting-item-control input[type=text], :where(#spage, .os-plugin-modal) .setting-item-control input[type=search],
+:where(#spage, .os-plugin-modal) .setting-item-control textarea, :where(#spage, .os-plugin-modal) .setting-item-control select.dropdown {
   background: var(--bg-base); color: var(--text-chrome); border: 1px solid var(--border);
   border-radius: 4px; padding: 4px 8px; font-size: 13px }
-.setting-item-control button, .os-plugin-modal button { background: var(--bg-surface); color: var(--text-chrome);
+:where(#spage, .os-plugin-modal) .setting-item-control button, .os-plugin-modal button { background: var(--bg-surface); color: var(--text-chrome);
   border: 1px solid var(--border); border-radius: 4px; padding: 4px 12px; font-size: 13px; cursor: pointer }
-.setting-item-control button.mod-cta, .os-plugin-modal button.mod-cta { background: var(--bg-button-primary); color: var(--text-on-accent) }
-.setting-item-control button.mod-warning, .os-plugin-modal button.mod-warning { color: var(--text-error) }
-.checkbox-container { position: relative; width: 34px; height: 18px; border-radius: 9px;
+:where(#spage, .os-plugin-modal) .setting-item-control button.mod-cta, .os-plugin-modal button.mod-cta { background: var(--bg-button-primary); color: var(--text-on-accent) }
+:where(#spage, .os-plugin-modal) .setting-item-control button.mod-warning, .os-plugin-modal button.mod-warning { color: var(--text-error) }
+:where(#spage, .os-plugin-modal) .checkbox-container { position: relative; width: 34px; height: 18px; border-radius: 9px;
   background: var(--border); cursor: pointer; flex: 0 0 auto }
-.checkbox-container::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px;
+:where(#spage, .os-plugin-modal) .checkbox-container::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px;
   height: 14px; border-radius: 50%; background: var(--text-chrome-muted); transition: left .1s }
-.checkbox-container.is-enabled { background: var(--interactive-accent) }
-.checkbox-container.is-enabled::after { left: 18px; background: var(--text-on-accent) }
-.checkbox-container input { display: none }
-.checkbox-container.is-disabled { opacity: .5; pointer-events: none }
-.extra-setting-button, .clickable-icon { cursor: pointer; color: var(--text-chrome-muted) }
-.extra-setting-button svg, .setting-item-control button svg { width: 16px; height: 16px; vertical-align: middle }
+:where(#spage, .os-plugin-modal) .checkbox-container.is-enabled { background: var(--interactive-accent) }
+:where(#spage, .os-plugin-modal) .checkbox-container.is-enabled::after { left: 18px; background: var(--text-on-accent) }
+:where(#spage, .os-plugin-modal) .checkbox-container input { display: none }
+:where(#spage, .os-plugin-modal) .checkbox-container.is-disabled { opacity: .5; pointer-events: none }
+:where(#spage, .os-plugin-modal) .extra-setting-button, :where(#spage, .os-plugin-modal) .clickable-icon { cursor: pointer; color: var(--text-chrome-muted) }
+:where(#spage, .os-plugin-modal) .extra-setting-button svg, :where(#spage, .os-plugin-modal) .setting-item-control button svg { width: 16px; height: 16px; vertical-align: middle }
 
+#ribbon .os-plugin-ribbon { cursor: pointer }
 #ribbon .os-plugin-ribbon svg { width: 18px; height: 18px; display: block; margin: 0 auto }
 
 .os-plugin-statusbar { position: fixed; right: 0; bottom: 0; z-index: 30; display: flex; gap: 10px;
