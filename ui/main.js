@@ -7838,8 +7838,7 @@ async function undoCloseTab() {
   await openInTab(e.name);
   const g = fg();
   if (e.text != null && !wrote && disk !== e.text && curOf(g) === e.name && g.active >= 0) {
-    await reloadInPlace(g, e.text);
-    g.tabs[g.active].base = disk == null ? "" : disk;   // base = the bytes on disk -> the tab reads DIRTY, honestly
+    await reloadInPlace(g, e.text, disk == null ? "" : disk);   // base = the bytes on disk -> the tab reads DIRTY, honestly (from the first paint)
   }
   updateTitle();
   return true;
@@ -9949,8 +9948,10 @@ async function saveBuf1(g) {
       // exact loss F1 is about, reintroduced through the merge path. base
       // means "the bytes we last saw on disk", so put the DISK bytes there:
       // correct on failure (dirty, and the next merge still sees the append
-      // as an append), and overwritten by setBase below on success.
-      if (merged !== buf) { await reloadInPlace(g, merged); buf = merged; t.base = disk; }
+      // as an append), and overwritten by setBase below on success. Passed
+      // INTO reloadInPlace: assigned after its await, base == buf for the
+      // whole render (that render publishes the census) = a dirty tab read clean.
+      if (merged !== buf) { await reloadInPlace(g, merged, disk); buf = merged; }
     }
   }
   if (!await saveNote(n, buf)) return false;   // F1: a failed save leaves the tab DIRTY, banner up
@@ -9958,10 +9959,17 @@ async function saveBuf1(g) {
   return true;
 }
 // R11.2: replace the ACTIVE tab's text in place — caret line/col + scroll kept
-async function reloadInPlace(g, text) {
+// `base` = the disk bytes the tab holds once the new text is in (default: the
+// text itself = clean). Set in the SAME synchronous step as the text, BEFORE the
+// render: lpRender/preview publish the census (updateTitle), and callers that set
+// base only after this await (saveBuf1, onVaultChanged, undoCloseTab) left a
+// window where a dirty tab read base == buffer, CLEAN, while its save was in
+// flight or about to fail (pviews-dloss: dloss F1xR11.3 caught that snapshot).
+// A dirty tab never reads clean, not for one paint.
+async function reloadInPlace(g, text, base = text) {
   const t = g.tabs[g.active];
   const c = g.lpActive ? Ed.caret(g) : null;   // R17: caret survives the reload
-  Ed.setText(g, text); t.base = text;
+  Ed.setText(g, text); t.base = base;
   if (t.mode === "reading") await preview(g);
   else await lpRender(g, c ? c.l : -1, c ? c.c : 0);   // dirty rows only
   updateStatus(g);
@@ -10024,7 +10032,7 @@ async function onVaultChanged(c) {
     // R11.3 dirty: never lose typed text. External append on top of our base
     // merges (buf + tail); anything else keeps the buffer. Either way re-save.
     const merged = ext.startsWith(t.base) ? buf + ext.slice(t.base.length) : buf;
-    if (merged !== buf) await reloadInPlace(g, merged);
+    if (merged !== buf) await reloadInPlace(g, merged, ext);   // base = disk from the first paint: dirty throughout
     t.base = ext; scheduleSave(g);
   }
   await refreshTree();
