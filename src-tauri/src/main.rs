@@ -4772,8 +4772,8 @@ fn tab_removed(
 /// The closed set, shared by the command above and the UI (ui/main.js keeps the
 /// same four strings in TAB_CAUSES; a test in this file pins them together so
 /// the two lists cannot drift apart unnoticed).
-const TAB_REMOVAL_CAUSES: [&str; 4] =
-    ["user-close", "external-delete", "external-rename", "pane-collapse"]; // vaultbleed: session-replace died with the in-process vault switch
+const TAB_REMOVAL_CAUSES: [&str; 5] =
+    ["user-close", "external-delete", "external-rename", "pane-collapse", "plugin-detach"]; // vaultbleed: session-replace died with the in-process vault switch
 
 #[tauri::command]
 fn win_gesture(

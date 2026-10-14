@@ -704,8 +704,8 @@
   const viewsFactory = window.__osPluginViews;
   try { delete window.__osPluginViews; } catch (_) {}
   if (typeof viewsFactory !== "function") { console.error("[plugin] views.js did not load"); return; }
-  const { View, ItemView, FileView, EditableFileView, TextFileView, WorkspaceLeaf } = viewsFactory({
-    Component, Events, installDom, mk, setIcon,
+  const { View, ItemView, FileView, EditableFileView, TextFileView, WorkspaceLeaf, host: views } = viewsFactory({
+    Component, Events, installDom, mk, setIcon, app: () => app, touch: () => touch(),
     vault: () => vault, TFile: () => TFile,
     leafView: l => leafView(l), groupFile: g => groupFile(g), openFileIn: (l, f, o) => openFileIn(l, f, o),
   });
@@ -1059,7 +1059,8 @@
      place main.js already reports "something on screen changed" — so this
      needs no new hook in main.js. */
   const leafOf = new WeakMap();
-  const leafFor = g => { if (!g) return null; let l = leafOf.get(g); if (!l) { l = new WorkspaceLeaf(app); l._g = g; leafOf.set(g, l); } return l; };
+  const groupLeaf = g => { if (!g) return null; let l = leafOf.get(g); if (!l) { l = new WorkspaceLeaf(app); l._g = g; leafOf.set(g, l); } return l; };
+  const leafFor = g => (g ? views.leafOfGroup(g, groupLeaf) : null);   // plugin-views: a plugin-view tab is its own leaf
   const allGroups = () => { try { return typeof groups === "function" ? groups() : []; } catch (_) { return []; } };
   const focusedGroup = () => { try { return typeof state !== "undefined" && state ? state.focused : null; } catch (_) { return null; } };
   function groupFile(g) {
@@ -1081,7 +1082,8 @@
     if (!(file instanceof TFile) || file.extension !== "md") return;
     const name = noteOf(file.path), g = leaf && leaf._g;
     if (g && g !== focusedGroup() && typeof focusGroup === "function") try { focusGroup(g); } catch (_) {}
-    if (leaf && leaf._nt && typeof openNewTab === "function") { leaf._nt = false; await openNewTab(name, g || undefined); }
+    if (leaf && leaf._split && g && typeof splitWith === "function" && typeof mkTab === "function") { const d0 = leaf._split; leaf._split = null; await splitWith(g, d0, mkTab(name)); }
+    else if (leaf && leaf._nt && typeof openNewTab === "function") { leaf._nt = false; await openNewTab(name, g || undefined); }
     else if (typeof openInTab === "function") await openInTab(name);
     const sub = openState && openState.eState && openState.eState.subpath;
     if (sub && typeof navAnchor === "function") try { await navAnchor(focusedGroup(), sub.replace(/^#/, "")); } catch (_) {}
@@ -1089,6 +1091,7 @@
   }
   let lastLeaf = null, lastFile;
   function focusTick() {
+    views.sweep();                       // plugin-views: a plugin-view tab the app closed -> its view closes
     if (!modelOn || !layoutReady) return;
     const l = leafFor(focusedGroup()), f = l ? groupFile(l._g) : null;
     if (l !== lastLeaf) { lastLeaf = l; queueMicrotask(() => workspace.trigger("active-leaf-change", l)); }
@@ -1099,18 +1102,28 @@
     layoutReady: false,
     containerEl: document.body,
     onLayoutReady(cb) { if (layoutReady) queueMicrotask(() => { try { cb(); } catch (e) { console.error(e); } }); else workspace.on("layout-ready", cb); },
-    iterateAllLeaves(cb) { for (const g of allGroups()) cb(leafFor(g)); },
-    iterateRootLeaves(cb) { for (const g of allGroups()) cb(leafFor(g)); },
-    getLeavesOfType(t) { return allGroups().map(leafFor).filter(l => l && l.view.getViewType() === t); },
+    iterateAllLeaves(cb) { views.iterateLeaves(cb, groupLeaf, true); },
+    iterateRootLeaves(cb) { views.iterateLeaves(cb, groupLeaf, false); },
+    getLeavesOfType(t) { const pv = views.leavesOfType(t); if (pv.length || views.types.has(t)) return pv; return allGroups().map(groupLeaf).filter(l => l && l.view.getViewType() === t); },
+    detachLeavesOfType(t) { for (const l of views.leavesOfType(t)) l.detach(); },
+    getRightLeaf() { return views.getSideLeaf("right"); },
+    getLeftLeaf() { return views.getSideLeaf("left"); },
+    async ensureSideLeaf(type, side, o) {
+      o = o || {}; let l = views.leavesOfType(type)[0];
+      if (!l) { l = views.getSideLeaf(side === "left" ? "left" : "right"); await l.setViewState({ type, state: o.state || {}, active: !!o.active }); }
+      if (o.reveal !== false) await views.reveal(l);
+      return l;
+    },
     getActiveViewOfType(C) { const l = workspace.activeLeaf, v = l && l.view; return v && C && v instanceof C ? v : null; },
     getActiveFile() { return groupFile(focusedGroup()); },
     getMostRecentLeaf() { return workspace.activeLeaf; },
     getUnpinnedLeaf() { return workspace.activeLeaf; },
-    getLeaf(newLeaf) { const l = workspace.activeLeaf; if (!newLeaf || !l) return l; const n = new WorkspaceLeaf(app); n._g = l._g; n._nt = true; return n; },
-    splitActiveLeaf() { return workspace.getLeaf(true); },   // M1: a new tab in the focused group, not a split
-    createLeafBySplit() { return workspace.getLeaf(true); },
-    setActiveLeaf(l) { if (l && l._g && typeof focusGroup === "function") try { focusGroup(l._g); } catch (_) {} },
-    revealLeaf(l) { workspace.setActiveLeaf(l); return Promise.resolve(); },
+    getLeaf(newLeaf, dir) { if (!newLeaf) return workspace.activeLeaf; return views.getLeaf(newLeaf, dir) || workspace.activeLeaf; },
+    splitActiveLeaf(dir) { return workspace.getLeaf("split", dir); },
+    createLeafBySplit(leaf, dir) { return workspace.getLeaf("split", dir); },
+    createLeafInParent() { return workspace.getLeaf("tab"); },
+    setActiveLeaf(l) { if (l && (l._t || l._side)) { views.reveal(l); return; } if (l && l._g && typeof focusGroup === "function") try { focusGroup(l._g); } catch (_) {} },
+    revealLeaf(l) { if (l && (l._t || l._side)) return views.reveal(l); workspace.setActiveLeaf(l); return Promise.resolve(); },
     async openLinkText(lt, src, newLeaf, openState) {
       const { path, subpath } = parseLinktext(lt);
       let f = path ? resolveLink(path, src) : vault.getFileByPath(src || "");
@@ -1260,7 +1273,11 @@
     async loadData() { return be ? be.io(this.manifest.id, "load") : null; }
     async saveData(data) { if (!be) throw new Error("plugin backend unavailable"); await be.io(this.manifest.id, "save", data === undefined ? null : JSON.parse(JSON.stringify(data))); }
     onExternalSettingsChange() {}
-    registerView(type) { console.warn("[plugin] " + this.manifest.id + ": registerView(" + type + ") — custom views are not hosted yet (M1)"); }
+    registerView(type, factory) {   // plugin-views: hosted in the app's tabs / right sidebar (ui/plugins/views.js); unload detaches them
+      try { PVHOST = views.PV; } catch (_) {}   // main.js loadActive asks it to mount a plugin-view tab
+      views.registerView(this.manifest.id, type, factory);
+      this.register(() => views.unregisterView(type));
+    }
     registerHoverLinkSource() {}
     registerExtensions() {}
     registerMarkdownPostProcessor(p) { return p; }
@@ -1410,7 +1427,7 @@
     const ids = [...host.status].map(([id, s]) => id + "=" + s.state + (s.state === "failed" && s.error ? "(" + String(s.error).replace(/[[\]|,=()\s]+/g, "_").slice(0, 80) + ")" : "")).join(",");
     const nt = notices.length ? " [pnotice:" + notices.map(n => n.noticeEl.textContent.replace(/[[\]|]/g, "").slice(0, 60)).join("|") + "]" : "";
     const md = openModals.length ? " [pmodal:" + openModals.length + "]" : "";
-    return " [plg:" + (trusted ? "T" : "R") + "|" + ids + "] [preg:c" + c + ",r" + rb + ",s" + st + ",t" + tb + "]" + nt + md;
+    return " [plg:" + (trusted ? "T" : "R") + "|" + ids + "] [preg:c" + c + ",r" + rb + ",s" + st + ",t" + tb + "]" + nt + md + views.censusTok();
   }
 
   host.api = api;

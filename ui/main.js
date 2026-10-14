@@ -93,6 +93,9 @@ function leaves(node, out = []) {
 const groups = () => (state ? leaves(state.root) : []);
 let rlwOn = true;   // goal/minimalmargin: app.json readableLineLength mirror (rlwLoad, near loadVaultCss); declared up here because mkView reads it
 const fg = () => state.focused;
+/* plugin-views: the plugin host (ui/plugins/views.js) sets PVHOST when a plugin registers a view
+   type; loadActive asks it to mount a kept "unk" tab of that type (and to hide it again). */
+let PVHOST = null;
 const curOf = g => (g.active >= 0 ? g.tabs[g.active].name : null);
 const cur = () => (state && fg() ? curOf(fg()) : null);
 // R18: is this group's active tab showing the READING pane? (the only pane the
@@ -5343,10 +5346,16 @@ async function loadActive(g) {
   hideAc();
   const t = g.active >= 0 ? g.tabs[g.active] : null;
   if (g.unkEl) g.unkEl.hidden = !(t && t.kind === "unk");
+  if (PVHOST) PVHOST.hide(g, t);   // plugin-views: another tab shows -> this pane's plugin views hide
   if (t && t.kind === "unk") {      // W4: a kept leaf we have no view for — say so, keep it, touch nothing
     showEditor(g);                  // stops a graph sim this pane may have been running
     g.status.hidden = true;
     g.lp.style.display = g.preview.style.display = g.editor.style.display = "none";
+    if (PVHOST && PVHOST.mount(g, t)) {   // plugin-views: its type is registered -> the plugin's view is the tab
+      if (g.unkEl) g.unkEl.hidden = true;
+      renderTabs(g); treeHighlight(); rgFollow();
+      return;
+    }
     if (!g.unkEl) {
       g.unkEl = document.createElement("div");
       g.unkEl.className = "unkview";
@@ -5769,7 +5778,7 @@ for (const ev of ["mousedown", "mouseup", "auxclick", "click"])
    undo-close rescue buffer because writing them was not allowed (R11.4: the
    file is gone). dirty=1 flushed=0 preserved=0 is the F-class defect, stated at
    the moment it happens instead of reconstructed from a bug report. */
-const TAB_CAUSES = ["user-close", "external-delete", "external-rename", "pane-collapse"];
+const TAB_CAUSES = ["user-close", "external-delete", "external-rename", "pane-collapse", "plugin-detach"];
 let tgSeq = 0, tgHist = [];        // census [tgn:<seq>] [tg:<cause>:<d>:<note>|...]
 /* A note name is user data and the census is a bracket-delimited string, so the
    same stripping the bookmark census uses applies: a note called "x] [dirty:0"
