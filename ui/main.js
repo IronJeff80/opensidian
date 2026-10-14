@@ -96,6 +96,9 @@ const fg = () => state.focused;
 /* plugin-views: the plugin host (ui/plugins/views.js) sets PVHOST when a plugin registers a view
    type; loadActive asks it to mount a kept "unk" tab of that type (and to hide it again). */
 let PVHOST = null;
+/* plugin-views item 5: set by ui/plugins/api.js when a plugin listens for "file-menu" / "editor-menu";
+   noteMenu and the editor right-click ask it to add the plugin rows. */
+let PMENU = null;
 const curOf = g => (g.active >= 0 ? g.tabs[g.active].name : null);
 const cur = () => (state && fg() ? curOf(fg()) : null);
 // R18: is this group's active tab showing the READING pane? (the only pane the
@@ -2044,6 +2047,7 @@ function noteMenu(e, nm) {                 // right-click a tree note row
      harder here than it did for tabs: an OCR row miss followed by "Delete" would
      delete a note nobody named and still look green. */
   m.dataset.mt = "note:" + nm;
+  if (PMENU) PMENU.fileMenu(m, nm, "file-explorer-context-menu");   // plugin-views: workspace "file-menu" rows, after a rule
   placeMenu(m, e.clientX, e.clientY);   /* R22: viewport-clamped by measured size */
 }
 
@@ -4085,7 +4089,10 @@ function clampMenu(m) {
   m.style.left = Math.max(0, Math.min(+m.dataset.x, innerWidth - m.offsetWidth)) + "px";
   m.style.top = Math.max(0, Math.min(+m.dataset.y, innerHeight - m.offsetHeight)) + "px";
 }
-document.addEventListener("contextmenu", e => e.preventDefault()); // app-like: native menu never
+document.addEventListener("contextmenu", e => {   // app-like: native menu never
+  e.preventDefault();
+  if (PMENU && e.target instanceof Element && e.target.closest(".cm-editor")) PMENU.editorMenu(e);   // plugin-views: workspace "editor-menu"
+});
 document.addEventListener("mousedown", e => {
   if (menuEl && !menuEl.contains(e.target)) closeMenu();
 }, true);

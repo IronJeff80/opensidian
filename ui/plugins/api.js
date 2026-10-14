@@ -1141,6 +1141,50 @@
     },
     rightRibbon: { collapsed: false },
   });
+  /* plugin-views item 5: workspace "file-menu" / "editor-menu". main.js builds its
+     own .ctxmenu (noteMenu: the explorer row) and asks PMENU before placing it; a
+     plugin's handler gets a Menu whose rows land in THAT menu after a rule, so they
+     share its styling, its close-on-mousedown and its [menu:] census. Nothing is
+     added — not even the rule — when no handler adds a row. "editor-menu" opens a
+     menu of plugin rows only, and only once bridge.editor yields an Editor. */
+  function menuHook(name, m, args) {
+    const a = workspace._ev.get(name);
+    if (!a || !a.length) return 0;
+    const menu = new Menu(); menu.dom = m;
+    workspace.trigger(name, menu, ...args);
+    const it = menu.items.slice();
+    while (it.length && it[0] === null) it.shift();
+    while (it.length && it[it.length - 1] === null) it.pop();
+    const n = it.filter(Boolean).length;
+    if (!n) return 0;
+    if (m.childElementCount) { const s = document.createElement("div"); s.className = "sep"; m.appendChild(s); }
+    for (const x of it) {
+      if (x === null) { const s = document.createElement("div"); s.className = "sep"; m.appendChild(s); }
+      else m.appendChild(x.dom);
+    }
+    return n;
+  }
+  const PM = {
+    fileMenu(m, name, source) {
+      const f = files.get(name + ".md");
+      return f instanceof TFile ? menuHook("file-menu", m, [f, source || "file-explorer-context-menu", null]) : 0;
+    },
+    editorMenu(e) {
+      const x = bridge.editor ? bridge.editor() : null;
+      if (!x || !x.editor) return false;
+      const m = document.createElement("div");
+      m.className = "ctxmenu menu os-plugin-menu";
+      if (!menuHook("editor-menu", m, [x.editor, x.view])) return false;
+      if (typeof closeMenu === "function") closeMenu();
+      if (typeof placeMenu === "function") placeMenu(m, e.clientX, e.clientY);
+      return true;
+    },
+  };
+  const menuOn = workspace.on;
+  workspace.on = function (name, cb, ctx) {   // main.js's PMENU is set lazily: api.js loads before main.js declares it
+    if (name === "file-menu" || name === "editor-menu") try { PMENU = PM; } catch (_) {}
+    return menuOn.call(this, name, cb, ctx);
+  };
   Object.defineProperty(workspace, "activeLeaf", { configurable: true, enumerable: true, get() {
     const g = focusedGroup() || allGroups()[0];
     return g ? leafFor(g) : null;
