@@ -275,7 +275,7 @@ async function cmdToggleRight() {
     $("rside").hidden = $("rdiv").hidden = !rightOpen;
     $("rtoggle").title = rightOpen ? "Collapse right sidebar" : "Expand right sidebar";
     placeRToggle();
-    if (rightOpen) setRTab(rTab, false);   // pane content fills in AFTER the toggle paints (not awaited)
+    if (rightOpen && !(PVHOST && PVHOST.sideShowing("right"))) setRTab(rTab, false);   // pane content fills in AFTER the toggle paints (not awaited); a plugin pane that was showing stays
     updateTitle();
   });
 }
@@ -302,6 +302,7 @@ async function setRTab(t, persist = true) {
     $(id).hidden = k !== t;
     $("rtab-" + k).classList.toggle("active", k === t);
   }
+  if (PVHOST) PVHOST.sideHide("right");   // plugin-views: a plugin view's pane in the right sidebar hides
   if (persist) inv("set_rside_tab", { tab: t }).catch(() => {});
   if (!rightOpen) return;
   await rPanesRefresh();
@@ -756,6 +757,7 @@ function setPane(p) {
     $(id).hidden = k !== p;
     $("stab-" + k).classList.toggle("active", k === p);
   }
+  if (PVHOST) PVHOST.sideHide("left");    // plugin-views: a plugin view's pane in the left sidebar hides
   if (p === "search") $("sinput").focus();
   if (p === "bm") refreshBm();               // re-read: disk is the truth
   updateTitle();

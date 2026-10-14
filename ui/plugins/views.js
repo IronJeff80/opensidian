@@ -159,6 +159,8 @@
           const keep = recs.get(t);
           for (const x of g.content.querySelectorAll(":scope > .os-pv")) if (!keep || x !== keep.view.containerEl) x.hidden = true;
         },
+        sideHide(side) { sideHide(side); },        // main.js setRTab / setPane: a built-in sidebar tab shows
+        sideShowing(side) { return sideShowing(side); },   // main.js cmdToggleRight: a plugin pane is what reopens
       };
       function sweep() {                // a tab closed / collapsed by the app: its view closes
         if (!recs.size) return;
@@ -245,7 +247,7 @@
       function emptyView(leaf) { let v = emptyOf.get(leaf); if (!v) { v = new View(leaf); v.getViewType = () => (leaf._t ? leaf._t.utype : "empty"); emptyOf.set(leaf, v); } return v; }
 
       async function openTyped(leaf, type, state, active) {
-        if (leaf._side) return sideOpen(leaf, type, state, active);
+        if (leaf._side) return sideOpenView(leaf, type, state, active);
         if (leaf._t) {                  // a tab leaf: same type -> new state; other type -> a new view in the same tab
           const t = leaf._t, g = groupOfTab(t);
           let r = recs.get(t);
@@ -325,20 +327,100 @@
         d.touch();
       }
 
-      /* sidebars — item 3 fills these in (getRightLeaf / getLeftLeaf) */
-      const sides = [];                 // side records {leaf, view, type, pid, side, opened}
+      /* sidebars (getRightLeaf / getLeftLeaf): a plugin view gets its own icon
+         button in the sidebar's strip (#rtabs before #rtoggle / #stabs) and its
+         own .spane in #rside / #side. Showing it hides the built-in panes; a
+         built-in tab click (setRTab / setPane) calls PV.sideHide(side) back.
+         Side views are NOT persisted in workspace.json: plugins re-create them
+         on onLayoutReady (Obsidian plugins all do: ensureSideLeaf / getRightLeaf). */
+      const sides = [];                 // side records {leaf, view, type, pid, side, opened, btn, pane}
       const sideRecs = () => sides;
       const sideRec = leaf => sides.find(s => s.leaf === leaf) || null;
-      function sideSync() {}
-      function sideRegistered() {}
-      async function sideOpen(leaf, type, state, active) {   // until item 3: a tab in the focused group
-        const n = new WorkspaceLeaf(d.app()); n._g = M().fg(); n._nt = true;
-        leaf._side = null;
-        await openTyped(n, type, state, active);
-        if (n._t) { leaf._t = n._t; tabLeaf.set(n._t, leaf); }
+      const SIDE = {
+        right: { strip: "rtabs", host: "rside", before: "rtoggle", ids: ["rpane-bl", "rpane-out", "rpane-tags", "rpane-toc"], tab: "rtab-" },
+        left:  { strip: "stabs", host: "side", before: null, ids: ["pane-files", "pane-search", "pane-bm"], tab: "stab-" },
+      };
+      const byId = id => document.getElementById(id);
+      function sideSync(r) {            // the strip button's icon + tooltip follow the view
+        let title = ""; try { title = String(r.view.getDisplayText() || ""); } catch (_) {}
+        let icon = ""; try { icon = String(r.view.getIcon() || ""); } catch (_) {}
+        r.btn.title = title || r.type; r.btn.setAttribute("aria-label", r.btn.title);
+        if (r.icon !== icon) { r.icon = icon; r.btn.textContent = ""; try { setIcon(r.btn, icon || "box"); } catch (_) {} }
       }
-      async function sideReveal() {}
-      async function sideDetach() {}
+      function sideShowing(side) { return sides.some(s => s.side === side && !s.pane.hidden); }
+      function sideHide(side) {         // a built-in tab shows: every plugin pane of that side hides
+        if (!sides.length) return;
+        for (const s of sides) if (s.side === side) { s.pane.hidden = true; s.btn.classList.remove("active"); }
+        d.touch();
+      }
+      function sideShow(r) {
+        const c = SIDE[r.side];
+        for (const id of c.ids) { const p = byId(id); if (p) p.hidden = true; }
+        for (const b of document.querySelectorAll("#" + c.strip + " > .stab")) if (b !== r.btn) b.classList.remove("active");
+        for (const s of sides) if (s.side === r.side && s !== r) s.pane.hidden = true;
+        r.pane.hidden = false; r.btn.classList.add("active");
+        safe("view onResize " + r.type, () => r.view.onResize());
+        if (typeof updateTitle === "function") try { updateTitle(); } catch (_) {}
+        d.touch();
+      }
+      function sideMount(leaf, type, state) {
+        const ty = types.get(type); if (!ty) return null;
+        const c = SIDE[leaf._side], strip = byId(c.strip), host = byId(c.host);
+        if (!strip || !host) return null;
+        let view;
+        try { view = ty.factory(leaf); } catch (e) { console.error("[plugin] view factory " + type + ":", e); return null; }
+        if (!view) return null;
+        const btn = mk("button", { cls: "stab os-pv-tab" });
+        btn.dataset.type = type;
+        const pane = mk("div", { cls: "spane os-pv-pane" });
+        pane.dataset.type = type; pane.hidden = true;
+        view.containerEl.classList.add("os-pv");
+        view.containerEl.dataset.type = type;
+        pane.appendChild(view.containerEl);
+        const before = c.before ? byId(c.before) : null;
+        if (before && before.parentNode === strip) strip.insertBefore(btn, before); else strip.appendChild(btn);
+        const vs = byId("vswitch");
+        if (leaf._side === "left" && vs && vs.parentNode === host) host.insertBefore(pane, vs); else host.appendChild(pane);
+        const r = { leaf, view, type, pid: ty.pid, side: leaf._side, opened: null, btn, pane, icon: null };
+        sides.push(r);
+        btn.onclick = () => sideShow(r);
+        safe("view load " + type, () => view.load());
+        r.opened = (async () => {
+          try { await view.onOpen(); } catch (e) { console.error("[plugin] view onOpen " + type + ":", e); }
+          if (state && Object.keys(state).length) try { await view.setState(state, {}); } catch (e) { console.error("[plugin] view setState " + type + ":", e); }
+          sideSync(r); d.touch();
+        })();
+        sideSync(r);
+        return r;
+      }
+      function sideClose(r) {
+        const i = sides.indexOf(r); if (i < 0) return;
+        sides.splice(i, 1);
+        const wasShown = !r.pane.hidden;
+        r.btn.remove(); r.pane.remove();
+        safe("view onClose " + r.type, () => r.view.onClose());
+        safe("view unload " + r.type, () => r.view.unload());
+        if (wasShown) {                 // the strip falls back to the built-in tab the app had
+          if (r.side === "right" && typeof setRTab === "function") safe("rtab", () => setRTab(typeof rTab === "string" ? rTab : "bl", false));
+          else if (r.side === "left" && typeof setPane === "function") safe("ltab", () => setPane(typeof sidePane === "string" ? sidePane : "files"));
+        }
+        if (typeof updateTitle === "function") try { updateTitle(); } catch (_) {}
+        d.touch();
+      }
+      function sideRegistered() {}
+      async function sideOpenView(leaf, type, state, active) {
+        let r = sideRec(leaf);
+        if (r && r.type === type) { await r.opened; try { await r.view.setState(state, {}); } catch (e) { console.error(e); } sideSync(r); }
+        else { if (r) sideClose(r); r = sideMount(leaf, type, state); if (!r) return; await r.opened; }
+        if (active) await sideReveal(leaf);   // a background open stays a strip button until revealed
+      }
+      async function sideReveal(leaf) {
+        const r = sideRec(leaf); if (!r) return;
+        if (r.side === "right" && typeof rightOpen !== "undefined" && !rightOpen && typeof cmdToggleRight === "function") await cmdToggleRight();
+        if (r.side === "left" && typeof sideOpen !== "undefined" && !sideOpen && typeof cmdToggleSide === "function") await cmdToggleSide();
+        sideShow(r);
+      }
+      async function sideDetach(leaf) { const r = sideRec(leaf); if (r) sideClose(r); }
       function getSideLeaf(side) { const l = new WorkspaceLeaf(d.app()); l._side = side; return l; }
 
       // [pview:<n types>|<type>@<where><+ shown|- hidden>,...] — where: t<pane index> main-area tab, r / l sidebar
@@ -349,7 +431,7 @@
         return " [pview:" + types.size + "|" + [...recs.values(), ...sides].map(one).join(",") + "]";
       }
       const host = { PV, sweep, censusTok, registerView, unregisterView, leavesOfType, iterateLeaves, getLeaf, getSideLeaf,
-                     reveal, leafOfGroup, leafOfTab, isPvTab, recs, types };
+                     reveal, leafOfGroup, leafOfTab, isPvTab, recs, types, sideHide, sideShowing };
       return { View, ItemView, FileView, EditableFileView, TextFileView, WorkspaceLeaf, host };
     },
   });
