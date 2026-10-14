@@ -1462,7 +1462,12 @@ const CM6 = window.__osModules || {};
 const CMs = CM6["@codemirror/state"], CMv = CM6["@codemirror/view"], CMc = CM6["@codemirror/commands"];
 Object.assign(Ed, {
   cm(g) { return g && g.view && g.view.cm || null; },
-  view(g) { return Ed.cm(g); },                        // the Obsidian Editor shim's accessor (future)
+  view(g) { return Ed.cm(g); },                        // the Obsidian Editor shim's accessor (ui/plugins/editor-api.js)
+  /* editor-api: ONE Compartment per view holds every plugin editor extension; its content is
+     Ed.pxExt(v) (editor-api.js replaces this [] once a plugin loads), read whenever a state is
+     built (mount, setText) and pushed to open views by PX.reconfigure */
+  PX: CMs && CMs.Compartment ? new CMs.Compartment() : null,
+  pxExt() { return []; },
   /* ---------- model ---------- */
   lines(g) {
     const v = g.view, cm = v && v.cm;
@@ -1508,6 +1513,7 @@ Object.assign(Ed, {
   setText(g, t) {                                      // load / external replace: fresh history
     const v = g.view, s = String(t == null ? "" : t);
     if (!v.cm) { v.lines = s.split("\n"); Ed.sync(g); return; }
+    if (v._pxI != null) v._ext[v._pxI] = Ed.PX.of(Ed.pxExt(v));   // editor-api: the fresh state carries the CURRENT plugin extensions
     v.cm.setState(CMs.EditorState.create({ doc: s, extensions: v._ext }));
     v._Ld = null; v._snap = null;
     Ed.sync(g);
@@ -1631,6 +1637,7 @@ Object.assign(Ed, {
       Ed.lpExt ? Ed.lpExt(v, G) : [],
       Ed.hlExt(v),
     ];
+    if (Ed.PX) { v._pxI = v._ext.length; v._ext.push(Ed.PX.of(Ed.pxExt(v))); }   // editor-api: plugin extensions (empty until a plugin loads)
     const cm = new CMv.EditorView({ state: CMs.EditorState.create({ doc: (v.lines || [""]).join("\n"), extensions: v._ext }) });
     const lp = v.lp;
     v.cm = cm; v._Ld = null;

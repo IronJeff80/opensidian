@@ -709,7 +709,6 @@
     vault: () => vault, TFile: () => TFile,
     leafView: l => leafView(l), groupFile: g => groupFile(g), openFileIn: (l, f, o) => openFileIn(l, f, o),
   });
-  class MarkdownView extends TextFileView { getViewType() { return "markdown"; } }
   class MarkdownRenderChild extends Component { constructor(el) { super(); this.containerEl = el; } }
 
   /* ------------------- markdown post / code-block processors (plugin-views item 7)
@@ -783,6 +782,15 @@
   class TAbstractFile { constructor() { this.vault = null; this.path = ""; this.name = ""; this.parent = null; } }
   class TFile extends TAbstractFile { constructor() { super(); this.basename = ""; this.extension = ""; this.stat = { ctime: 0, mtime: 0, size: 0 }; } }
   class TFolder extends TAbstractFile { constructor() { super(); this.children = []; } isRoot() { return this.path === "/" || this.path === ""; } }
+  /* editor-api (ui/plugins/editor-api.js): Editor / MarkdownView / EditorSuggest + the editor
+     extension compartment, installed ONCE here; the installer is then deleted from window */
+  const EA = window.__osEditorApi ? window.__osEditorApi({
+    TextFileView, FileView,
+    app: () => app, groups: () => allGroups(), focused: () => focusedGroup(), leafFor: g => leafFor(g), touch: () => touch(),
+    fileOf: name => { const f = modelOn ? files.get(name + ".md") : null; return f instanceof TFile ? f : null; },
+  }) : null;
+  try { delete window.__osEditorApi; } catch (_) {}
+  const MarkdownView = EA ? EA.MarkdownView : class extends TextFileView { getViewType() { return "markdown"; } };
 
   /* --------------------------------------------- app + plugin registry */
   const registry = new Map();      // id -> {plugin, manifest, cmds:Set, ribbon:Set, status:Set, tabs:Set, styleEl}
@@ -1149,10 +1157,11 @@
   function leafView(l) {
     const f = groupFile(l._g);
     if (!l._v) {
-      const mv = new MarkdownView(l); Object.defineProperty(mv, "file", { configurable: true, get: () => groupFile(l._g) });
+      const mv = new MarkdownView(l); Object.defineProperty(mv, "file", { configurable: true, get: () => groupFile(l._g) });   // no editor-api: a file-only stand-in
       const ev = new View(l); ev.getViewType = () => "empty";
       l._v = { mv, ev };
     }
+    if (f && EA) { const mv = EA.viewFor(l._g.view, l); if (mv) return mv; }   // editor-api: the active tab's own MarkdownView (.editor = its CM6 view)
     return f ? l._v.mv : l._v.ev;
   }
   async function openFileIn(leaf, file, openState) {
@@ -1209,6 +1218,7 @@
       return workspace.getLeaf(newLeaf).openFile(f, os);
     },
     getLastOpenFiles() { return []; },
+    updateOptions() { if (EA) EA.reconfigureAll(); },   // editor-api: a plugin mutated its registered extension array
     requestSaveLayout: debounce(() => {}, 0),
     leftRibbon: {
       collapsed: false,
@@ -1266,6 +1276,9 @@
     const g = focusedGroup() || allGroups()[0];
     return g ? leafFor(g) : null;
   } });
+  // editor-api: the focused note's MarkdownView (a MarkdownFileInfo: .editor, .file), or null
+  Object.defineProperty(workspace, "activeEditor", { configurable: true, enumerable: true, get() { return EA && modelOn ? EA.activeEditor() : null; } });
+  if (EA) bridge.editor = () => { const mv = modelOn ? EA.activeEditor() : null; return mv && mv.editor ? { editor: mv.editor, view: mv } : null; };
   const keymap = {
     pushScope(s) { if (s) scopes.push(s); },
     popScope(s) { const i = scopes.lastIndexOf(s); if (i >= 0) scopes.splice(i, 1); },
@@ -1419,8 +1432,11 @@
       this.register(() => { if (MDP.code.get(lang) === p) { MDP.code.delete(lang); mdpChanged(); } });
       return p;
     }
-    registerEditorExtension() { console.warn("[plugin] " + this.manifest.id + ": registerEditorExtension — editor extensions not supported yet"); }
-    registerEditorSuggest() {}
+    registerEditorExtension(ext) {   // editor-api: every open + future note view, removed on unload
+      if (!EA) { console.warn("[plugin] " + this.manifest.id + ": registerEditorExtension — editor extensions not supported"); return; }
+      this.register(EA.addExt(this.manifest.id, ext));
+    }
+    registerEditorSuggest(s) { if (EA) this.register(EA.addSuggest(s)); }
     registerObsidianProtocolHandler() {}
     registerCliHandler() {}
   }
@@ -1451,6 +1467,7 @@
     Menu, MenuItem, View, ItemView, FileView, EditableFileView, TextFileView, MarkdownView,
     WorkspaceLeaf, MarkdownRenderChild, TAbstractFile, TFile, TFolder, Vault,
   };
+  if (EA) Object.assign(X, { Editor: EA.Editor, EditorSuggest: EA.EditorSuggest, PopoverSuggest: EA.PopoverSuggest });   // editor-api classes (es5-callable below)
   for (const k of Object.keys(X)) X[k] = es5(X[k]);
   Object.assign(X, {
     Platform, apiVersion: API_VERSION, requireApiVersion, setIcon, getIcon, addIcon, removeIcon, getIconIds,
@@ -1460,6 +1477,7 @@
     Keymap: { isModEvent: e => !!(e && (e.ctrlKey || e.metaKey)), isModifier: (e, m) => !!e && ({ Mod: e.ctrlKey || e.metaKey, Ctrl: e.ctrlKey, Meta: e.metaKey, Shift: e.shiftKey, Alt: e.altKey })[m] },
     parseYaml, stringifyYaml, getAllTags, parseLinktext, getLinkpath, MarkdownRenderer,
   });
+  if (EA) Object.assign(X, { editorInfoField: EA.editorInfoField, editorViewField: EA.editorViewField, editorLivePreviewField: EA.editorLivePreviewField, editorEditorField: EA.editorEditorField });   // editor-api: real CM6 StateFields
   // moment: the vendored build, loaded by ensureModel() before any plugin is evaluated.
   // A getter, so esbuild's __toESM live bindings and `obsidian.moment` both see it.
   Object.defineProperty(X, "moment", { enumerable: true, get: () => window.moment });
@@ -1494,6 +1512,7 @@
       return host.fail(id, e);
     }
     host.status.set(id, { state: "loaded" });
+    if (EA) EA.activate();   // editor-api: from the first loaded plugin on, note views carry editorInfoField + the editor-* hooks
     if (typeof hkLoad === "function") hkLoad().catch(() => {});   // the user's chords for this plugin's ids (hkLoad drops unknown ids)
     touch();
     return { ok: true, id };
@@ -1564,7 +1583,8 @@
     const ids = [...host.status].map(([id, s]) => id + "=" + s.state + (s.state === "failed" && s.error ? "(" + String(s.error).replace(/[[\]|,=()\s]+/g, "_").slice(0, 80) + ")" : "")).join(",");
     const nt = notices.length ? " [pnotice:" + notices.map(n => n.noticeEl.textContent.replace(/[[\]|]/g, "").slice(0, 60)).join("|") + "]" : "";
     const md = openModals.length ? " [pmodal:" + openModals.length + "]" : "";
-    return " [plg:" + (trusted ? "T" : "R") + "|" + ids + "] [preg:c" + c + ",r" + rb + ",s" + st + ",t" + tb + "]" + nt + md + views.censusTok() + mdpCensus();
+    if (EA) EA.tick();   // editor-api: editorLivePreviewField follows the focused tab's mode
+    return " [plg:" + (trusted ? "T" : "R") + "|" + ids + "] [preg:c" + c + ",r" + rb + ",s" + st + ",t" + tb + "]" + nt + md + views.censusTok() + mdpCensus() + (EA ? EA.tok() : "");
   }
 
   host.api = api;
