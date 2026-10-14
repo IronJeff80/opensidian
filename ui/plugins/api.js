@@ -697,47 +697,19 @@
     static forEvent(e) { const m = new Menu(); m._evt = e; return m; }
   }
 
-  /* --------------------------------------------- views (class identity)
-     ItemView / MarkdownView / FileView exist so `instanceof` checks and
-     `class X extends ItemView` in a bundle evaluate. Hosting a registered
-     view in a tab is beyond M1; registerView records the type and says so. */
-  class View extends Component {
-    constructor(leaf) { super(); installDom(); this.leaf = leaf; this.app = leaf && leaf.app; this.containerEl = mk("div", { cls: "workspace-leaf-content" }); this.navigation = false; this.icon = ""; }
-    getViewType() { return ""; }
-    getDisplayText() { return ""; }
-    getIcon() { return this.icon; }
-    getState() { return {}; }
-    setState() { return Promise.resolve(); }
-    onOpen() { return Promise.resolve(); }
-    onClose() { return Promise.resolve(); }
-  }
-  class ItemView extends View {
-    constructor(leaf) { super(leaf); this.contentEl = this.containerEl.createDiv({ cls: "view-content" }); }
-    addAction(icon, title, cb) { const b = this.containerEl.createDiv({ cls: "clickable-icon view-action", attr: { "aria-label": title } }); setIcon(b, icon); b.addEventListener("click", cb); return b; }
-  }
-  class FileView extends ItemView { constructor(leaf) { super(leaf); this.file = null; this.allowNoFile = false; } }
-  class EditableFileView extends FileView {}
-  class TextFileView extends EditableFileView { constructor(leaf) { super(leaf); this.data = ""; } }
+  /* --------------------------------------------- views (ui/plugins/views.js)
+     View / ItemView / FileView / WorkspaceLeaf live in views.js (goal
+     plugin-views). Its factory is taken ONCE here and removed from window, so
+     plugin code cannot reach it; its deps are read at call time. */
+  const viewsFactory = window.__osPluginViews;
+  try { delete window.__osPluginViews; } catch (_) {}
+  if (typeof viewsFactory !== "function") { console.error("[plugin] views.js did not load"); return; }
+  const { View, ItemView, FileView, EditableFileView, TextFileView, WorkspaceLeaf } = viewsFactory({
+    Component, Events, installDom, mk, setIcon,
+    vault: () => vault, TFile: () => TFile,
+    leafView: l => leafView(l), groupFile: g => groupFile(g), openFileIn: (l, f, o) => openFileIn(l, f, o),
+  });
   class MarkdownView extends TextFileView { getViewType() { return "markdown"; } }
-  /* A leaf = one of the app's tab groups (M1: a group IS a leaf; its active tab
-     is the leaf's view). `_g` is the group object, `_nt` a leaf from
-     getLeaf(true)/splitActiveLeaf whose openFile opens a NEW tab in that group. */
-  class WorkspaceLeaf extends Events {
-    constructor(app) {
-      super(); this.app = app;
-      Object.defineProperty(this, "_g", { value: null, writable: true });
-      Object.defineProperty(this, "_nt", { value: false, writable: true });
-      Object.defineProperty(this, "_v", { value: null, writable: true });
-    }
-    get view() { return leafView(this); }
-    getViewState() { const f = groupFile(this._g); return f ? { type: "markdown", state: { file: f.path } } : { type: "empty", state: {} }; }
-    setViewState(vs) { const p = vs && vs.state && vs.state.file; const f = p && vault.getAbstractFileByPath(p); return f instanceof TFile ? this.openFile(f) : Promise.resolve(); }
-    openFile(file, openState) { return openFileIn(this, file, openState); }
-    getDisplayText() { const f = groupFile(this._g); return f ? f.basename : ""; }
-    getIcon() { return "file"; }
-    setPinned() {} togglePinned() {} setGroup() {} detach() {}
-    getEphemeralState() { return {}; } setEphemeralState() {}
-  }
   class MarkdownRenderChild extends Component { constructor(el) { super(); this.containerEl = el; } }
   class TAbstractFile { constructor() { this.vault = null; this.path = ""; this.name = ""; this.parent = null; } }
   class TFile extends TAbstractFile { constructor() { super(); this.basename = ""; this.extension = ""; this.stat = { ctime: 0, mtime: 0, size: 0 }; } }
