@@ -711,6 +711,75 @@
   });
   class MarkdownView extends TextFileView { getViewType() { return "markdown"; } }
   class MarkdownRenderChild extends Component { constructor(el) { super(); this.containerEl = el; } }
+
+  /* ------------------- markdown post / code-block processors (plugin-views item 7)
+     The Rust renderer (render / render_view) emits a fenced block as
+     <pre><code class="language-L">. A registered code-block processor for L
+     replaces that <pre> with div.block-language-L and gets (source, el, ctx);
+     post processors then run, in sortOrder, on every top-level block element.
+     Both run over the reading view (main.js preview() asks PPOST after its
+     innerHTML) and over MarkdownRenderer.render. ctx.addChild ties a
+     MarkdownRenderChild to that render: the next render of the same pane (or
+     the caller's component) unloads it. PPOST is set only once a plugin
+     registers one, so a vault without such plugins pays nothing; gen bumps on
+     every (un)register so the reading view's retained DOM is re-rendered. */
+  const MDP = { post: [], code: new Map(), gen: 0, used: false };
+  function mdpChanged() { MDP.gen++; MDP.used = true; try { PPOST = (MDP.post.length || MDP.code.size) ? PP : null; } catch (_) {} touch(); }
+  const pathOf = n => (n ? n + ".md" : "");   // the app names notes without ".md"
+  function mdCtx(sourcePath, holder) {
+    let fm; try { const c = metadataCache.getCache(sourcePath); fm = c ? c.frontmatter : undefined; } catch (_) {}
+    return {
+      docId: sourcePath, sourcePath, frontmatter: fm,
+      addChild: ch => { holder.addChild(ch); return ch; },
+      getSectionInfo: () => null,
+    };
+  }
+  function runCode(lang, p, src, el, ctx) {
+    try { const r = p(src, el, ctx); if (r && typeof r.catch === "function") r.catch(e => console.error("[plugin] code block " + lang + ":", e)); }
+    catch (e) { console.error("[plugin] code block " + lang + ":", e); }
+  }
+  async function mdProcess(root, sourcePath, holder) {
+    if (!MDP.code.size && !MDP.post.length) return;
+    const ctx = mdCtx(sourcePath, holder);
+    if (MDP.code.size) for (const code of [...root.querySelectorAll("pre > code[class*='language-']")]) {
+      const m = /(?:^|\s)language-(\S+)/.exec(code.className), lang = m ? m[1] : "";
+      const p = MDP.code.get(lang), pre = code.parentElement;
+      if (!p || !pre || !pre.parentNode) continue;
+      const el = document.createElement("div"); el.className = "block-language-" + lang;
+      pre.replaceWith(el);
+      runCode(lang, p, code.textContent.replace(/\n$/, ""), el, ctx);
+    }
+    if (!MDP.post.length) return;
+    const posts = MDP.post.slice().sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+    for (const el of [...root.children]) for (const p of posts) {
+      try { const r = p(el, ctx); if (r && typeof r.then === "function") await r.catch(e => console.error("[plugin] post processor:", e)); }
+      catch (e) { console.error("[plugin] post processor:", e); }
+    }
+  }
+  const PP = {   // main.js preview(): PPOST.run(pane, note) after the reading html is in
+    get gen() { return MDP.gen; },
+    run(P, note) {
+      if (P._ppHold) try { P._ppHold.unload(); } catch (e) { console.error(e); }
+      const h = P._ppHold = new Component(); h.load();
+      return mdProcess(P, pathOf(note), h);
+    },
+  };
+  // [pmd:p<post processors>|c<code langs>|r<processed blocks in reading panes>] — only once a plugin used it
+  function mdpCensus() {
+    if (!MDP.used) return "";
+    const r = document.querySelectorAll(".preview [class^='block-language-'], .preview [class*=' block-language-']").length;
+    if (!MDP.post.length && !MDP.code.size && !r) return "";
+    return " [pmd:p" + MDP.post.length + "|c" + [...MDP.code.keys()].join("+") + "|r" + r + "]";
+  }
+  const MarkdownRenderer = {
+    async render(app_, markdown, el, sourcePath, component) {
+      const html = await inv("render", { content: String(markdown == null ? "" : markdown) });
+      const t = document.createElement("div"); t.innerHTML = html;
+      await mdProcess(t, sourcePath || "", component instanceof Component ? component : new Component());
+      while (t.firstChild) el.appendChild(t.firstChild);
+    },
+    renderMarkdown(markdown, el, sourcePath, component) { return MarkdownRenderer.render(app, markdown, el, sourcePath, component); },
+  };
   class TAbstractFile { constructor() { this.vault = null; this.path = ""; this.name = ""; this.parent = null; } }
   class TFile extends TAbstractFile { constructor() { super(); this.basename = ""; this.extension = ""; this.stat = { ctime: 0, mtime: 0, size: 0 }; } }
   class TFolder extends TAbstractFile { constructor() { super(); this.children = []; } isRoot() { return this.path === "/" || this.path === ""; } }
@@ -1324,8 +1393,22 @@
     }
     registerHoverLinkSource() {}
     registerExtensions() {}
-    registerMarkdownPostProcessor(p) { return p; }
-    registerMarkdownCodeBlockProcessor(lang, p) { return p; }
+    registerMarkdownPostProcessor(p, sortOrder) {   // item 7: reading view + MarkdownRenderer.render; unload unregisters
+      if (typeof p !== "function") return p;
+      if (sortOrder !== undefined) p.sortOrder = sortOrder;
+      MDP.post.push(p); mdpChanged();
+      this.register(() => { const i = MDP.post.indexOf(p); if (i >= 0) { MDP.post.splice(i, 1); mdpChanged(); } });
+      return p;
+    }
+    registerMarkdownCodeBlockProcessor(lang, p, sortOrder) {   // item 7: ```lang fences -> div.block-language-lang
+      lang = String(lang);
+      if (typeof p !== "function") return p;
+      if (MDP.code.has(lang)) { console.warn("[plugin] " + this.manifest.id + ": code block processor for \"" + lang + "\" already registered"); return p; }
+      if (sortOrder !== undefined) p.sortOrder = sortOrder;
+      MDP.code.set(lang, p); mdpChanged();
+      this.register(() => { if (MDP.code.get(lang) === p) { MDP.code.delete(lang); mdpChanged(); } });
+      return p;
+    }
     registerEditorExtension() { console.warn("[plugin] " + this.manifest.id + ": registerEditorExtension — editor extensions not supported yet"); }
     registerEditorSuggest() {}
     registerObsidianProtocolHandler() {}
@@ -1365,7 +1448,7 @@
     parseFrontMatterEntry, parseFrontMatterAliases, parseFrontMatterTags, requestUrl, request: requestUrl,
     htmlToMarkdown, sanitizeHTMLToDom: h => { const t = document.createElement("template"); t.innerHTML = String(h); for (const s of t.content.querySelectorAll("script,iframe,object,embed")) s.remove(); return t.content; },
     Keymap: { isModEvent: e => !!(e && (e.ctrlKey || e.metaKey)), isModifier: (e, m) => !!e && ({ Mod: e.ctrlKey || e.metaKey, Ctrl: e.ctrlKey, Meta: e.metaKey, Shift: e.shiftKey, Alt: e.altKey })[m] },
-    parseYaml, stringifyYaml, getAllTags, parseLinktext, getLinkpath,
+    parseYaml, stringifyYaml, getAllTags, parseLinktext, getLinkpath, MarkdownRenderer,
   });
   // moment: the vendored build, loaded by ensureModel() before any plugin is evaluated.
   // A getter, so esbuild's __toESM live bindings and `obsidian.moment` both see it.
@@ -1471,7 +1554,7 @@
     const ids = [...host.status].map(([id, s]) => id + "=" + s.state + (s.state === "failed" && s.error ? "(" + String(s.error).replace(/[[\]|,=()\s]+/g, "_").slice(0, 80) + ")" : "")).join(",");
     const nt = notices.length ? " [pnotice:" + notices.map(n => n.noticeEl.textContent.replace(/[[\]|]/g, "").slice(0, 60)).join("|") + "]" : "";
     const md = openModals.length ? " [pmodal:" + openModals.length + "]" : "";
-    return " [plg:" + (trusted ? "T" : "R") + "|" + ids + "] [preg:c" + c + ",r" + rb + ",s" + st + ",t" + tb + "]" + nt + md + views.censusTok();
+    return " [plg:" + (trusted ? "T" : "R") + "|" + ids + "] [preg:c" + c + ",r" + rb + ",s" + st + ",t" + tb + "]" + nt + md + views.censusTok() + mdpCensus();
   }
 
   host.api = api;

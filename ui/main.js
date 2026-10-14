@@ -99,6 +99,9 @@ let PVHOST = null;
 /* plugin-views item 5: set by ui/plugins/api.js when a plugin listens for "file-menu" / "editor-menu";
    noteMenu and the editor right-click ask it to add the plugin rows. */
 let PMENU = null;
+/* plugin-views item 7: set by ui/plugins/api.js while a plugin has a markdown post / code-block
+   processor; preview() runs it over the fresh reading html. Its gen keys the retained reading DOM. */
+let PPOST = null;
 const curOf = g => (g.active >= 0 ? g.tabs[g.active].name : null);
 const cur = () => (state && fg() ? curOf(fg()) : null);
 // R18: is this group's active tab showing the READING pane? (the only pane the
@@ -6308,6 +6311,7 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   // view task tick all count) — any doubt is a miss, and a miss is the old path.
   const k = P._pvk;
   if (k && k.src === src && k.notes === notesCache && k.imgs === imgsCache && k.slb === slbOn
+      && k.pp === (PPOST ? PPOST.gen : 0)
       && !P._pvDirty && !pvTouched(P, P._pvObs.takeRecords())) {
     g.pvLines = k.lines;
     mswpMark("render"); mswpMark("html"); mswpMark("blines"); mswpMark("wire");
@@ -6368,6 +6372,10 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
         if (an) await navAnchor(g, an);
       } else navigate(g, n, an);
     };
+  // plugin-views item 7: plugin code-block / post processors over the fresh html. Before the
+  // observer is armed, so their synchronous output is part of the retained DOM; async writes
+  // later mark it dirty (the next switch re-renders). Not awaited: a slow plugin never holds the switch.
+  if (PPOST) try { PPOST.run(P, curOf(g)).catch(e => console.error("[plugin] markdown processors:", e)); } catch (e) { console.error(e); }
   // modeswitch opt2: arm the retained-DOM key. Our own innerHTML above is the
   // last write: drop its records synchronously, from here on any record = dirty.
   if (!P._pvObs) {
@@ -6376,7 +6384,7 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   }
   P._pvObs.takeRecords(); P._pvDirty = false;
   if (g.preview === P && g.editor.value === src)
-    P._pvk = { src, notes: notesCache, imgs: imgsCache, slb: slbOn, lines: pvL };
+    P._pvk = { src, notes: notesCache, imgs: imgsCache, slb: slbOn, lines: pvL, pp: PPOST ? PPOST.gen : 0 };
   mswpMark("wire");
 }
 
