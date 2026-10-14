@@ -906,7 +906,15 @@
     });
   }
 
-  const vault = new Events();
+  /* Vault: the typings' class; app.vault is its one instance. recurseChildren
+     is the static walk calendar's daily-notes index uses (depth-first, root first). */
+  class Vault extends Events {
+    static recurseChildren(root, cb) {
+      const st = root ? [root] : [];
+      while (st.length) { const f = st.pop(); cb(f); if (f instanceof TFolder) for (let i = f.children.length - 1; i >= 0; i--) st.push(f.children[i]); }
+    }
+  }
+  const vault = new Vault();
   Object.assign(vault, {
     configDir: ".obsidian",
     getName() { return vaultName; },
@@ -1305,6 +1313,8 @@
     dom: { get appContainerEl() { return document.body; } },
     lastEvent: null,
     isMobile: false,
+    // no fold persistence: calendar's note creation saves the template's folds (none) here
+    foldManager: { load() { return null; }, save() {} },
     loadLocalStorage(k) { try { const v = localStorage.getItem(app.appId + "-" + k); return v == null ? null : JSON.parse(v); } catch (_) { return null; } },
     saveLocalStorage(k, v) { try { if (v == null) localStorage.removeItem(app.appId + "-" + k); else localStorage.setItem(app.appId + "-" + k, JSON.stringify(v)); } catch (_) {} },
   };
@@ -1439,7 +1449,7 @@
     TextComponent, SearchComponent, TextAreaComponent, MomentFormatComponent, ToggleComponent,
     DropdownComponent, SliderComponent, ColorComponent, ButtonComponent, ExtraButtonComponent,
     Menu, MenuItem, View, ItemView, FileView, EditableFileView, TextFileView, MarkdownView,
-    WorkspaceLeaf, MarkdownRenderChild, TAbstractFile, TFile, TFolder,
+    WorkspaceLeaf, MarkdownRenderChild, TAbstractFile, TFile, TFolder, Vault,
   };
   for (const k of Object.keys(X)) X[k] = es5(X[k]);
   Object.assign(X, {
