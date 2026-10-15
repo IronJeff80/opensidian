@@ -23,7 +23,9 @@
                                    EditorView from); a name cm6.js does not ship
                                    -> Error "editor extensions not supported yet"
      "path"                     -> a small pure POSIX shim (no I/O)
-     "fs", "child_process", "electron", anything else -> throws. No shims: a plugin
+     "fs", "fs/promises" (+ node:) -> ui/plugins/node-modules.js (host.nodeModules):
+                                   the vault-confined fs facade over Rust plugin_vfs
+     "child_process", "electron", anything else -> throws. No shims: a plugin
                                    that needs Node/Electron does not run here (recon §E).
 
    Privileges: the Tauri invoke handle is captured HERE, at boot, into this
@@ -85,6 +87,8 @@
         throw new Error(id + ': require("' + name + '"): editor extensions not supported yet');
       }
       if (name === "path" || name === "node:path" || name === "path/posix") return path;
+      const nm = host.nodeModules && host.nodeModules.resolve(name);   // ui/plugins/node-modules.js: fs, fs/promises (vault-confined)
+      if (nm) return nm;
       const bare = name.replace(/^node:/, "");
       if (DENIED.has(bare)) throw new Error(id + ': require("' + name + '") is not available in opensidian (no Node/Electron APIs)');
       throw new Error(id + ': require("' + name + '"): unknown module');
