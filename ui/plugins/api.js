@@ -914,6 +914,119 @@
     });
   }
 
+  /* td-vault-io: DataAdapter / FileSystemAdapter over the confined Rust
+     backend (src-tauri/src/vaultfs.rs plugin_op, command plugin_vfs). The
+     plugin sees ONE virtual root, VROOT = "/vault": basePath is that string,
+     never the host path, and "/vault/x" and "x" name the same file. This file
+     only maps the virtual root away; every other path is passed to Rust
+     VERBATIM (no normalizePath: it would turn "\\host\share" or "/etc" into a
+     legal-looking vault path), and Rust is the guard — plugins share the page
+     realm, so the JS layer cannot be. ui/plugins/node-modules.js builds the
+     `fs` / `fs/promises` facade on the same core (host.vfs, handed over before
+     the seal). */
+  const VROOT = "/vault";
+  function vrel(p) {
+    let s = String(p == null ? "" : p);
+    if (s === VROOT || s === VROOT + "/") return "";
+    if (s.startsWith(VROOT + "/")) s = s.slice(VROOT.length + 1);
+    while (s.startsWith("./")) s = s.slice(2);
+    return s === "." ? "" : s;
+  }
+  function vfsError(msg, path) {
+    const s = String(msg && msg.message || msg), m = s.match(/^([A-Z]+): /);
+    const e = new Error(s);
+    e.code = m ? m[1] : "EIO"; e.path = String(path);
+    if (/^EPERM: vault-escape refused/.test(s)) e.vaultEscape = true;
+    return e;
+  }
+  const te = new TextEncoder(), td = new TextDecoder("utf-8");
+  function toBytes(d) {
+    if (d instanceof Uint8Array) return d;
+    if (d instanceof ArrayBuffer) return new Uint8Array(d);
+    if (ArrayBuffer.isView(d)) return new Uint8Array(d.buffer, d.byteOffset, d.byteLength);
+    return te.encode(String(d == null ? "" : d));
+  }
+  function b64e(u8) {
+    let s = "";
+    for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+    return btoa(s);
+  }
+  function b64d(s) { const b = atob(String(s)), u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; }
+  async function vio(op, path, a) {
+    if (!be) throw vfsError("EPERM: plugin file access is not available", path);
+    const args = Object.assign({ op, path: vrel(path) }, a || {});
+    if (args.to != null) args.to = vrel(args.to);
+    try { return await be.invoke("plugin_vfs", args); } catch (e) { throw vfsError(e, path); }
+  }
+  const core = Object.freeze({
+    VROOT, vrel, vfsError,
+    stat: p => vio("stat", p),
+    exists: p => vio("exists", p),
+    list: p => vio("list", p),
+    read: async p => b64d(await vio("read", p)),
+    write: (p, d) => vio("write", p, { data: b64e(toBytes(d)) }),
+    append: (p, d) => vio("append", p, { data: b64e(toBytes(d)) }),
+    mkdir: (p, recursive) => vio("mkdir", p, { recursive: !!recursive }),
+    unlink: p => vio("unlink", p),
+    rmdir: p => vio("rmdir", p),
+    rename: (a, b) => vio("rename", a, { to: String(b) }),
+    copy: (a, b) => vio("copy", a, { to: String(b) }),
+    utf8: u8 => td.decode(u8), toBytes,
+  });
+  host.vfs = core;                 // for node-modules.js only; the seal hides host from plugins
+
+  const joinRel = (dir, n) => (dir ? dir + "/" : "") + n;
+  class DataAdapter {
+    getName() { return vaultName; }
+    async exists(p) { return core.exists(p); }
+    async stat(p) {
+      try { return await core.stat(p); } catch (e) { if (e.code === "ENOENT") return null; throw e; }
+    }
+    async list(p) {
+      const d = vrel(p).replace(/\/+$/, ""), out = { files: [], folders: [] };
+      for (const [n, k] of await core.list(p)) (k === "folder" ? out.folders : out.files).push(joinRel(d, n));
+      return out;
+    }
+    async read(p) { return td.decode(await core.read(p)); }
+    async readBinary(p) { const u = await core.read(p); return u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength); }
+    async write(p, data) { await core.write(p, String(data)); }
+    async writeBinary(p, data) { await core.write(p, toBytes(data)); }
+    async append(p, data) { await core.append(p, String(data)); }
+    async appendBinary(p, data) { await core.append(p, toBytes(data)); }
+    async process(p, fn) { const out = fn(await this.read(p)); await this.write(p, out); return out; }
+    getResourcePath() { return ""; }
+    async mkdir(p) { await core.mkdir(p, true); }
+    async trashSystem() { return false; }       // no system trash: callers fall back to trashLocal
+    async trashLocal(p) {
+      await core.mkdir(".trash", true);
+      const base = vrel(p).split("/").pop();
+      let to = ".trash/" + base;
+      for (let i = 1; await core.exists(to); i++) to = ".trash/" + base + "." + i;
+      await core.rename(p, to);
+    }
+    async rmdir(p, recursive) {
+      if (recursive) {
+        for (const [n, k] of await core.list(p)) {
+          const c = joinRel(vrel(p).replace(/\/+$/, ""), n);
+          if (k === "folder") await this.rmdir(c, true); else await core.unlink(c);
+        }
+      }
+      await core.rmdir(p);
+    }
+    async remove(p) { await core.unlink(p); }
+    async rename(a, b) { await core.rename(a, b); }
+    async copy(a, b) { await core.copy(a, b); }
+  }
+  class FileSystemAdapter extends DataAdapter {
+    get basePath() { return VROOT; }
+    getBasePath() { return VROOT; }
+    getFullPath(p) { const r = vrel(p); return r ? VROOT + "/" + r : VROOT; }
+    getFilePath(p) { return "file://" + this.getFullPath(p); }
+    static async readLocalFile(p) { const u = await core.read(p); return u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength); }
+    static async mkdir(p) { await core.mkdir(p, true); }
+  }
+  const adapter = new FileSystemAdapter();
+
   /* Vault: the typings' class; app.vault is its one instance. recurseChildren
      is the static walk calendar's daily-notes index uses (depth-first, root first). */
   class Vault extends Events {
@@ -970,12 +1083,7 @@
     async copy(f, newPath) { const s = await vault.read(f); return vault.create(newPath, s); },
     getResourcePath() { return ""; },
     getConfig(k) { return ({ useMarkdownLinks: false, newLinkFormat: "shortest", attachmentFolderPath: "/", newFileLocation: "root", newFileFolderPath: "", alwaysUpdateLinks: false, showUnsupportedFiles: false })[k] ?? null; },
-    adapter: {
-      getName() { return vaultName; },
-      async exists(p) { return !!vault.getAbstractFileByPath(p); },
-      async read(p) { const f = vault.getFileByPath(p); if (!f) throw new Error("ENOENT: " + p); return vault.read(f); },
-      async write(p, s) { const f = vault.getFileByPath(p); return f ? vault.modify(f, s) : vault.create(p, s); },
-    },
+    adapter,
   });
 
   /* ------------------------------------- metadata cache (item 5)
@@ -1465,7 +1573,7 @@
     TextComponent, SearchComponent, TextAreaComponent, MomentFormatComponent, ToggleComponent,
     DropdownComponent, SliderComponent, ColorComponent, ButtonComponent, ExtraButtonComponent,
     Menu, MenuItem, View, ItemView, FileView, EditableFileView, TextFileView, MarkdownView,
-    WorkspaceLeaf, MarkdownRenderChild, TAbstractFile, TFile, TFolder, Vault,
+    WorkspaceLeaf, MarkdownRenderChild, TAbstractFile, TFile, TFolder, Vault, DataAdapter, FileSystemAdapter,
   };
   if (EA) Object.assign(X, { Editor: EA.Editor, EditorSuggest: EA.EditorSuggest, PopoverSuggest: EA.PopoverSuggest });   // editor-api classes (es5-callable below)
   for (const k of Object.keys(X)) X[k] = es5(X[k]);
