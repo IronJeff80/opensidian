@@ -5430,7 +5430,7 @@ async function loadActive(g) {
   if (n) mruTouch(n);                // m5: quick-switcher MRU order
   const m = t ? t.mode : "livepreview";
   if (!t || !v.loaded || t.stale || v.name !== n) {   // v.name: navigate() renames the tab in place
-    Ed.setText(g, n ? await inv("read_note", { name: n }) : "");   // R17: load the MODEL
+    Ed.setText(g, n ? await inv("read_note", { name: n }) : "", true);   // R17: load the MODEL (fresh parse, one LP build)
     v.name = n;
     if (t) { t.base = g.editor.value; t.stale = false; v.loaded = true; }  // R11: disk base
     if (m === "reading") await preview(g);

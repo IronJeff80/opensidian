@@ -1510,11 +1510,17 @@ Object.assign(Ed, {
     v.lines = L; v._Ld = cm.state.doc;                 // the caller's array IS the doc now
     return true;
   },
-  setText(g, t) {                                      // load / external replace: fresh history
+  setText(g, t, load) {                                // load / external replace: fresh history
     const v = g.view, s = String(t == null ? "" : t);
     if (!v.cm) { v.lines = s.split("\n"); Ed.sync(g); return; }
+    // note_open: the fresh state's LP plugin builds its decorations in setState, so the full
+    // render that follows a load would re-parse and redraw every visible row a second time.
+    // A load busts the parse cache HERE (links/images re-resolve in that one build) and
+    // marks the state; render(full) skips its bust while the doc is still that state.
+    if (load) Ed.lpBust();
     if (v._pxI != null) v._ext[v._pxI] = Ed.PX.of(Ed.pxExt(v));   // editor-api: the fresh state carries the CURRENT plugin extensions
     v.cm.setState(CMs.EditorState.create({ doc: s, extensions: v._ext }));
+    v._fresh = load ? v.cm.state : null;
     v._Ld = null; v._snap = null;
     Ed.sync(g);
   },
@@ -1526,7 +1532,7 @@ Object.assign(Ed, {
   },
   render(g, caret, col, full) {
     const t0 = performance.now(), v = g.view;
-    if (full) { Ed.lpBust(); if (v._lpFx) v.cm.dispatch({ effects: v._lpFx.of(null) }); }   // vault changed: links/images re-resolve
+    if (full && v._fresh !== v.cm.state) { Ed.lpBust(); if (v._lpFx) v.cm.dispatch({ effects: v._lpFx.of(null) }); }   // vault changed: links/images re-resolve
     const did = Ed.commit(g);
     g.lpLines = v.cm.state.doc.lines;
     v.note = typeof curOf === "function" ? curOf(g) : null;
