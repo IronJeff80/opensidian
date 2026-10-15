@@ -22,7 +22,8 @@
                                    the SAME instances ui/editor.js builds its
                                    EditorView from); a name cm6.js does not ship
                                    -> Error "editor extensions not supported yet"
-     "path"                     -> a small pure POSIX shim (no I/O)
+     "path", "node:path",        -> window.__osNodeModules (ui/plugins/node-leaves.js): pure
+     "path/posix" (+ node:)        leaves, one frozen POSIX path object, no I/O
      "fs", "fs/promises" (+ node:) -> ui/plugins/node-modules.js (host.nodeModules):
                                    the vault-confined fs facade over Rust plugin_vfs
      "child_process", "electron", anything else -> throws. No shims: a plugin
@@ -39,40 +40,12 @@
   const invoke = T && T.core && T.core.invoke ? T.core.invoke.bind(T.core) : null;
   const listen = T && T.event && T.event.listen ? T.event.listen.bind(T.event) : null;   // item 5: vault-changed for the plugin vault model
   const SCHEME = "opensidian-plugin://localhost/";
+  const NODE = window.__osNodeModules;   // captured at boot (index.html loads node-leaves.js first)
   const DENIED = new Set(["fs", "fs/promises", "child_process", "electron", "original-fs", "os", "net", "http", "https", "crypto", "module", "worker_threads", "process", "vm"]);
 
   const status = new Map();   // id -> {state: "loading"|"loaded"|"failed"|"unloaded", error?}
   const pending = new Map();  // id -> {resolve(factory)}
   let seq = 0, granted = false;
-
-  // ---- path: pure POSIX string functions, the subset plugins use ----
-  const norm = p => {
-    const abs = p.startsWith("/"), out = [];
-    for (const s of p.split("/")) {
-      if (!s || s === ".") continue;
-      if (s === "..") { if (out.length && out[out.length - 1] !== "..") out.pop(); else if (!abs) out.push(".."); }
-      else out.push(s);
-    }
-    const r = (abs ? "/" : "") + out.join("/");
-    return r || (abs ? "/" : ".");
-  };
-  const path = {
-    sep: "/", delimiter: ":",
-    normalize: p => norm(String(p)),
-    join: (...a) => norm(a.filter(x => x !== "").join("/") || "."),
-    resolve: (...a) => { let r = ""; for (const x of a) r = String(x).startsWith("/") ? String(x) : r + "/" + x; return norm(r || "/"); },
-    isAbsolute: p => String(p).startsWith("/"),
-    dirname: p => { const s = String(p).replace(/\/+$/, ""), i = s.lastIndexOf("/"); return i < 0 ? "." : i === 0 ? "/" : s.slice(0, i); },
-    basename: (p, ext) => { let b = String(p).replace(/\/+$/, ""); b = b.slice(b.lastIndexOf("/") + 1); return ext && b.endsWith(ext) && b !== ext ? b.slice(0, -ext.length) : b; },
-    extname: p => { const b = path.basename(p), i = b.lastIndexOf("."); return i <= 0 ? "" : b.slice(i); },
-    relative: (from, to) => {
-      const f = norm("/" + from).split("/").filter(Boolean), t = norm("/" + to).split("/").filter(Boolean);
-      let i = 0; while (i < f.length && i < t.length && f[i] === t[i]) i++;
-      return [...f.slice(i).map(() => ".."), ...t.slice(i)].join("/");
-    },
-  };
-  path.posix = path;            // BEFORE the freeze: strict mode throws on a frozen object (iter-2 bug: the whole loader died at boot)
-  Object.freeze(path);
 
   function makeRequire(id) {
     return function require(name) {
@@ -86,7 +59,8 @@
         if (m) return m;
         throw new Error(id + ': require("' + name + '"): editor extensions not supported yet');
       }
-      if (name === "path" || name === "node:path" || name === "path/posix") return path;
+      const leaf = NODE && NODE.get(name);   // ui/plugins/node-leaves.js: pure leaves (path)
+      if (leaf) return leaf;
       const nm = host.nodeModules && host.nodeModules.resolve(name);   // ui/plugins/node-modules.js: fs, fs/promises (vault-confined)
       if (nm) return nm;
       const bare = name.replace(/^node:/, "");
@@ -171,7 +145,6 @@
   const host = {
     api: null,
     status,
-    path,
     makeRequire,
     evaluate,
     fail,
