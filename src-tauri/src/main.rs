@@ -3200,6 +3200,27 @@ fn plugin_io(
     })
 }
 
+
+/* ---- td-vault-io: the plugin `fs` / DataAdapter command. One op per call,
+   all confinement in vaultfs::plugin_op (tested there). Plugin code only runs
+   in a trusted vault, so an untrusted vault answers nothing. */
+#[tauri::command]
+fn plugin_vfs(
+    v: State<Vault>,
+    op: String,
+    path: String,
+    to: Option<String>,
+    data: Option<String>,
+    recursive: Option<bool>,
+    otel: Option<perf::Ctx>,
+) -> Result<serde_json::Value, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    if !plugins::is_trusted(&cfg_value(), &root) {
+        return Err("EPERM: restricted mode, plugin file access is off".into());
+    }
+    span_timed!(otel => "plugin_vfs", vaultfs::plugin_op(&root, &op, &path, to.as_deref(), data.as_deref(), recursive.unwrap_or(false)))
+}
+
 /* ---- themefs R5 (themes): the listing predicate is the oracle's, verbatim
    (the recon-themes probe §3 — themefs::themes_scan). themes_scan/theme_css
    are INSTRUMENTED (a directory walk that grows with the user's installed
@@ -5467,7 +5488,7 @@ fn main() {
             read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
-            plugins_state, plugins_set, plugin_io,
+            plugins_state, plugins_set, plugin_io, plugin_vfs,
             themes_scan, theme_css, get_css_theme, set_css_theme, theme_seed_report, vault_css_watch,
             get_quickfont, set_quickfont, get_fonts, set_font, font_families,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
