@@ -645,6 +645,43 @@
   class PluginSettingTab extends SettingTab {
     constructor(app, plugin) { super(); this.app = app; this.plugin = plugin; }
   }
+  /* td-census-fix: Templater 2.25.0 (minAppVersion 1.13.0) subclasses these at
+     module scope, so without them it cannot even load. Bounded shapes: enough
+     for a settings page / confirmation dialog to render and answer, not the
+     whole declarative settings model.
+       SettingGroup(containerEl): a .setting-group with an optional heading;
+         addSetting(cb) appends a Setting to its items.
+       SettingPage: a sub-page of a settings tab (containerEl, display/update/hide).
+       ConfirmationModal(app): a Modal with a button row — addButton(cb),
+         addCheckbox(label, cb(checked)), addCancelButton(). */
+  class SettingGroup {
+    constructor(containerEl) {
+      installDom();
+      this.groupEl = containerEl.createDiv({ cls: "setting-group" });
+      this.headerEl = this.groupEl.createDiv({ cls: "setting-group-heading setting-item-heading" }); this.headerEl.hidden = true;
+      this.listEl = this.groupEl.createDiv({ cls: "setting-items" });
+    }
+    setHeading(t) { this.headerEl.hidden = false; this.headerEl.textContent = ""; if (t instanceof Node) this.headerEl.appendChild(t); else this.headerEl.textContent = String(t); return this; }
+    addClass(c) { this.groupEl.addClass(c); return this; }
+    addSetting(cb) { const s = new Setting(this.listEl); if (cb) cb(s); return this; }
+  }
+  class SettingPage {
+    constructor() { installDom(); this.app = app; this.containerEl = mk("div", { cls: "setting-page" }); this.icon = ""; }
+    display() {}
+    update() { this.containerEl.empty(); this.display(); }
+    hide() { this.containerEl.empty(); }
+  }
+  class ConfirmationModal extends Modal {
+    constructor(app_) { super(app_); this.buttonContainerEl = this.modalEl.createDiv({ cls: "modal-button-container" }); }
+    addButton(cb) { const b = new ButtonComponent(this.buttonContainerEl); if (cb) cb(b); return this; }
+    addCheckbox(label, cb) {
+      const l = this.buttonContainerEl.createEl("label", { cls: "mod-checkbox" });
+      const i = l.createEl("input", { attr: { type: "checkbox" } }); l.appendText(" " + String(label));
+      i.addEventListener("change", () => { if (cb) cb(i.checked); });
+      return this;
+    }
+    addCancelButton(cb) { return this.addButton(b => { b.setButtonText("Cancel").onClick(() => { this.close(); if (cb) cb(); }); }); }
+  }
 
   /* -------------------------------------------------------------- Menu
      Shown through main.js's own context-menu machine (placeMenu/closeMenu),
@@ -1575,7 +1612,7 @@
   }
   const X = {
     Events, Component, Plugin, App, Notice, Modal, SuggestModal, FuzzySuggestModal, Scope,
-    Setting, SettingTab, PluginSettingTab, BaseComponent, ValueComponent, AbstractTextComponent,
+    Setting, SettingTab, PluginSettingTab, SettingGroup, SettingPage, ConfirmationModal, BaseComponent, ValueComponent, AbstractTextComponent,
     TextComponent, SearchComponent, TextAreaComponent, MomentFormatComponent, ToggleComponent,
     DropdownComponent, SliderComponent, ColorComponent, ButtonComponent, ExtraButtonComponent,
     Menu, MenuItem, View, ItemView, FileView, EditableFileView, TextFileView, MarkdownView,
