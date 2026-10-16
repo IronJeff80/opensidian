@@ -346,4 +346,87 @@
     };
   }
   Object.defineProperty(window, "__osEditorApi", { value: install, configurable: true, writable: false, enumerable: false });
+
+  /* ------------------------------------------------- window.CodeMirror (CM5 modes)
+     Obsidian keeps CodeMirror 5's mode registry on window.CodeMirror so plugins can
+     define legacy stream modes and hand them to CM6's StreamLanguage. Templater 2.25.0
+     runs `(function(e){e(window.CodeMirror)})(function(e){e.defineMode(...)})` at
+     module scope and failed to load with "undefined is not an object (evaluating
+     'e.defineMode')". Bounded: the registry only (defineMode / defineMIME / getMode /
+     resolveMode / startState / copyState / innerMode / registerHelper / Pass /
+     StringStream) — no CM5 editor, no DOM. Plugins may add properties (Templater sets
+     customOverlayMode), as in Obsidian. A mode never runs unless a plugin asks
+     StreamLanguage for it. */
+  if (!window.CodeMirror) {
+    const modes = Object.create(null), mimeModes = Object.create(null), helpers = Object.create(null);
+    const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+    const nullMode = { name: "null", token(stream) { stream.skipToEnd(); return null; } };
+    class StringStream {
+      constructor(string, tabSize, lineOracle) { this.pos = this.start = 0; this.string = String(string); this.tabSize = tabSize || 8; this.lastColumnPos = this.lastColumnValue = 0; this.lineStart = 0; this.lineOracle = lineOracle; }
+      eol() { return this.pos >= this.string.length; }
+      sol() { return this.pos == this.lineStart; }
+      peek() { return this.string.charAt(this.pos) || undefined; }
+      next() { if (this.pos < this.string.length) return this.string.charAt(this.pos++); }
+      eat(m) { const ch = this.string.charAt(this.pos); const ok = typeof m == "string" ? ch == m : ch && (m.test ? m.test(ch) : m(ch)); if (ok) { ++this.pos; return ch; } }
+      eatWhile(m) { const s = this.pos; while (this.eat(m)) {} return this.pos > s; }
+      eatSpace() { const s = this.pos; while (/[\s ]/.test(this.string.charAt(this.pos))) ++this.pos; return this.pos > s; }
+      skipToEnd() { this.pos = this.string.length; }
+      skipTo(ch) { const f = this.string.indexOf(ch, this.pos); if (f > -1) { this.pos = f; return true; } }
+      backUp(n) { this.pos -= n; }
+      column() { return this.start - this.lineStart; }
+      indentation() { const m = /^\s*/.exec(this.string.slice(this.lineStart)); return m ? m[0].length : 0; }
+      match(pattern, consume, caseInsensitive) {
+        if (typeof pattern == "string") {
+          const cased = s => caseInsensitive ? s.toLowerCase() : s;
+          if (cased(this.string.substr(this.pos, pattern.length)) == cased(pattern)) { if (consume !== false) this.pos += pattern.length; return true; }
+          return null;
+        }
+        const m = this.string.slice(this.pos).match(pattern);
+        if (m && m.index > 0) return null;
+        if (m && consume !== false) this.pos += m[0].length;
+        return m;
+      }
+      current() { return this.string.slice(this.start, this.pos); }
+      hideFirstChars(n, inner) { this.lineStart += n; try { return inner(); } finally { this.lineStart -= n; } }
+      lookAhead(n) { const o = this.lineOracle; return o && o.lookAhead ? o.lookAhead(n) : undefined; }
+      baseToken() {}
+    }
+    const CM = {
+      Pass: { toString() { return "CodeMirror.Pass"; } },
+      StringStream, modes, mimeModes,
+      defineMode(name, factory) { if (arguments.length > 2) factory.dependencies = Array.prototype.slice.call(arguments, 2); modes[String(name)] = factory; },
+      defineMIME(mime, spec) { mimeModes[String(mime)] = spec; },
+      resolveMode(spec) {
+        if (typeof spec == "string" && own(mimeModes, spec)) spec = mimeModes[spec];
+        else if (spec && typeof spec.name == "string" && own(mimeModes, spec.name)) { const found = mimeModes[spec.name]; spec = Object.assign({}, typeof found == "string" ? { name: found } : found, spec, { name: typeof found == "string" ? found : found.name }); }
+        if (typeof spec == "string") return { name: spec };
+        return spec || { name: "null" };
+      },
+      getMode(options, spec) {
+        spec = CM.resolveMode(spec);
+        const f = own(modes, spec.name) ? modes[spec.name] : null;
+        if (!f) return Object.assign({}, nullMode);
+        const m = f(options || {}, spec);
+        m.name = spec.name;
+        if (spec.helperType) m.helperType = spec.helperType;
+        return m;
+      },
+      startState(mode, a1, a2) { return mode.startState ? mode.startState(a1, a2) : true; },
+      copyState(mode, state) {
+        if (state === true) return state;
+        if (mode.copyState) return mode.copyState(state);
+        const n = {};
+        for (const k in state) { let v = state[k]; if (Array.isArray(v)) v = v.concat([]); n[k] = v; }
+        return n;
+      },
+      innerMode(mode, state) {
+        let info;
+        while (mode.innerMode) { info = mode.innerMode(state); if (!info || info.mode == mode) break; state = info.state; mode = info.mode; }
+        return info || { mode, state };
+      },
+      registerHelper(type, name, value) { (helpers[type] || (helpers[type] = Object.create(null)))[name] = value; },
+      helpers,
+    };
+    Object.defineProperty(window, "CodeMirror", { value: CM, configurable: true, writable: true, enumerable: false });
+  }
 })();
