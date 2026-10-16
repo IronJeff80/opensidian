@@ -1582,6 +1582,63 @@
     WorkspaceLeaf, MarkdownRenderChild, TAbstractFile, TFile, TFolder, Vault, DataAdapter, FileSystemAdapter,
   };
   if (EA) Object.assign(X, { Editor: EA.Editor, EditorSuggest: EA.EditorSuggest, PopoverSuggest: EA.PopoverSuggest });   // editor-api classes (es5-callable below)
+  /* AbstractInputSuggest (td-census-fix: Templater 2.25.0's folder/file pickers
+     in its settings tab subclass it, at module scope): a suggestion popover bound
+     to an <input> / contenteditable. Typing calls getSuggestions(value); a click
+     or Enter calls selectSuggestion(item, evt), whose default hands the item to
+     the onSelect callback; Escape / blur close it. */
+  class AbstractInputSuggest extends (EA ? EA.PopoverSuggest : class { constructor(a) { this.app = a; this.isOpen = false; this.suggestEl = document.createElement("div"); } open() { this.isOpen = true; } close() { this.isOpen = false; } }) {
+    constructor(app_, textInputEl) {
+      super(app_);
+      this.textInputEl = textInputEl; this.limit = 100; this._cb = null; this._items = []; this._sel = 0;
+      this.suggestEl.className = "suggestion-container os-isug"; this.suggestEl.hidden = true;
+      const el = textInputEl;
+      if (!el || typeof el.addEventListener !== "function") return;
+      el.addEventListener("input", () => this._refresh());
+      el.addEventListener("focus", () => this._refresh());
+      el.addEventListener("blur", () => setTimeout(() => this.close(), 150));
+      el.addEventListener("keydown", e => {
+        if (!this.isOpen || !this._items.length) return;
+        if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); this._sel = (this._sel + (e.key === "ArrowDown" ? 1 : this._items.length - 1)) % this._items.length; this._draw(); }
+        else if (e.key === "Enter") { e.preventDefault(); this._choose(this._sel, e); }
+        else if (e.key === "Escape") { e.preventDefault(); this.close(); }
+      });
+    }
+    getValue() { const el = this.textInputEl; return el ? (el.isContentEditable ? el.textContent : String(el.value || "")) : ""; }
+    setValue(v) { const el = this.textInputEl; if (!el) return; if (el.isContentEditable) el.textContent = String(v); else el.value = String(v); }
+    onSelect(cb) { this._cb = cb; return this; }
+    getSuggestions() { return []; }
+    selectSuggestion(item, evt) { if (this._cb) this._cb(item, evt); }
+    _refresh() {
+      const q = this.getValue();
+      Promise.resolve().then(() => this.getSuggestions(q)).then(items => {
+        this._items = (items || []).slice(0, this.limit || 100); this._sel = 0;
+        if (!this._items.length || document.activeElement !== this.textInputEl) { this.close(); return; }
+        this._draw();
+      }).catch(e => console.error("[plugin] AbstractInputSuggest.getSuggestions:", e));
+    }
+    _draw() {
+      const el = this.suggestEl; el.textContent = "";
+      this._items.forEach((it, i) => {
+        const d = document.createElement("div");
+        d.className = "suggestion-item" + (i === this._sel ? " is-selected" : "");
+        try { this.renderSuggestion(it, d); } catch (e) { console.error("[plugin] renderSuggestion:", e); }
+        d.addEventListener("mousedown", e => { e.preventDefault(); this._choose(i, e); });
+        el.appendChild(d);
+      });
+      const r = this.textInputEl.getBoundingClientRect();
+      Object.assign(el.style, { position: "fixed", left: r.left + "px", top: r.bottom + "px", minWidth: r.width + "px", zIndex: 1000 });
+      if (el.parentNode !== document.body) document.body.appendChild(el);
+      el.hidden = false; this.open();
+    }
+    _choose(i, e) {
+      const it = this._items[i]; if (it === undefined) return;
+      try { this.selectSuggestion(it, e); } catch (er) { console.error("[plugin] selectSuggestion:", er); }
+      this.close();
+    }
+    close() { super.close(); this.suggestEl.hidden = true; this.suggestEl.textContent = ""; this._items = []; }
+  }
+  X.AbstractInputSuggest = AbstractInputSuggest;
   for (const k of Object.keys(X)) X[k] = es5(X[k]);
   Object.assign(X, {
     Platform, apiVersion: API_VERSION, requireApiVersion, setIcon, getIcon, addIcon, removeIcon, getIconIds,
