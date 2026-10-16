@@ -47,12 +47,20 @@
   const pending = new Map();  // id -> {resolve(factory)}
   let seq = 0, granted = false;
 
-  function makeRequire(id) {
+  /* guarded (td-census-fix integration, ruling on recon-bundles.md): api.js
+     passes it for a manifest isDesktopOnly:false plugin with no granted desktop
+     capability. Such a plugin gets the guarded "obsidian" view (host.apiGuarded:
+     mobile Platform, no FileSystemAdapter match) and a denied BUILTIN binds to an
+     inert stub that throws the same deny error on use (node-modules.js stub()).
+     Outside guarded mode the deny error is thrown at require time, as before. */
+  function makeRequire(id, guarded) {
+    guarded = guarded === true;
     return function require(name) {
       name = String(name);
       if (name === "obsidian") {
-        if (!host.api) throw new Error(id + ': require("obsidian"): the plugin API is not available');
-        return host.api;
+        const a = guarded ? host.apiGuarded : host.api;
+        if (!a) throw new Error(id + ': require("obsidian"): the plugin API is not available');
+        return a;
       }
       if (name.startsWith("@codemirror/") || name.startsWith("@lezer/")) {
         const m = window.__osModules && Object.prototype.hasOwnProperty.call(window.__osModules, name) ? window.__osModules[name] : undefined;
@@ -64,7 +72,9 @@
       const nm = host.nodeModules && host.nodeModules.resolve(name);   // ui/plugins/node-modules.js: fs, fs/promises (vault-confined)
       if (nm) return nm;
       const bare = name.replace(/^node:/, "");
-      if (DENIED.has(bare)) throw new Error(id + ': require("' + name + '") is not available in opensidian (no Node/Electron APIs)');
+      const deny = id + ': require("' + name + '") is not available in opensidian (no Node/Electron APIs)';
+      if (guarded) { const s = host.nodeModules && host.nodeModules.stub(name, deny); if (s) return s; }
+      if (DENIED.has(bare)) throw new Error(deny);
       throw new Error(id + ': require("' + name + '"): unknown module');
     };
   }
@@ -112,7 +122,7 @@
 
   /* fetch + evaluate one plugin's main.js. Resolves {ok, id, exports, error};
      never rejects — a broken plugin must not take the caller down. */
-  function evaluate(id) {
+  function evaluate(id, guarded) {
     if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/.test(id)) return Promise.resolve(fail(id, new Error("bad plugin id")));
     if (pending.has(id)) return Promise.resolve(fail(id, new Error("already loading")));
     seal();   // item 7: no plugin script is ever requested while __TAURI__ / the full host are public
@@ -125,7 +135,7 @@
         resolve: factory => {
           const module = { exports: {} };
           try {
-            factory.call(module.exports, module, module.exports, makeRequire(id));
+            factory.call(module.exports, module, module.exports, makeRequire(id, guarded === true));
           } catch (e) { fin(fail(id, e)); return; }
           fin({ ok: true, id, exports: module.exports });
         },

@@ -129,8 +129,58 @@
   return new Map([["fs", fs], ["node:fs", fs], ["fs/promises", promises], ["node:fs/promises", promises]]);
   }   // buildFs
 
+  /* ---- guarded mode (td-census-fix integration, coordinator ruling on
+     recon-bundles.md (b)) ----
+     A plugin in guarded mode (manifest isDesktopOnly:false, no granted desktop
+     capability; api.js decides, the loader asks) may BIND a denied builtin at
+     module scope — real bundles do `var cp=require("child_process")` and only
+     use it on their desktop branch — but can never USE it. stub() answers a
+     Node/Electron builtin name with a deep, frozen, inert stand-in:
+       - calling or constructing it, or anything reached from it, throws the
+         loader's deny error for THAT require (the same message a non-guarded
+         require throws up front);
+       - a property read answers another such stub (cached, so a.b === a.b),
+         never a host object; Symbol keys and "then" read undefined (so an
+         `await` of it is not a thenable);
+       - Object.getPrototypeOf(stub) === null, its .prototype is an empty frozen
+         null-prototype object, .constructor is a stub: no route to Function;
+       - the target is frozen: no write, define, delete or setPrototypeOf.
+     Names that are not Node/Electron builtins get null: the loader keeps
+     throwing "unknown module" for those, in every mode. */
+  const BUILTINS = new Set(["assert", "assert/strict", "async_hooks", "buffer", "child_process", "cluster", "console", "constants", "crypto",
+    "dgram", "diagnostics_channel", "dns", "dns/promises", "domain", "electron", "events", "http", "http2", "https", "inspector", "module",
+    "net", "original-fs", "os", "path/win32", "perf_hooks", "process", "punycode", "querystring", "readline", "readline/promises", "repl",
+    "stream", "stream/promises", "stream/web", "string_decoder", "sys", "timers", "timers/promises", "tls", "trace_events", "tty", "url",
+    "util", "util/types", "v8", "vm", "wasi", "worker_threads", "zlib"]);
+  const PASS = new Set(["prototype", "name", "length"]);   // the frozen target's own props: invariants require their real values
+  function makeStub(err) {
+    const kids = new Map();
+    const t = function () {};
+    t.prototype = Object.freeze(Object.create(null));   // NOT the default one: its .constructor would hand out the raw target
+    Object.setPrototypeOf(t, null);
+    Object.freeze(t);
+    return new Proxy(t, {
+      apply() { throw err(); },
+      construct() { throw err(); },
+      get(o, k) {
+        if (typeof k === "symbol" || k === "then") return undefined;
+        if (PASS.has(k)) return Reflect.get(o, k);
+        let s = kids.get(k);
+        if (!s) { s = makeStub(err); kids.set(k, s); }
+        return s;
+      },
+    });
+  }
+  function stub(name, msg) {
+    name = String(name);
+    const bare = name.startsWith("node:") ? name.slice(5) : name;
+    if (!BUILTINS.has(bare) && !FS_NAMES.has(name)) return null;
+    return makeStub(() => new Error(String(msg)));
+  }
+
   const FS_NAMES = new Set(["fs", "node:fs", "fs/promises", "node:fs/promises"]);
   host.nodeModules = Object.freeze({
+    stub,
     resolve(name) {
       name = String(name);
       if (FS_NAMES.has(name)) {

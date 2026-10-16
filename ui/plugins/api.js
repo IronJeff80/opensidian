@@ -314,6 +314,12 @@
     isWin: /Win/.test(navigator.platform), isLinux: /Linux/.test(navigator.platform), isSafari: false,
     resourcePathPrefix: "",
   });
+  /* guarded view (td-census-fix integration, ruling on recon-bundles.md (a)):
+     what a manifest isDesktopOnly:false plugin with no granted desktop capability
+     sees. Mobile, so real bundles take their non-Node branch (Templater skips
+     its system-command exec, obsidian-git picks isomorphic-git over the adapter
+     instead of spawning git). Desktop-only plugins keep the desktop view. */
+  const PlatformGuarded = Object.freeze(Object.assign({}, Platform, { isDesktop: false, isMobile: true, isDesktopApp: false, isMobileApp: true }));
   const API_VERSION = "1.4.4";
   const vcmp = (a, b) => { const x = String(a).split("."), y = String(b).split("."); for (let i = 0; i < 3; i++) { const d = (+x[i] || 0) - (+y[i] || 0); if (d) return d; } return 0; };
   const requireApiVersion = v => vcmp(API_VERSION, v) >= 0;
@@ -1590,6 +1596,19 @@
   // A getter, so esbuild's __toESM live bindings and `obsidian.moment` both see it.
   Object.defineProperty(X, "moment", { enumerable: true, get: () => window.moment });
   const api = Object.freeze(X);
+  /* the guarded "obsidian" (loader.js makeRequire(id, true)): the same API, but
+     Platform is PlatformGuarded and FileSystemAdapter is a separate class nothing
+     is an instance of, so `app.vault.adapter instanceof FileSystemAdapter` is
+     false in this view (DataAdapter only: no basePath for a shell cwd). The
+     moment getter is copied as a getter, not a snapshot. */
+  class GuardedFileSystemAdapter extends DataAdapter {}
+  Object.defineProperty(GuardedFileSystemAdapter, "name", { value: "FileSystemAdapter" });
+  const apiGuarded = Object.freeze(Object.defineProperties({}, Object.assign(Object.getOwnPropertyDescriptors(X), {
+    Platform: { value: PlatformGuarded, enumerable: true },
+    FileSystemAdapter: { value: es5(GuardedFileSystemAdapter), enumerable: true },
+  })));
+  // guarded = manifest isDesktopOnly:false (missing counts as desktop) and no granted desktop capability (none exist yet: td-desktop-caps)
+  const isGuarded = m => !!m && m.isDesktopOnly === false;
 
   /* ------------------------------------------------------ the manager */
   let touchT = 0;
@@ -1602,7 +1621,7 @@
     if (!manifest) return host.fail(id, new Error("not installed (no manifest.json)"));
     installDom();
     try { await ensureModel(); } catch (e) { touch(); return host.fail(id, new Error("vault model: " + (e && e.message || e))); }
-    const r = await host.evaluate(id);
+    const r = await host.evaluate(id, isGuarded(manifest));
     if (!r.ok) { touch(); return r; }
     const ex = r.exports, Cls = ex && (ex.default || ex);
     if (typeof Cls !== "function" || !(Cls.prototype instanceof Plugin)) { touch(); return host.fail(id, new Error("main.js does not export a Plugin subclass")); }
@@ -1696,6 +1715,7 @@
   }
 
   host.api = api;
+  host.apiGuarded = apiGuarded;
   Object.assign(host, {
     app, boot, enable, disable, setEnabled, setRestricted, refresh, censusTok,
     tabs: () => setting.pluginTabs.slice(),
