@@ -8382,7 +8382,7 @@ mod tests {
             .to_string();
         assert_eq!(
             csp,
-            "default-src 'self'; script-src 'self' opensidian-plugin:; style-src 'self' 'unsafe-inline'; \
+            "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
              img-src 'self' data: opensidian-img:; font-src 'self'; \
              connect-src ipc: http://ipc.localhost",
             "the CSP changed — if that was deliberate, say why in the commit message"
@@ -8394,10 +8394,19 @@ mod tests {
         // no wildcard, no http(s) origin anywhere in the image directive
         assert!(!img.contains('*'), "img-src wildcard re-enables remote beacons: {img}");
         assert!(!img.contains("http"), "img-src names a remote origin: {img}");
-        // plugin-loader: script-src widens by ONE scheme token, ours — no eval, no blob:
+        // plugin-loader: script-src widens by ONE scheme token, ours, plus
+        // 'wasm-unsafe-eval' (WebAssembly compile/instantiate only; Templater's
+        // template parser is wasm). JS eval, new Function and string timers stay
+        // blocked: no 'unsafe-eval' token, no 'unsafe-inline', no blob:/data:.
         let script = csp.split("; ").find(|d| d.starts_with("script-src ")).unwrap();
-        assert_eq!(script, format!("script-src 'self' {}:", plugins::SCHEME));
-        assert!(!csp.contains("unsafe-eval") && !csp.contains("blob:"), "{csp}");
+        assert_eq!(script, format!("script-src 'self' {}: 'wasm-unsafe-eval'", plugins::SCHEME));
+        for d in csp.split("; ") {
+            for tok in d.split_whitespace() {
+                assert_ne!(tok, "'unsafe-eval'", "JS eval re-enabled in {d}");
+                assert!(!tok.starts_with("blob:"), "blob: source in {d}");
+            }
+        }
+        assert!(!script.contains("unsafe-inline") && !script.contains("data:") && !script.contains('*'), "{script}");
     }
 
     /// S4: picker commands refuse system trees and dot-components, keep the
