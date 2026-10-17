@@ -6,7 +6,12 @@
    addIcon removeIcon getIconIds), normalizePath, debounce, prepare*Search,
    renderMatches, parseFrontMatter*, requestUrl, htmlToMarkdown,
    sanitizeHTMLToDom, parseYaml / stringifyYaml, getAllTags, parseLinktext,
-   getLinkpath. Segment contract: see api-core.js. */
+   getLinkpath; api-parity stage 1 (fns:links, exported through
+   K.exportValues): getLanguage, base64/hex/ArrayBuffer helpers, setTooltip /
+   displayTooltip, getFrontMatterInfo, parseFrontMatterStringArray,
+   parsePropertyId, stripHeading*, resolveSubpath, iterate*Refs,
+   sortSearchResults / renderResults, and the design-gated loaders.
+   Segment contract: see api-core.js. */
 (function () {
   "use strict";
   const parts = window.__osApiParts || (window.__osApiParts = Object.create(null));
@@ -117,9 +122,10 @@
       const words = String(q).toLowerCase().split(/\s+/).filter(Boolean);
       return text => { const t = String(text).toLowerCase(), m = []; for (const w of words) { const i = t.indexOf(w); if (i < 0) return null; m.push([i, i + w.length]); } return { score: 0, matches: m }; };
     }
-    function renderMatches(el, text, matches, offset = 0) {
+    function renderMatches(el, text, matches, offset) {
       let at = 0;
-      for (const [a0, b0] of matches || []) { const a = a0 - offset, b = b0 - offset; if (b <= 0 || a >= text.length) continue; if (a > at) el.appendText(text.slice(at, a)); el.createSpan({ cls: "suggestion-highlight", text: text.slice(Math.max(a, 0), b) }); at = b; }
+      offset = +offset || 0;
+      for (const [a0, b0] of matches || []) { const a = a0 + offset, b = b0 + offset; /* offset is ADDED to each range */ if (b <= 0 || a >= text.length) continue; if (a > at) el.appendText(text.slice(at, a)); el.createSpan({ cls: "suggestion-highlight", text: text.slice(Math.max(a, 0), b) }); at = b; }
       if (at < text.length) el.appendText(text.slice(at));
     }
     const parseFrontMatterEntry = (fm, key) => {
@@ -173,5 +179,204 @@
     const parseLinktext = lt => { const s = String(lt), i = s.indexOf("#"); return i < 0 ? { path: s, subpath: "" } : { path: s.slice(0, i), subpath: s.slice(i) }; };
     const getLinkpath = lt => parseLinktext(lt).path;
     Object.assign(K, { getAllTags, getLinkpath, parseLinktext });
+
+    /* ------------------------------------------------- language + binary
+       opensidian's UI ships one language, English; getLanguage() reports it. */
+    const getLanguage = () => "en";
+    const u8 = b => (ArrayBuffer.isView(b) ? new Uint8Array(b.buffer, b.byteOffset, b.byteLength) : new Uint8Array(b));
+    function arrayBufferToBase64(buf) {
+      const a = u8(buf); let s = "";
+      for (let i = 0; i < a.length; i += 0x8000) s += String.fromCharCode.apply(null, a.subarray(i, i + 0x8000));
+      return btoa(s);
+    }
+    function base64ToArrayBuffer(b64) {      // atob: forgiving base64 (whitespace, missing padding), InvalidCharacterError on junk
+      const s = atob(String(b64)), a = new Uint8Array(s.length);
+      for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i);
+      return a.buffer;
+    }
+    function arrayBufferToHex(buf) {
+      const a = u8(buf); let s = "";
+      for (let i = 0; i < a.length; i++) s += (a[i] < 16 ? "0" : "") + a[i].toString(16);
+      return s;
+    }
+    function hexToArrayBuffer(hex) {         // one byte per complete pair; a non-hex pair reads 0
+      const h = String(hex), a = new Uint8Array(h.length >> 1);
+      for (let i = 0; i < a.length; i++) a[i] = parseInt(h.substr(i * 2, 2), 16) || 0;
+      return a.buffer;
+    }
+    const getBlobArrayBuffer = blob => blob.arrayBuffer();
+
+    /* ------------------------------------------------------------ tooltips
+       setTooltip records the text + options on the element (aria-label,
+       data-tooltip-*); hovering such an element shows it after its delay.
+       displayTooltip shows one div.tooltip in <body> next to the target;
+       only one is shown at a time and it goes when the pointer leaves the
+       target, on pointerdown/wheel/keydown, or when the target is detached. */
+    const tipped = new WeakSet();
+    let tipEl = null, tipFor = null, tipOff = null, hoverT = null, hoverOn = false;
+    function hideTooltip() {
+      clearTimeout(hoverT); hoverT = null;
+      if (tipOff) { tipOff(); tipOff = null; }
+      if (tipEl) { tipEl.remove(); tipEl = null; }
+      tipFor = null;
+    }
+    function displayTooltip(el, text, opts) {
+      hideTooltip();
+      opts = opts || {};
+      const s = text == null ? "" : String(text);
+      if (!el || !s) return;
+      const doc = el.ownerDocument || document, win = doc.defaultView || window;
+      const t = doc.createElement("div");
+      t.className = "tooltip";
+      const cls = opts.classes == null ? [] : [].concat(opts.classes);
+      for (const c of cls) if (c) t.classList.add(String(c));
+      t.textContent = s;
+      const st = t.style;
+      st.position = "fixed"; st.zIndex = "2147483000"; st.pointerEvents = "none"; st.maxWidth = "300px";
+      st.padding = "4px 8px"; st.borderRadius = "4px"; st.fontSize = "12px"; st.lineHeight = "1.4"; st.whiteSpace = "pre-wrap";
+      st.background = "var(--background-modifier-message, rgba(30,30,30,0.95))"; st.color = "var(--text-on-accent, #fff)";
+      doc.body.appendChild(t);
+      const r = el.getBoundingClientRect(), w = t.offsetWidth, h = t.offsetHeight;
+      const gap = Number.isFinite(+opts.gap) ? +opts.gap : 8;
+      const vw = win.innerWidth, vh = win.innerHeight, pl = opts.placement || "bottom";
+      let x = r.left + (r.width - w) / 2, y = r.bottom + gap;
+      if (pl === "top") y = r.top - h - gap;
+      else if (pl === "left") { x = r.left - w - gap; y = r.top + (r.height - h) / 2; }
+      else if (pl === "right") { x = r.right + gap; y = r.top + (r.height - h) / 2; }
+      if (pl === "bottom" && y + h > vh) y = r.top - h - gap;
+      if (pl === "top" && y < 0) y = r.bottom + gap;
+      st.left = Math.round(Math.max(4, Math.min(x, vw - w - 4))) + "px";
+      st.top = Math.round(Math.max(4, Math.min(y, vh - h - 4))) + "px";
+      const off = () => hideTooltip();
+      const gone = new MutationObserver(() => { if (!el.isConnected) hideTooltip(); });
+      gone.observe(doc.body, { childList: true, subtree: true });
+      el.addEventListener("mouseleave", off);
+      doc.addEventListener("pointerdown", off, true); doc.addEventListener("wheel", off, true); doc.addEventListener("keydown", off, true);
+      tipEl = t; tipFor = el;
+      tipOff = () => { gone.disconnect(); el.removeEventListener("mouseleave", off);
+        doc.removeEventListener("pointerdown", off, true); doc.removeEventListener("wheel", off, true); doc.removeEventListener("keydown", off, true); };
+    }
+    function tipOpts(el) {
+      const d = el.dataset, o = {};
+      if (d.tooltipPosition) o.placement = d.tooltipPosition;
+      if (d.tooltipClasses) o.classes = d.tooltipClasses.split(" ");
+      if (d.tooltipGap != null) o.gap = +d.tooltipGap;
+      return o;
+    }
+    function hoverInstall() {
+      if (hoverOn) return; hoverOn = true;
+      document.addEventListener("mouseover", e => {
+        let el = e.target && e.target.nodeType === 1 ? e.target : e.target && e.target.parentElement;
+        while (el && !tipped.has(el)) el = el.parentElement;
+        if (!el || el === tipFor) return;
+        clearTimeout(hoverT);
+        const d = Number.isFinite(+el.dataset.tooltipDelay) && el.dataset.tooltipDelay !== "" ? +el.dataset.tooltipDelay : 300;
+        hoverT = setTimeout(() => { hoverT = null; if (el.isConnected && el.matches(":hover")) displayTooltip(el, el.getAttribute("aria-label"), tipOpts(el)); }, d);
+      }, true);
+    }
+    function setTooltip(el, tooltip, opts) {
+      if (!el) return;
+      opts = opts || {};
+      el.setAttribute("aria-label", tooltip == null ? "" : String(tooltip));
+      if (opts.placement != null) el.setAttribute("data-tooltip-position", String(opts.placement));
+      if (opts.delay != null) el.setAttribute("data-tooltip-delay", String(opts.delay));
+      if (opts.classes != null) el.setAttribute("data-tooltip-classes", [].concat(opts.classes).join(" "));
+      if (opts.gap != null) el.setAttribute("data-tooltip-gap", String(opts.gap));
+      tipped.add(el); hoverInstall();
+      if (tipFor === el) { if (tooltip) tipEl.textContent = String(tooltip); else hideTooltip(); }
+    }
+
+    /* ------------------------------------------- frontmatter / properties
+       getFrontMatterInfo: a block opens with a first line that is exactly
+       "---" and closes at the next line that is exactly "---" (LF or CRLF). */
+    function getFrontMatterInfo(content) {
+      const s = String(content == null ? "" : content);
+      const none = { exists: false, frontmatter: "", from: 0, to: 0, contentStart: 0 };
+      const first = /^---(\r?\n)/.exec(s);
+      if (!first) return none;
+      const from = first[0].length;
+      for (let p = from; p <= s.length;) {
+        const nl = s.indexOf("\n", p), eol = nl < 0 ? s.length : nl;
+        const line = s.slice(p, eol).replace(/\r$/, "");
+        if (line === "---") return { exists: true, frontmatter: s.slice(from, p), from, to: p, contentStart: nl < 0 ? s.length : nl + 1 };
+        if (nl < 0) break;
+        p = nl + 1;
+      }
+      return none;
+    }
+    function parseFrontMatterStringArray(fm, key, nospaces) {   // nospaces: accepted, values are not split (as stock)
+      const v = K.parseFrontMatterEntry(fm, key);
+      if (Array.isArray(v)) return v.filter(x => typeof x === "string");
+      if (typeof v === "string" && v !== "") return [v];
+      return null;
+    }
+    function parsePropertyId(id) {
+      const s = String(id == null ? "" : id), i = s.indexOf(".");
+      if (i > 0) { const t = s.slice(0, i); if (t === "note" || t === "file" || t === "formula") return { type: t, name: s.slice(i + 1) }; }
+      return { type: "note", name: s };
+    }
+    const stripHeading = h => String(h == null ? "" : h).replace(/[\s:|#^[\]*%&\\/]+/g, " ").trim();
+    const stripHeadingForLink = h => String(h == null ? "" : h).replace(/[\s:|#^[\]\\]+/g, " ").trim();
+
+    /* --------------------------------------------------- subpaths / refs
+       resolveSubpath: "#A#B" walks headings in order (case-insensitive,
+       stripped), a heading's section ends at the next heading of the same or
+       a higher level (end null at EOF); "#^id" is a block, with its list item. */
+    function resolveSubpath(cache, subpath) {
+      if (!cache) return null;
+      const sp = String(subpath == null ? "" : subpath).replace(/^#/, "");
+      if (!sp) return null;
+      if (sp[0] === "^") {
+        const id = sp.slice(1), bl = cache.blocks || {};
+        const block = bl[id] || bl[id.toLowerCase()];
+        if (!block || !block.position) return null;
+        const ln = block.position.start.line;
+        const list = (cache.listItems || []).find(li => li.position && li.position.start.line === ln);
+        return { type: "block", block, list, start: block.position.start, end: block.position.end };
+      }
+      const want = sp.split("#").map(x => stripHeading(x).toLowerCase()).filter(Boolean);
+      const hs = cache.headings || [];
+      if (!want.length) return null;
+      let k = 0, at = -1;
+      for (let i = 0; i < hs.length && k < want.length; i++) {
+        if (stripHeading(hs[i].heading).toLowerCase() === want[k]) { k++; if (k === want.length) at = i; }
+      }
+      if (at < 0) return null;
+      const current = hs[at];
+      let next = null;
+      for (let i = at + 1; i < hs.length; i++) if (hs[i].level <= current.level) { next = hs[i]; break; }
+      return { type: "heading", current, next, start: current.position.start, end: next ? next.position.start : null };
+    }
+    function iterateRefs(refs, cb) {
+      for (const r of refs || []) if (cb(r)) return true;
+      return false;
+    }
+    const iterateCacheRefs = (cache, cb) => !!cache && (iterateRefs(cache.links, cb) || iterateRefs(cache.embeds, cb));
+
+    /* ----------------------------------------------------- search results */
+    function sortSearchResults(results) { results.sort((a, b) => b.match.score - a.match.score); }
+    function renderResults(el, text, result, offset) { K.renderMatches(el, text, result && result.matches, offset); }
+
+    const NEW = { getLanguage, arrayBufferToBase64, base64ToArrayBuffer, arrayBufferToHex, hexToArrayBuffer, getBlobArrayBuffer,
+      setTooltip, displayTooltip, getFrontMatterInfo, parseFrontMatterStringArray, parsePropertyId, stripHeading, stripHeadingForLink,
+      resolveSubpath, iterateRefs, iterateCacheRefs, sortSearchResults, renderResults };
+    Object.assign(K, NEW);
+    Object.assign(K.exportValues, NEW);
+
+    /* ------------------------------------------------------ design-gated
+       MathJax, Mermaid, PDF.js and Prism are not vendored in opensidian
+       (vendoring one is a product decision of its own); these are exported so
+       a plugin can feature-test them, and they fail loudly instead of
+       pretending: the loaders and finishRenderMath reject, renderMath throws. */
+    const unsupported = what => new Error("unsupported in opensidian: " + what);
+    const GATED = {
+      loadMathJax: () => Promise.reject(unsupported("loadMathJax (MathJax is not bundled)")),
+      loadMermaid: () => Promise.reject(unsupported("loadMermaid (Mermaid is not bundled)")),
+      loadPdfJs: () => Promise.reject(unsupported("loadPdfJs (PDF.js is not bundled)")),
+      loadPrism: () => Promise.reject(unsupported("loadPrism (Prism is not bundled)")),
+      renderMath: () => { throw unsupported("renderMath (MathJax is not bundled)"); },
+      finishRenderMath: () => Promise.reject(unsupported("finishRenderMath (MathJax is not bundled)")),
+    };
+    Object.assign(K.exportValues, GATED);
   });
 })();

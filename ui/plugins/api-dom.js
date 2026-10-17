@@ -102,16 +102,49 @@
       });
       def(H, "onWindowMigrated", function () { return () => {}; });
       def(H, "trigger", function (t) { this.dispatchEvent(new Event(t)); });
-      const DEL = new WeakMap();
-      def(H, "on", function (type, sel, l, opts) {
-        const fn = e => { const t = e.target && e.target.closest && e.target.closest(sel); if (t && this.contains(t)) l.call(this, e, t); };
-        let m = DEL.get(this); if (!m) DEL.set(this, m = []);
-        m.push({ type, sel, l, fn }); this.addEventListener(type, fn, opts);
+      /* delegated listeners: on(type, selector, listener, options) calls
+         listener.call(this, event, matchedElement) for events whose target is
+         inside an element matching selector (within this); the registrations
+         live on this._EVENTS[type] so off() can find the wrapper again. */
+      const capt = o => !!(o === true || (o && typeof o === "object" && o.capture));
+      const delegOn = function (type, sel, listener, opts) {
+        const self = this;
+        const fn = function (ev) {
+          let t = ev.target; if (t && t.nodeType !== 1) t = t.parentElement;
+          const m = t && t.closest ? t.closest(sel) : null;
+          if (m && (m === self || self.contains(m))) listener.call(self, ev, m);
+        };
+        const E = Object.prototype.hasOwnProperty.call(this, "_EVENTS") && this._EVENTS ? this._EVENTS : (this._EVENTS = {});
+        (E[type] || (E[type] = [])).push({ selector: sel, listener, options: opts, callback: fn });
+        this.addEventListener(type, fn, opts);
+      };
+      const delegOff = function (type, sel, listener, opts) {
+        const E = Object.prototype.hasOwnProperty.call(this, "_EVENTS") ? this._EVENTS : null, l = E && E[type];
+        if (!l) return;
+        for (let i = l.length - 1; i >= 0; i--) {
+          const r = l[i];
+          if (r.selector === sel && r.listener === listener && capt(r.options) === capt(opts)) {
+            this.removeEventListener(type, r.callback, opts); l.splice(i, 1);
+          }
+        }
+        if (!l.length) delete E[type];
+      };
+      for (const proto of [H, Document.prototype]) {
+        def(proto, "_EVENTS", undefined);     // declared on the type, set per object by the first on()
+        def(proto, "on", delegOn);
+        def(proto, "off", delegOff);
+      }
+      def(SVGElement.prototype, "setCssStyles", H.setCssStyles);
+      def(SVGElement.prototype, "setCssProps", H.setCssProps);
+      def(String.prototype, "format", function (...args) {
+        return String(this).replace(/\{(\d+)\}/g, (m, n) => (args[n] === undefined ? m : String(args[n])));
       });
-      def(H, "off", function (type, sel, l, opts) {
-        const m = DEL.get(this) || [], i = m.findIndex(x => x.type === type && x.sel === sel && x.l === l);
-        if (i >= 0) { this.removeEventListener(type, m[i].fn, opts); m.splice(i, 1); }
-      });
+      def(String, "isString", v => typeof v === "string" || v instanceof String);
+      const U = UIEvent.prototype;
+      defGet(U, "targetNode", function () { const t = this.target; return t && typeof t.nodeType === "number" ? t : null; });
+      defGet(U, "doc", function () { const t = this.targetNode; return (t && (t.nodeType === 9 ? t : t.ownerDocument)) || document; });
+      defGet(U, "win", function () { return this.doc.defaultView || window; });
+      def(U, "instanceOf", function (type) { return this instanceof type; });
       for (const proto of [Document.prototype, DocumentFragment.prototype]) {
         def(proto, "find", function (s) { return this.querySelector(s); });
         def(proto, "findAll", function (s) { return [...this.querySelectorAll(s)]; });
@@ -143,6 +176,36 @@
       def(g, "isBoolean", v => typeof v === "boolean");
       defGet(g, "activeWindow", () => window);
       defGet(g, "activeDocument", () => document);
+      /* XMLHttpRequest helpers. ajax({method, url, success, error, data,
+         headers, withCredentials, req}); a plain-object body is sent as JSON.
+         The app's CSP (connect-src) still decides what may be reached: a
+         refused request ends in error(), never in a silent success. */
+      def(g, "ajax", function (o) {
+        o = o || {};
+        const req = o.req || new XMLHttpRequest();
+        req.open(o.method || "GET", o.url, true);
+        let body = o.data;
+        if (body != null && typeof body === "object" && !(body instanceof ArrayBuffer) && !ArrayBuffer.isView(body)
+            && !(body instanceof Blob) && !(body instanceof FormData) && !(body instanceof URLSearchParams)) {
+          body = JSON.stringify(body); req.setRequestHeader("Content-Type", "application/json; charset=utf-8");
+        }
+        if (o.headers) for (const k of Object.keys(o.headers)) req.setRequestHeader(k, o.headers[k]);
+        if (o.withCredentials) req.withCredentials = true;
+        req.onload = () => {
+          if (req.status >= 200 && req.status < 300) { if (o.success) o.success(req.response, req); }
+          else if (o.error) o.error(new Error("HTTP " + req.status), req);
+        };
+        req.onerror = () => { if (o.error) o.error(new Error("network error"), req); };
+        req.send(body == null ? null : body);
+      });
+      def(g, "ajaxPromise", o => new Promise((res, rej) => g.ajax(Object.assign({}, o, {
+        success: (r, req) => { if (o && o.success) o.success(r, req); res(r); },
+        error: (e, req) => { if (o && o.error) o.error(e, req); rej(e); },
+      }))));
+      def(g, "ready", fn => {   // runs fn now when the document is already parsed, else at DOMContentLoaded
+        if (document.readyState !== "loading") fn();
+        else document.addEventListener("DOMContentLoaded", () => fn(), { once: true });
+      });
       // fishing for append helpers on fragments too
       for (const n of ["createEl", "createDiv", "createSpan"]) def(DocumentFragment.prototype, n, Node.prototype[n]);
     }
