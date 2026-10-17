@@ -579,6 +579,148 @@
       return " [plg:" + (K.st.trusted ? "T" : "R") + "|" + ids + "] [preg:c" + c + ",r" + rb + ",s" + st + ",t" + tb + "]" + nt + md + views.censusTok() + mdpCensus() + (EA ? EA.tok() : "");
     }
 
+    /* ------------------------------------------------------ app.customCss
+       Stock's snippet/theme manager, as a view over main.js's own vault CSS
+       state (vaultSnips / vaultSnipsOn / vaultThemesScan / vaultTheme) and its
+       one injection authority (snipInject/snipRemove, themeInject/themeRemove):
+       a plugin toggling a snippet or picking a theme moves the same file
+       (appearance.json via the backend) and the same <style> elements the
+       settings pane does. Listing stays the backend's (themefs.rs): its theme
+       predicate is stock's (manifest.json + theme.css + name === dir); its
+       snippet listing is *.css, no dotfiles, no dirs — ".CSS" in another case
+       is not listed (documented divergence). The writes are serialized so two
+       quick calls land in call order. Sync state first (stock's setters are
+       synchronous), then the file, then the DOM; a refused write reverts the
+       state and says why. */
+    /* main.js names, read at CALL time (main.js loads after this file); its
+       top-level const/let bindings are not window properties, so each is named */
+    const MJS = {
+      say: () => typeof say === "function" && say, renderSnipCtl: () => typeof renderSnipCtl === "function" && renderSnipCtl,
+      renderThemeCtl: () => typeof renderThemeCtl === "function" && renderThemeCtl, armCssReload: () => typeof armCssReload === "function" && armCssReload,
+      updateTitle: () => typeof updateTitle === "function" && updateTitle, snipInject: () => typeof snipInject === "function" && snipInject,
+      snipRemove: () => typeof snipRemove === "function" && snipRemove, themeInject: () => typeof themeInject === "function" && themeInject,
+      themeRemove: () => typeof themeRemove === "function" && themeRemove, effTheme: () => typeof effTheme === "function" && effTheme,
+    };
+    const mjs = n => { try { return MJS[n]() || null; } catch (_) { return null; } };
+    const g = {   // main.js top-level `let` bindings live in the global lexical scope, not on window
+      snips: () => (typeof vaultSnips !== "undefined" ? vaultSnips : []),
+      on: () => (typeof vaultSnipsOn !== "undefined" ? vaultSnipsOn : []),
+      scan: () => (typeof vaultThemesScan !== "undefined" ? vaultThemesScan : { listed: [] }),
+      theme: () => (typeof vaultTheme !== "undefined" ? vaultTheme : ""),
+    };
+    const coll = new Intl.Collator(undefined, { numeric: true });
+    const cfgDir = () => (K.vault && K.vault.configDir) || ".obsidian";
+    let cssQ = Promise.resolve();
+    const cssLater = f => { cssQ = cssQ.then(f).catch(e => console.error("[plugin] customCss:", e)); return cssQ; };
+    const cssSay = (e, k) => { const s = mjs("say"); if (s) s(String(e && e.message || e), k); };
+    const cssUi = () => {
+      for (const n of ["renderSnipCtl", "renderThemeCtl", "armCssReload"]) { const f = mjs(n); if (f) try { f(); } catch (_) {} }
+      try { if (typeof state !== "undefined" && state) { const u = mjs("updateTitle"); if (u) u(); } } catch (_) {}
+    };
+    let snipView = null, snipSrc = null, themeView = null, themeSrc = null;
+    const enSet = new Set();
+    class CustomCss extends K.Component {
+      constructor() {
+        super();
+        this.oldThemes = []; this.extraStyleEls = [];
+      }
+      get theme() { return g.theme(); }
+      get snippets() {
+        const src = g.snips();
+        if (snipView && snipSrc === src) return snipView;
+        snipSrc = src; snipView = src.slice().sort(coll.compare);
+        return snipView;
+      }
+      get enabledSnippets() {
+        const on = g.on();
+        if (enSet.size !== on.length || on.some((l, i) => [...enSet][i] !== l)) { enSet.clear(); for (const l of on) enSet.add(l); }
+        return enSet;
+      }
+      /* name -> manifest fields + dir, for every LISTED theme. The entries exist
+         as soon as the listing does (name === dir is the predicate); the
+         manifest's other fields are merged in when it has been read. */
+      get themes() {
+        const sc = g.scan();
+        if (themeView && themeSrc === sc) return themeView;
+        themeSrc = sc; themeView = {};
+        const view = themeView;
+        for (const n of sc.listed || []) view[n] = { name: n, dir: this.getThemeFolder() + "/" + n };
+        const ad = K.adapter;
+        if (ad) for (const n of Object.keys(view)) {
+          ad.read(this.getThemeFolder() + "/" + n + "/manifest.json").then(s => {
+            const m = JSON.parse(s);
+            if (m && typeof m === "object" && !Array.isArray(m)) Object.assign(view[n], m, { dir: view[n].dir });
+          }).catch(() => {});
+        }
+        return view;
+      }
+      getSnippetsFolder() { return cfgDir() + "/snippets"; }
+      getSnippetPath(name) { return this.getSnippetsFolder() + "/" + name + ".css"; }
+      getThemeFolder() { return cfgDir() + "/themes"; }
+      getThemePath(name) { return this.getThemeFolder() + "/" + name + "/theme.css"; }
+      isThemeInstalled(name) { return (g.scan().listed || []).includes(name); }
+      isDarkMode() { return document.body.classList.contains("theme-dark"); }
+      /* re-list the snippets folder; an enabled snippet whose file appeared is
+         applied, one whose file is gone stops painting but stays enabled */
+      async readSnippets() {
+        await cssLater(async () => {
+          const l = await K.inv("snippets_scan");
+          vaultSnips = Array.isArray(l) ? l : [];
+          const has = l => typeof snipEls !== "undefined" && snipEls.has(l);
+          for (const lb of g.on()) {
+            if (vaultSnips.includes(lb) && !has(lb)) { const f = mjs("snipInject"); if (f) await f(lb); }
+            else if (!vaultSnips.includes(lb) && has(lb)) { const f = mjs("snipRemove"); if (f) f(lb); }
+          }
+          cssUi();
+        });
+      }
+      async readThemes() {
+        await cssLater(async () => {
+          const sc = await K.inv("themes_scan");
+          vaultThemesScan = sc && Array.isArray(sc.listed) ? sc : { listed: [], excluded: [] };
+          this.themes;   // build the new view (and start its manifest reads) now
+          const ad = K.adapter, view = themeView;
+          if (ad) await Promise.all(Object.keys(view).map(n => ad.read(this.getThemeFolder() + "/" + n + "/manifest.json")
+            .then(s => { const m = JSON.parse(s); if (m && typeof m === "object" && !Array.isArray(m)) Object.assign(view[n], m, { dir: view[n].dir }); })
+            .catch(() => {})));
+          cssUi();
+        });
+      }
+      requestLoadSnippets() { this.readSnippets(); }
+      requestReadThemes() { this.readThemes(); }
+      setCssEnabledStatus(name, on) {
+        const lb = String(name), want = !!on, was = g.on().includes(lb);
+        if (want === was) return;
+        vaultSnipsOn = want ? g.on().concat([lb]) : g.on().filter(l => l !== lb);
+        cssLater(async () => {
+          try { await K.inv("set_snippet_enabled", { label: lb, on: want }); }
+          catch (e) {
+            if (g.on().includes(lb) === want) vaultSnipsOn = want ? g.on().filter(l => l !== lb) : g.on().concat([lb]);
+            cssSay(e, "snip"); cssUi(); return;
+          }
+          if (want && g.snips().includes(lb)) { const f = mjs("snipInject"); if (f) await f(lb); }
+          if (!want) { const f = mjs("snipRemove"); if (f) f(lb); }
+          cssUi();
+        });
+      }
+      /* the theme name is taken as given (stock: an uninstalled name is kept;
+         null/undefined/"" = no theme). What PAINTS for a name the listing does
+         not have is main.js's effTheme rule (the default theme), not stock's
+         base sheet — documented divergence. */
+      setTheme(name) {
+        const n = name == null || name === "" ? "" : String(name), prev = g.theme();
+        vaultTheme = n;
+        cssLater(async () => {
+          try { await K.inv("set_css_theme", { name: n }); }
+          catch (e) { if (g.theme() === n) vaultTheme = prev; cssSay(e, "theme"); cssUi(); return; }
+          const eff = mjs("effTheme"), t = eff ? eff() : "";
+          if (t) { const f = mjs("themeInject"); if (f) await f(t); } else { const f = mjs("themeRemove"); if (f) f(); }
+          cssUi();
+        });
+      }
+    }
+    Object.defineProperty(app, "customCss", { value: new CustomCss(), enumerable: true, configurable: true, writable: true });
+
     Object.assign(K, { boot, censusTok, disable, enable, refresh, saveEnabled, setEnabled, setRestricted });
   });
 })();
