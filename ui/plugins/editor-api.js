@@ -404,7 +404,8 @@
         if (openS && openS.context) { const c = openS.context, o = ed.posToOffset(cur); if (o < ed.posToOffset(c.start) || o > ed.posToOffset(c.end)) { openS.close(); openS = null; } }
         return;
       }
-      for (const s of suggests) {
+      for (const s of suggests.slice()) {
+        if (!s || typeof s.onTrigger !== "function") continue;
         let t = null;
         try { t = s.onTrigger(cur, ed, file); } catch (e) { console.error("[plugin] onTrigger:", e); }
         if (!t) continue;
@@ -433,11 +434,22 @@
       else return false;
       e.preventDefault(); e.stopPropagation(); return true;
     }
-    function addSuggest(s) {
-      if (!s) return () => {};
-      suggests.push(s); activate();
-      return () => { const i = suggests.indexOf(s); if (i >= 0) suggests.splice(i, 1); if (openS === s) { s.close(); openS = null; } s.suggestEl.remove(); };
+    /* the one live EditorSuggest list: workspace.editorSuggest.suggests IS this array (views.js), so a
+       plugin.registerEditorSuggest and an editorSuggest.addSuggest land in the same place. addSuggest
+       appends as given (twice = twice); removeSuggest drops every occurrence, closing it when open. */
+    const closeS = s => { if (s && typeof s.close === "function") try { s.close(); } catch (e) { console.error("[plugin] suggest close:", e); } };
+    function removeSuggest(s) {
+      let hit = false;
+      for (let i; (i = suggests.indexOf(s)) >= 0;) { suggests.splice(i, 1); hit = true; }
+      if (s && openS === s) { openS = null; closeS(s); }
+      if (hit && s && s.suggestEl && typeof s.suggestEl.remove === "function") s.suggestEl.remove();
     }
+    function addSuggest(s) {
+      suggests.push(s); activate();
+      return () => removeSuggest(s);
+    }
+    const currentSuggest = () => openS || null;
+    function setCurrentSuggest(s) { const c = openS; openS = s || null; if (c && c !== openS) closeS(c); }
 
     /* ------------------------------------------- live-preview flag follows the mode */
     function tick() {
@@ -461,6 +473,7 @@
       Editor, MarkdownView, MarkdownEditView, MarkdownPreviewView, EditorSuggest, PopoverSuggest, livePreviewState,
       editorInfoField: infoField, editorViewField: infoField, editorLivePreviewField: lpField, editorEditorField: edField,
       viewFor, editorFor, activeTabView, addExt, addSuggest, activate, reconfigureAll, tick, tok,
+      suggests, currentSuggest, setCurrentSuggest, removeSuggest,   // SEAM S1: workspace.editorSuggest is built over these
       activeEditor() { const v = activeTabView(), mv = v && viewFor(v); return mv ? mv : null; },
     };
   }

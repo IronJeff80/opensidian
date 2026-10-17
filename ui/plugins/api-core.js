@@ -540,8 +540,18 @@
         views.registerView(this.manifest.id, type, factory);
         this.register(() => views.unregisterView(type));
       }
-      registerHoverLinkSource() {}
-      registerExtensions() {}
+      /* SEAM S2: through the app's own registries (views.js); unload unregisters what was registered.
+         A registry that throws (duplicate extension) throws here, and nothing is registered for unload. */
+      registerHoverLinkSource(id, info) {
+        const ws = this.app && this.app.workspace;
+        ws.registerHoverLinkSource(id, info);
+        this.register(() => ws.unregisterHoverLinkSource(id));
+      }
+      registerExtensions(exts, type) {
+        const vr = this.app && this.app.viewRegistry;
+        vr.registerExtensions(exts, type);
+        this.register(() => vr.unregisterExtensions(exts));
+      }
       registerMarkdownPostProcessor(p, sortOrder) {   // item 7: reading view + MarkdownRenderer.render; unload unregisters
         if (typeof p !== "function") return p;
         if (sortOrder !== undefined) p.sortOrder = sortOrder;
@@ -562,7 +572,11 @@
         if (!EA) { console.warn("[plugin] " + this.manifest.id + ": registerEditorExtension — editor extensions not supported"); return; }
         this.register(EA.addExt(this.manifest.id, ext));
       }
-      registerEditorSuggest(s) { if (EA) this.register(EA.addSuggest(s)); }
+      registerEditorSuggest(s) {   // SEAM S1: into workspace.editorSuggest (editor-api's live list), removed on unload
+        const es = this.app.workspace.editorSuggest;
+        es.addSuggest(s);
+        this.register(() => es.removeSuggest(s));
+      }
       registerObsidianProtocolHandler() {}
       /* opensidian has no Bases: the documented answer is false ("bases are not enabled") */
       registerBasesView(viewId, registration) { return false; }

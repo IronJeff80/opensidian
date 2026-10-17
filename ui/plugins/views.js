@@ -1001,31 +1001,33 @@
       if (f !== lastFile) { lastFile = f; queueMicrotask(() => { workspace.trigger("file-open", f); if (l) workspace.trigger("layout-change"); }); }
     }
     const unsupported = what => { throw new Error("unsupported in opensidian: " + what); };
-    /* workspace.editorSuggest: a plain object (not Events) owning {currentSuggest, suggests}. suggests is
-       the registration order the editor consults; addSuggest appends (twice = twice) and hands the suggest
-       to the editor (editor-api) so it triggers, removeSuggest drops every occurrence (closing it if it is
-       the current one). The app's own [[ / # completion is not an EditorSuggest, so suggests starts empty.
-       plugin.registerEditorSuggest and the open suggest live in editor-api.js: reflecting them here is
-       SEAM S1 (progress.md). */
-    const esOff = new WeakMap();      // suggest -> editor-api disposers, one per addSuggest
+    /* workspace.editorSuggest: a plain object (not Events) owning {currentSuggest, suggests}. Built over
+       editor-api's one live list (SEAM S1): suggests IS that array, so plugin.registerEditorSuggest and
+       addSuggest land in the same place and the editor consults it in order; currentSuggest is the suggest
+       the editor has open (or set here). addSuggest appends (twice = twice), removeSuggest drops every
+       occurrence (closing it if current). The app's own [[ / # completion is not an EditorSuggest, so
+       suggests starts empty. Without editor-api the same object keeps its own list. */
     class EditorSuggests {
-      constructor() { this.currentSuggest = null; this.suggests = []; }
-      addSuggest(s) {
-        this.suggests.push(s);
-        if (EA && s && typeof s === "object") { const a = esOff.get(s) || []; a.push(EA.addSuggest(s)); esOff.set(s, a); }
+      constructor() {
+        let own = [], cur = null;
+        Object.defineProperty(this, "currentSuggest", { enumerable: true, configurable: true,
+          get: () => EA ? EA.currentSuggest() : cur,
+          set: v => { if (EA) EA.setCurrentSuggest(v); else cur = v || null; } });
+        Object.defineProperty(this, "suggests", { enumerable: true, configurable: true, get: () => EA ? EA.suggests : own });
       }
+      addSuggest(s) { if (EA) EA.addSuggest(s); else this.suggests.push(s); }
       removeSuggest(s) {
+        if (EA) { EA.removeSuggest(s); return; }
         for (let i; (i = this.suggests.indexOf(s)) >= 0;) this.suggests.splice(i, 1);
-        if (this.currentSuggest === s) this.close();
-        const a = s && typeof s === "object" && esOff.get(s);
-        if (a) { esOff.delete(s); for (const off of a) try { off(); } catch (e) { console.error(e); } }
+        if (s && this.currentSuggest === s) this.close();
       }
       setCurrentSuggest(s) {
         const c = this.currentSuggest;
+        if (EA) { EA.setCurrentSuggest(s); return; }
         if (c && c !== s && typeof c.close === "function") c.close();
         this.currentSuggest = s || null;
       }
-      close() { const c = this.currentSuggest; this.currentSuggest = null; if (c && typeof c.close === "function") c.close(); }
+      close() { const c = this.currentSuggest; this.currentSuggest = null; if (!EA && c && typeof c.close === "function") c.close(); }   // with editor-api, setting null closes it
       isShowingSuggestion() { const c = this.currentSuggest; return c && c.isOpen; }   // null when none, as stock
       reposition() { const c = this.currentSuggest; if (c && c.isOpen && typeof c.open === "function") c.open(); }
       /* ask each suggest in order (onTrigger(cursor, editor, file)); the first that answers a trigger
