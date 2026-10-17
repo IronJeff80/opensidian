@@ -648,13 +648,13 @@
          the new widget, a registered type also lists a name no note uses yet — and the
          whole index is rebuilt once types.json is written (stock: an unregistered type
          shows up in getAllProperties only then). "changed" carries the lowercase name;
-         re-assigning updates the existing entry in place (same object, first spelling kept). */
+         re-assigning updates the existing entry in place (same object, first spelling kept). A properties entry is replaced, not mutated: an info object read earlier keeps its widget. */
       setType(name, type) {
         const lc = String(name).toLowerCase(), had = this.assignedWidgets[lc];
         this.updatePropertyInfoCache();
         if (had) had.widget = type; else this.assignedWidgets[lc] = { name: String(name), widget: type };
         const P = this.properties;
-        if (P[lc]) { if (type != null) P[lc].widget = type; }
+        if (P[lc]) { if (type != null) P[lc] = { name: P[lc].name, occurrences: P[lc].occurrences, widget: type }; }
         else if (type != null && Object.prototype.hasOwnProperty.call(this.registeredTypeWidgets, type)) P[lc] = { name: String(name), occurrences: 0, widget: type };
         this.trigger("changed", lc);
         this.save();
