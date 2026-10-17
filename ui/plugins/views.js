@@ -848,7 +848,7 @@
     K.exportValues.PopoverState = PopoverState;
   });
   reg("workspace:workspace", function (K) {
-    const { EA, Events, MarkdownView, Menu, TFile, View, WorkspaceLeaf, bridge, debounce, files, normalizePath, noteOf, parseLinktext, resolveLink, touch, vault, views } = K;
+    const { EA, Events, FileView, MarkdownView, Menu, TFile, View, WorkspaceLeaf, bridge, debounce, files, normalizePath, noteOf, parseLinktext, resolveLink, touch, vault, views } = K;
     /* ------------------------------------------- workspace
        Leaves are the app's tabs (one per tab; an empty group has one), the
        layout tree is main.js's split tree (views.js), all read at call time.
@@ -874,7 +874,7 @@
         Object.defineProperty(mv, "file", { configurable: true, get: () => noteFile(l._t || views.activeTab(l._grp)) });
         const gv = new View(l); gv.getViewType = () => views.typeOfTab(l._t);
         gv.getDisplayText = () => (l._t && l._t.kind === "lg" ? "Graph of " + (l._t.center || "") : "Graph view");
-        const ev = new View(l); ev.getViewType = () => "empty";
+        const ev = new View(l); ev.getViewType = () => "empty"; ev.navigation = true;   // a main-area view, as stock's empty view
         Object.defineProperty(l, "_v", { value: { mv, gv, ev }, writable: true, configurable: true });
       }
       const tt = t || views.activeTab(g);
@@ -920,11 +920,16 @@
       touch();
     }
     let lastLeaf = null, lastFile;
+    /* leaf recency: each leaf that becomes active gets the next number (focusTick, and the active leaf
+       again whenever getActiveFileView asks), so "the most recently active leaf" is a max over them. */
+    const leafSeq = new WeakMap();
+    let seqN = 0;
+    const stampLeaf = l => { if (l && leafSeq.get(l) !== seqN) leafSeq.set(l, ++seqN); };
     function focusTick() {
       views.sweep();                       // a plugin-view tab the app closed -> its view closes
       if (!K.st.modelOn || !K.st.layoutReady) return;
       const l = leafFor(focusedGroup()), f = l ? groupFile(l._grp) : null;
-      if (l !== lastLeaf) { lastLeaf = l; queueMicrotask(() => workspace.trigger("active-leaf-change", l)); }
+      if (l !== lastLeaf) { lastLeaf = l; stampLeaf(l); queueMicrotask(() => workspace.trigger("active-leaf-change", l)); }
       if (f !== lastFile) { lastFile = f; queueMicrotask(() => { workspace.trigger("file-open", f); if (l) workspace.trigger("layout-change"); }); }
     }
     const unsupported = what => { throw new Error("unsupported in opensidian: " + what); };
@@ -938,6 +943,37 @@
         this.leftRibbon = views.ribbon("left");
         this.rightRibbon = views.ribbon("right");
         this.requestSaveLayout = debounce(() => { if (typeof wsTouch === "function") try { wsTouch(); } catch (_) {} }, 0);
+        /* hover link sources: id -> the info object a plugin registered ({display, defaultMod}), stored
+           as given (the same object; re-registering an id replaces it, unregistering deletes it). The
+           app's own panes have no hover-preview setting, so it starts empty. */
+        this.hoverLinkSources = {};
+      }
+      registerHoverLinkSource(id, info) { this.hoverLinkSources[id] = info; }
+      unregisterHoverLinkSource(id) { delete this.hoverLinkSources[id]; }
+      /* the view of the most recently active NAVIGATION leaf (view.navigation truthy, read now: a note,
+         an empty tab, a plugin view that set it) when that view is a FileView, else null. A non-navigation
+         view (a plugin ItemView by default) being active does not count: the last navigation leaf
+         answers. Arguments ignored. */
+      getActiveFileView() {
+        stampLeaf(this.activeLeaf);
+        let best = null, bs = -1;
+        views.iterateLeaves(l => { const v = l.view, s = leafSeq.get(l) || 0; if (v && v.navigation && s > bs) { best = v; bs = s; } }, true);
+        return best instanceof FileView ? best : null;
+      }
+      /* every leaf under a layout item (a leaf is its own only leaf; a parent: its children, in order),
+         either argument order: (root, cb) or (cb, root). cb returning a truthy value stops the walk, which then
+         answers true; otherwise false. No root walks nothing (false); a leaf reached without a cb throws
+         TypeError (calling it). */
+      iterateLeaves(a, b) {
+        const [root, cb] = typeof a === "function" ? [b, a] : [a, b];
+        const walk = it => {
+          if (!it || typeof it !== "object") return false;
+          if (it instanceof WorkspaceLeaf) return !!cb(it);
+          const ch = it.children;
+          if (Array.isArray(ch)) for (const c of ch) if (walk(c)) return true;
+          return false;
+        };
+        return walk(root);
       }
       get rootSplit() { return views.mainRoot(); }
       get activeLeaf() { const g = focusedGroup() || allGroups()[0]; return g ? leafFor(g) : null; }
