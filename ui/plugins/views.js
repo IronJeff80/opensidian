@@ -775,8 +775,75 @@
       groupLeaf: g => K.groupLeaf(g), leafState: l => K.leafState(l), activeLeaf: () => (K.workspace ? K.workspace.activeLeaf : null),
     });
     Object.assign(K, { EditableFileView, FileView, ItemView, TextFileView, View, WorkspaceLeaf, views, layout });
+    /* app.embedRegistry: file extension -> embed creator(ctx, file, subpath), the component an
+       internal embed ![[f.ext]] of that extension renders through (an Events that fires nothing).
+       Lookups are case-sensitive; the duplicate check and isExtensionRegistered use own keys. The app's
+       own embeds of images / pdf / audio are rendered natively by the editor, so the built-in map is
+       {md}: a markdown embed that renders the note (or its #heading / #^block section) with
+       MarkdownRenderer. */
+    const ownKey = (o, k) => k != null && Object.prototype.hasOwnProperty.call(o, k);
+    /* the markdown embed. ctx.displayMode true is the reading embed: the whole note (the subpath is
+       not applied), no link row, and it keeps its rendering past unload. Otherwise (the default) it is
+       the note embed: data = the file, text = the #heading / #^block section (the whole file without a
+       subpath; "##### Unable to find “x” in <basename>" with subpathNotFound when it does not resolve),
+       rendered with the frontmatter left out, a .markdown-embed-link row after it; unload empties it. */
+    class MarkdownEmbed extends Component {
+      constructor(ctx, file, subpath) {
+        super();
+        ctx = ctx || {};
+        this.app = ctx.app || K.app; this.containerEl = ctx.containerEl; this.file = file;
+        this.subpath = String(subpath == null ? "" : subpath);
+        this.linktext = ctx.linktext; this.sourcePath = ctx.sourcePath; this.depth = ctx.depth || 0;
+        Object.defineProperty(this, "_reading", { value: !!ctx.displayMode });
+        if (!this._reading) this.subpathNotFound = false;
+        this.containerEl.classList.add("markdown-embed");
+      }
+      getFile() { return this.file; }
+      async loadFile() {
+        const f = this.file, el = this.containerEl;
+        if (!f) throw new TypeError("MarkdownEmbed.loadFile: no file");
+        const data = await this.app.vault.cachedRead(f);
+        let text = data;
+        if (!this._reading) {
+          this.data = data;
+          if (this.subpath) {
+            const r = K.resolveSubpath(this.app.metadataCache.getFileCache(f), this.subpath);
+            this.subpathNotFound = !r;
+            text = r ? data.slice(r.start.offset, r.end ? r.end.offset : data.length)
+                     : "##### Unable to find “" + this.subpath.replace(/^#/, "") + "” in " + f.basename;
+          } else this.subpathNotFound = false;
+          this.text = text;
+        }
+        const md = text === data ? data.slice(K.getFrontMatterInfo(data).contentStart) : text;
+        el.textContent = "";
+        const body = document.createElement("div"); body.className = "markdown-embed-content";
+        el.appendChild(body);
+        if (!this._reading) {
+          const link = document.createElement("div"); link.className = "markdown-embed-link";
+          link.addEventListener("click", () => this.app.workspace.openLinkText(this.linktext || f.path, this.sourcePath || "", false));
+          el.appendChild(link);
+        }
+        if (md) await K.MarkdownRenderer.render(this.app, md, body, f.path, this);
+      }
+      onunload() { if (!this._reading) this.containerEl.textContent = ""; }
+    }
+
+    class EmbedRegistry extends Events {
+      constructor() { super(); this.embedByExtension = { md: (ctx, file, subpath) => new MarkdownEmbed(ctx, file, subpath) }; }
+      registerExtension(ext, creator) {
+        if (ownKey(this.embedByExtension, ext)) throw new Error("Attempting to register an embed for an already registered extension \"" + ext + "\"");
+        this.embedByExtension[ext] = creator;
+      }
+      registerExtensions(exts, creator) { for (const e of exts) this.registerExtension(e, creator); }
+      unregisterExtension(ext) { if (ownKey(this.embedByExtension, ext)) delete this.embedByExtension[ext]; }
+      unregisterExtensions(exts) { for (const e of exts) this.unregisterExtension(e); }
+      isExtensionRegistered(ext) { return ownKey(this.embedByExtension, ext); }
+      getEmbedCreator(file) { const e = file.extension; return ownKey(this.embedByExtension, e) ? this.embedByExtension[e] : null; }
+    }
+    const embedRegistry = new EmbedRegistry();
     // app-level members (vault:app builds app later and defines these on it)
-    K.appMembers = Object.assign(K.appMembers || {}, { viewRegistry: { value: views.viewRegistry, writable: true } });
+    K.appMembers = Object.assign(K.appMembers || {}, { viewRegistry: { value: views.viewRegistry, writable: true },
+                                                       embedRegistry: { value: embedRegistry, writable: true } });
     Object.assign(K.exportClasses, layout);
     K.exportValues.PopoverState = PopoverState;
   });
