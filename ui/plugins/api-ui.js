@@ -774,8 +774,10 @@
       close() { if (isOpen() && typeof closeSettings === "function") closeSettings(); else setting.closeActiveTab(); },
       openTab(t) {
         setting.closeActiveTab();
-        const id = t.id;   // stock: null / undefined throw a TypeError here, after the active tab is closed
-        setting.activeTab = t; setting.lastTabId = id;
+        // stock: activeTab takes the argument first, so openTab(null) / openTab() leave activeTab
+        // null / undefined and throw a TypeError on t.id with lastTabId unchanged
+        setting.activeTab = t;
+        setting.lastTabId = t.id;
         const s = ui(); if (s) s.mount(t);
         t.display();
       },
