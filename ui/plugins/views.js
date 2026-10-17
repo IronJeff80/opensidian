@@ -137,6 +137,10 @@
         }
         const r = { t, leaf, view, type, pid: ty ? ty.pid : null, opened: null };
         recs.set(t, r);
+        // main.js mounts a plugin-view tab only through PVHOST, which registerView arms; a view handed to
+        // WorkspaceLeaf.open needs no registered type, so the first record arms it too (else the tab shows
+        // "No view for" and the view's containerEl is never attached)
+        try { if (typeof PVHOST !== "undefined" && !PVHOST) PVHOST = PV; } catch (_) {}
         view.containerEl.classList.add("os-pv");
         view.containerEl.dataset.type = type;
         view.containerEl.hidden = true;
