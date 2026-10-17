@@ -275,6 +275,11 @@
       function dock(side) { if (!docks[side]) { const it = new WorkspaceSidedock(); it._k = "dock"; it._n = side; docks[side] = it; } return docks[side]; }
       function dockTabsOf(side) { if (!dockTabs[side]) { const it = new WorkspaceTabs(); it._k = "docktabs"; it._n = side; dockTabs[side] = it; } return dockTabs[side]; }
       function ribbon(side) { return ribbons[side] || (ribbons[side] = new WorkspaceRibbon(side)); }
+      /* workspace.floatingSplit: the parent of the popout windows (stock: a WorkspaceFloating with no parent,
+         getRoot() itself, getContainer() the main root, a detached DIV). Popouts are design-gated, so it never
+         gets a child: one stable item, its children one stable empty array. */
+      let floatItem = null;
+      function floating() { if (!floatItem) { floatItem = new WorkspaceFloating(); floatItem._k = "floating"; const el = document.createElement("div"), h = el.appendChild(document.createElement("hr")); h.className = "workspace-leaf-resize-handle"; floatItem._n = { children: [], el }; hid(floatItem, "resizeHandleEl", h); } return floatItem; }
       function itemParent(it) {
         switch (it._k) {
           case "split": case "tabs": { if (!inLayout(it._n)) return null; const p = parentNodeOf(it._n); return p ? itemOfNode(p) : null; }
@@ -290,6 +295,7 @@
           case "tabs": { const g = it._n; return g.tabs.length ? g.tabs.map(leafOfTab) : [d.groupLeaf(g)]; }
           case "dock": return [dockTabsOf(it._n)];
           case "docktabs": return sides.filter(r => r.side === it._n).map(r => r.leaf);
+          case "floating": return it._n.children;
           default: return [];
         }
       }
@@ -299,6 +305,7 @@
           case "split": return it._n.el || null;
           case "tabs": return it._n.pane || null;
           case "dock": case "docktabs": return byId(it._n === "left" ? "side" : "rside");
+          case "floating": return it._n.el;
           default: return null;
         }
       }
@@ -757,7 +764,7 @@
       }
       const host = { PV, sweep, censusTok, registerView, unregisterView, viewRegistry, leavesOfType, iterateLeaves, getLeaf, getSideLeaf,
                      reveal, leafOfGroup, leafOfTab, bindLeaf, activeTab, groupOfTab, typeOfTab, isPvTab, recs, types, sideHide, sideShowing,
-                     mainRoot, newRoot() { rootGen++; }, dock, ribbon };
+                     mainRoot, newRoot() { rootGen++; }, dock, ribbon, floating };
       const layout = { WorkspaceItem, WorkspaceParent, WorkspaceSplit, WorkspaceContainer, WorkspaceRoot, WorkspaceWindow,
                        WorkspaceFloating, WorkspaceTabs, WorkspaceSidedock, WorkspaceRibbon, HoverPopover };
       return { View, ItemView, FileView, EditableFileView, TextFileView, WorkspaceLeaf, layout, PopoverState, host };
@@ -854,9 +861,57 @@
       getEmbedCreator(file) { const e = file.extension; return ownKey(this.embedByExtension, e) ? this.embedByExtension[e] : null; }
     }
     const embedRegistry = new EmbedRegistry();
+    /* app.dragManager: the drag payloads plugins hand around (a plain object). dragFile / dragFiles /
+       dragFolder / dragLink build the payload {type, source, title, icon, file(s)|linktext} and write the
+       event's dataTransfer: a file (or several) as its obsidian://open URL in text/plain + text/uri-list,
+       a folder as text/plain only. onDragStart(e, data) makes data the current draggable until the drag
+       that started it ends (dragend on that event's target); setAction(text) labels the drag. */
+    const obsUrl = f => "obsidian://open?vault=" + encodeURIComponent(K.vault ? K.vault.getName() : "") +
+      "&file=" + encodeURIComponent(f.extension === "md" ? f.path.slice(0, -3) : f.path);
+    class DragManager {
+      constructor() {
+        this.draggable = null; this.actionEl = null; this.dragStart = null; this.ghostEl = null; this.hoverEl = null;
+        this.sourceEls = null; this.hoverClass = "is-being-dragged-over"; this.sourceClass = "is-being-dragged";
+        this.isDragOverHandled = false; this.shouldHideOverlay = false;
+      }
+      dragFile(e, file, source) {
+        const p = file.path, dt = e.dataTransfer;
+        const u = obsUrl(file); dt.setData("text/plain", u); dt.setData("text/uri-list", u);
+        return { type: "file", file, source, title: file.basename !== undefined ? file.basename : p, icon: "lucide-file" };
+      }
+      dragFiles(e, files, source) {
+        const n = files.length, dt = e.dataTransfer, u = files.map(obsUrl).join("\n");
+        dt.setData("text/plain", u); dt.setData("text/uri-list", u);
+        return { type: "files", files, source, title: n + " files", icon: "lucide-files" };
+      }
+      dragFolder(e, folder, source) {
+        const root = folder.isRoot ? folder.isRoot() : folder.path === "/", p = root ? "" : folder.path;
+        e.dataTransfer.setData("text/plain", p);   // the vault root: ""
+        return { type: "folder", file: folder, source, title: root ? "" : folder.name, icon: "lucide-folder-open" };
+      }
+      dragLink(e, linktext, sourcePath, title, source) {
+        const dt = e.dataTransfer;
+        const file = K.vault && K.app && K.app.metadataCache ? K.app.metadataCache.getFirstLinkpathDest(String(linktext).split("#")[0], sourcePath) : null;
+        if (file) { const u = obsUrl(file); dt.setData("text/plain", u); dt.setData("text/uri-list", u); }
+        return { type: "link", linktext, sourcePath, file, source, title, icon: "lucide-link" };
+      }
+      onDragStart(e, data) {
+        this.draggable = data;
+        const t = e && e.target;
+        if (t && typeof t.addEventListener === "function") t.addEventListener("dragend", () => this.onDragEnd(), { once: true });
+      }
+      onDragEnd() { this.draggable = null; if (this.actionEl) this.actionEl.textContent = ""; }
+      setAction(text) {
+        if (!this.actionEl) { this.actionEl = document.createElement("div"); this.actionEl.className = "drag-ghost-action"; }
+        if (text != null) this.actionEl.textContent = String(text);   // null / undefined keep the label, as stock
+      }
+    }
     // app-level members (vault:app builds app later and defines these on it)
     K.appMembers = Object.assign(K.appMembers || {}, { viewRegistry: { value: views.viewRegistry, writable: true },
-                                                       embedRegistry: { value: embedRegistry, writable: true } });
+                                                       embedRegistry: { value: embedRegistry, writable: true },
+                                                       dragManager: { value: new DragManager(), writable: true },
+                                                       // the mobile toolbar exists only on mobile: null on desktop, as stock
+                                                       mobileToolbar: { value: null, writable: true, enumerable: true } });
     Object.assign(K.exportClasses, layout);
     K.exportValues.PopoverState = PopoverState;
   });
@@ -946,6 +1001,57 @@
       if (f !== lastFile) { lastFile = f; queueMicrotask(() => { workspace.trigger("file-open", f); if (l) workspace.trigger("layout-change"); }); }
     }
     const unsupported = what => { throw new Error("unsupported in opensidian: " + what); };
+    /* workspace.editorSuggest: a plain object (not Events) owning {currentSuggest, suggests}. suggests is
+       the registration order the editor consults; addSuggest appends (twice = twice) and hands the suggest
+       to the editor (editor-api) so it triggers, removeSuggest drops every occurrence (closing it if it is
+       the current one). The app's own [[ / # completion is not an EditorSuggest, so suggests starts empty.
+       plugin.registerEditorSuggest and the open suggest live in editor-api.js: reflecting them here is
+       SEAM S1 (progress.md). */
+    const esOff = new WeakMap();      // suggest -> editor-api disposers, one per addSuggest
+    class EditorSuggests {
+      constructor() { this.currentSuggest = null; this.suggests = []; }
+      addSuggest(s) {
+        this.suggests.push(s);
+        if (EA && s && typeof s === "object") { const a = esOff.get(s) || []; a.push(EA.addSuggest(s)); esOff.set(s, a); }
+      }
+      removeSuggest(s) {
+        for (let i; (i = this.suggests.indexOf(s)) >= 0;) this.suggests.splice(i, 1);
+        if (this.currentSuggest === s) this.close();
+        const a = s && typeof s === "object" && esOff.get(s);
+        if (a) { esOff.delete(s); for (const off of a) try { off(); } catch (e) { console.error(e); } }
+      }
+      setCurrentSuggest(s) {
+        const c = this.currentSuggest;
+        if (c && c !== s && typeof c.close === "function") c.close();
+        this.currentSuggest = s || null;
+      }
+      close() { const c = this.currentSuggest; this.currentSuggest = null; if (c && typeof c.close === "function") c.close(); }
+      isShowingSuggestion() { const c = this.currentSuggest; return c && c.isOpen; }   // null when none, as stock
+      reposition() { const c = this.currentSuggest; if (c && c.isOpen && typeof c.open === "function") c.open(); }
+      /* ask each suggest in order (onTrigger(cursor, editor, file)); the first that answers a trigger
+         info becomes current with context {...info, editor, file} and gets its suggestions; none: close.
+         openIfClosed false keeps a closed popup closed. */
+      trigger(editor, file, openIfClosed) {
+        if (!editor || typeof editor.getCursor !== "function") { this.close(); return; }
+        if (!openIfClosed && !this.isShowingSuggestion()) return;
+        const cur = editor.getCursor();
+        for (const s of this.suggests) {
+          let info = null;
+          try { info = s && typeof s.onTrigger === "function" ? s.onTrigger(cur, editor, file || null) : null; } catch (e) { console.error("[plugin] onTrigger:", e); }
+          if (!info) continue;
+          const ctx = Object.assign({}, info, { editor, file: file || null });
+          s.context = ctx;
+          this.setCurrentSuggest(s);
+          Promise.resolve().then(() => s.getSuggestions(ctx)).then(items => {
+            if (this.currentSuggest !== s || s.context !== ctx) return;
+            if (typeof s.showSuggestions === "function") s.showSuggestions(items || []);
+            else if (typeof s.open === "function") s.open();
+          }).catch(e => console.error("[plugin] getSuggestions:", e));
+          return;
+        }
+        this.close();
+      }
+    }
     class Workspace extends Events {
       constructor() {
         super();
@@ -955,6 +1061,8 @@
         this.rightSplit = views.dock("right");
         this.leftRibbon = views.ribbon("left");
         this.rightRibbon = views.ribbon("right");
+        this.floatingSplit = views.floating();
+        this.editorSuggest = new EditorSuggests();
         this.requestSaveLayout = debounce(() => { if (typeof wsTouch === "function") try { wsTouch(); } catch (_) {} }, 0);
         /* hover link sources: id -> the info object a plugin registered ({display, defaultMod}), stored
            as given (the same object; re-registering an id replaces it, unregistering deletes it). The
