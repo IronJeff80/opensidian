@@ -330,7 +330,128 @@
       enablePlugin: id => K.enable(id), disablePlugin: id => K.disable(id),
       enablePluginAndSave: id => K.saveEnabled(id, true), disablePluginAndSave: id => K.saveEnabled(id, false),
     };
-    Object.assign(K, { commands, plugins });
+    /* ---------------------------------------------------- app.hotkeyManager
+       Stock's hotkey store, over main.js's ONE dispatcher (CMDS[].def +
+       hkUser -> keymap, hkRebuild): defaultKeys / customKeys hold the
+       Obsidian-shape arrays a plugin hands in (kept as given: same identity,
+       null kept); every change is mirrored into the registry as chords so the
+       keydown dispatcher, the palette hints and Settings > Hotkeys all see it.
+       customKeys follows hkUser when the app changes it (Settings pane edit or
+       reset, a reload of the saved map). Built-in defaults are main.js's own
+       chord sets, seeded into defaultKeys once. Dispatch is main.js's chordOf:
+       Alt on F1..F12 is ignored there (an Xvfb latch workaround), so Alt+F<n>
+       cannot be bound — documented divergence. */
+    const HK = { def: {}, cust: {}, mine: new Map(), user: null, seeded: new Set(), api: new Map() };   // api: ids set through this API since the last load/save -> value
+    const hkHas = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+    const hkFile = ch => { try { return typeof chordToFile === "function" ? chordToFile(ch) : null; } catch (_) { return null; } };
+    /* Obsidian shape -> registry chord. main.js's chordOf never reports Alt on F1..F12 (Xvfb latch), so an
+       Alt+F<n> binding is registered without Alt: it fires on Alt+F<n> and also on bare F<n> (divergence) */
+    const hkToChord = h => { try { return h && typeof h === "object" && typeof fileToChord === "function" ? fileToChord(h).replace(/(^|\+)alt\+((?:shift\+)?f\d+)$/, "$1$2") : null; } catch (_) { return null; } };
+    const hkCmd = id => (typeof CMDS !== "undefined" ? CMDS.find(c => c.id === id) : undefined);
+    const hkUserObj = () => (typeof hkUser !== "undefined" ? hkUser : null);
+    function hkSeed() {   // built-in defaults, once per id (a removed default stays removed)
+      if (typeof CMDS === "undefined") return;
+      for (const c of CMDS) {
+        if (c.obs || HK.seeded.has(c.id)) continue;
+        HK.seeded.add(c.id);
+        const keys = (c.def || []).map(hkFile).filter(Boolean);
+        if (keys.length && !hkHas(HK.def, c.id)) HK.def[c.id] = keys;
+      }
+    }
+    function hkSync() {   // customKeys <- hkUser when the app (not this API) changed it
+      const u = hkUserObj(); if (!u) return;
+      if (HK.user !== u) {   // hkUser was replaced: the saved map was (re)loaded
+        /* (the app reloads it on every plugin enable: an unsaved setHotkeys survives that; load() drops it) */
+        HK.user = u; HK.mine.clear();
+        for (const k of Object.keys(HK.cust)) delete HK.cust[k];
+        for (const [id, chs] of Object.entries(u)) { HK.cust[id] = chs.map(hkFile).filter(Boolean); HK.mine.set(id, chs); }
+        for (const [id, ks] of HK.api) { if (ks === undefined) delete HK.cust[id]; else HK.cust[id] = ks; hkApply(id); }
+        return;
+      }
+      for (const id of Object.keys(HK.cust)) {
+        if (HK.mine.get(id) === null || hkHas(u, id) && u[id] === HK.mine.get(id)) continue;
+        if (hkHas(u, id)) { HK.cust[id] = u[id].map(hkFile).filter(Boolean); HK.mine.set(id, u[id]); }
+        else { delete HK.cust[id]; HK.mine.delete(id); }   // reset to default in Settings
+      }
+      for (const [id, chs] of Object.entries(u)) if (!hkHas(HK.cust, id)) { HK.cust[id] = chs.map(hkFile).filter(Boolean); HK.mine.set(id, chs); }
+    }
+    let hkMgr = null;
+    function hkApply(id) {   // defaultKeys/customKeys[id] -> the registry's chords, then rebuild the keymap
+      const c = hkCmd(id);
+      if (c) c.def = Array.isArray(HK.def[id]) ? HK.def[id].map(hkToChord).filter(Boolean) : [];
+      const u = hkUserObj();
+      if (u) {
+        if (hkHas(HK.cust, id) && Array.isArray(HK.cust[id])) { const chs = HK.cust[id].map(hkToChord).filter(Boolean); u[id] = chs; HK.mine.set(id, chs); }
+        else if (hkHas(HK.cust, id)) { u[id] = []; HK.mine.set(id, u[id]); }   // custom null (or not an array): nothing fires, the default neither
+        else { delete u[id]; HK.mine.delete(id); }
+        HK.user = u;
+      }
+      if (hkMgr) hkMgr.baked = false;
+      if (typeof hkRebuild === "function") hkRebuild();
+    }
+    const HK_KEYS = { ArrowLeft: "←", ArrowUp: "↑", ArrowRight: "→", ArrowDown: "↓", PageUp: "Page Up", PageDown: "Page Down" };
+    const hkKeyName = k => { const s = k == null ? "" : String(k); return hkHas(HK_KEYS, s) ? HK_KEYS[s] : s.charAt(0).toUpperCase() + s.slice(1); };
+    function hkPrint(h) {   // Linux names: Mod and Ctrl both print Ctrl, Meta prints Win; fixed order
+      const m = h.modifiers, out = [];
+      if (m.includes("Mod")) out.push("Ctrl");
+      if (m.includes("Ctrl")) out.push("Ctrl");
+      if (m.includes("Meta")) out.push("Win");
+      if (m.includes("Alt")) out.push("Alt");
+      if (m.includes("Shift")) out.push("Shift");
+      out.push(hkKeyName(h.key));
+      return out.join(" + ");
+    }
+    class HotkeyManager {
+      constructor() { this.baked = false; this.bakedHotkeys = []; this.bakedIds = []; }
+      get defaultKeys() { hkSeed(); return HK.def; }
+      get customKeys() { hkSync(); return HK.cust; }
+      getDefaultHotkeys(id) { hkSeed(); return HK.def[id]; }
+      getHotkeys(id) { hkSync(); return HK.cust[id]; }
+      addDefaultHotkeys(id, keys) { hkSeed(); HK.def[id] = keys; hkApply(id); }
+      removeDefaultHotkeys(id) { hkSeed(); delete HK.def[id]; hkApply(id); }
+      setHotkeys(id, keys) { hkSync(); HK.cust[id] = keys; HK.api.set(id, keys); hkApply(id); }
+      removeHotkeys(id) { hkSync(); delete HK.cust[id]; HK.api.set(id, undefined); hkApply(id); }
+      /* the FIRST hotkey of (custom ?? default), as the UI prints it; "" for none */
+      printHotkeyForCommand(id) {
+        hkSeed(); hkSync();
+        const ks = (hkHas(HK.cust, id) ? HK.cust[id] : undefined) ?? HK.def[id];
+        return ks && ks.length ? hkPrint(ks[0]) : "";
+      }
+      /* every (command, hotkey) pair in effect, flattened; the keymap is rebuilt from the registry */
+      bake() {
+        hkSeed(); hkSync();
+        this.bakedHotkeys = []; this.bakedIds = [];
+        if (typeof CMDS !== "undefined") for (const c of CMDS) {
+          const ks = (hkHas(HK.cust, c.id) ? HK.cust[c.id] : undefined) ?? HK.def[c.id];
+          if (Array.isArray(ks)) for (const k of ks) { this.bakedHotkeys.push(k); this.bakedIds.push(c.id); }
+        }
+        if (typeof hkRebuild === "function") hkRebuild();
+        this.baked = true;
+      }
+      /* keydown -> the bound command (enabled ones only); false = handled (scope convention) */
+      onTrigger(e) {
+        if (!e || typeof chordOf !== "function" || typeof keymap === "undefined") return true;
+        const ch = chordOf(e), c = ch && keymap[ch];
+        if (!c || (c.when && !c.when())) return true;
+        c.run(); return false;
+      }
+      /* re-read the saved map (the app's config "hotkeys"); unsaved setHotkeys are dropped, like a reload */
+      async load() { HK.api.clear(); if (typeof hkLoad === "function") await hkLoad(); hkSync(); this.baked = false; }
+      async onConfigFileChange() { await this.load(); }
+      async save() {
+        hkSync();
+        const map = {};
+        for (const [id, ks] of Object.entries(HK.cust)) if (Array.isArray(ks))
+          map[id] = ks.filter(k => k && typeof k === "object").map(k => ({ modifiers: Array.isArray(k.modifiers) ? k.modifiers.map(String) : [], key: String(k.key == null ? "" : k.key) }));
+        HK.api.clear();
+        await K.inv("set_hotkeys", { map });
+      }
+    }
+    hkMgr = new HotkeyManager();
+    /* a plugin command's own hotkeys are its defaults (the array as given); removing the command drops them */
+    const hkCmdAdded = (id, hotkeys) => { hkSeed(); if (Array.isArray(hotkeys)) HK.def[id] = hotkeys; else delete HK.def[id]; hkApply(id); };
+    const hkCmdRemoved = id => { delete HK.def[id]; if (hkMgr) hkMgr.baked = false; };
+    Object.assign(K, { commands, plugins, hotkeyManager: hkMgr, hkCmdAdded, hkCmdRemoved });
   });
   reg("core:plugin", function (K) {
     const { host, be } = K;
@@ -354,6 +475,7 @@
       const defs = (cmd.hotkeys || []).map(hkChord).filter(Boolean);
       CMDS.push({ id: full, name, def: defs, run, when, obs: cmd, plugin: pid });
       CMDS.sort((a, b) => a.name.localeCompare(b.name));
+      K.hkCmdAdded(full, cmd.hotkeys);   // defaultKeys[full] = the hotkeys as given; the registry chords follow
       if (owner) registry.get(pid) && registry.get(pid).cmds.add(full);
       if (typeof hkRebuild === "function") hkRebuild();
       touch();
@@ -364,6 +486,7 @@
       const i = CMDS.findIndex(c => c.id === id && c.obs);    // never a built-in command
       if (i < 0) return;
       const c = CMDS[i]; CMDS.splice(i, 1);
+      K.hkCmdRemoved(id);
       const r = c.plugin && registry.get(c.plugin); if (r) r.cmds.delete(id);
       if (typeof hkRebuild === "function") hkRebuild();
       touch();
@@ -493,7 +616,7 @@
       }
       host.status.set(id, { state: "loaded" });
       if (EA) EA.activate();   // editor-api: from the first loaded plugin on, note views carry editorInfoField + the editor-* hooks
-      if (typeof hkLoad === "function") hkLoad().catch(() => {});   // the user's chords for this plugin's ids (hkLoad drops unknown ids)
+      if (typeof hkLoad === "function") hkLoad().then(() => K.hotkeyManager.customKeys).catch(() => {});   // the user's chords for this plugin's ids (hkLoad drops unknown ids); customKeys re-syncs (keeps unsaved API sets)
       touch();
       return { ok: true, id };
     }
@@ -720,6 +843,7 @@
       }
     }
     Object.defineProperty(app, "customCss", { value: new CustomCss(), enumerable: true, configurable: true, writable: true });
+    Object.defineProperty(app, "hotkeyManager", { value: K.hotkeyManager, enumerable: true, configurable: true, writable: true });
 
     Object.assign(K, { boot, censusTok, disable, enable, refresh, saveEnabled, setEnabled, setRestricted });
   });
