@@ -448,6 +448,19 @@
         if (t0 || leaf._nt || split || !g.tabs.length) bindLeaf(leaf, t);
         const r = makeView(t, type, state, inst); if (!r) return;
         if (split && typeof splitWith === "function") await splitWith(g, split, t);
+        else if (t0 && !active && !leaf._nt) {
+          // a leaf already showing something changes view in place: the active leaf stays where it is (stock);
+          // the leaf's tab stays the one its group shows if it was, without focusing that group
+          // (the insert shifts the tabs after `at`: the shown tab is re-found by identity BEFORE anything
+          // renders, else a render in between sees the index on a neighbour and makes that the active leaf)
+          const cur = activeTab(g), was = !cur || cur === t0;
+          if (was && typeof flushSave === "function") try { await flushSave(g); } catch (_) {}
+          g.tabs.push(t);
+          if (at < g.tabs.length - 1) { g.tabs.copyWithin(at + 1, at); g.tabs[at] = t; }
+          g.active = g.tabs.indexOf(was ? t : cur);
+          if (was && typeof loadActive === "function") await loadActive(g);
+          else if (typeof renderTabs === "function") renderTabs(g);
+        }
         else await openTabView(g, t, at, true);
         await r.opened;
         d.touch();
