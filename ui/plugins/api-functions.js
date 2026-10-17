@@ -195,8 +195,8 @@
       return a.buffer;
     }
     function arrayBufferToHex(buf) {
-      const a = u8(buf); let s = "";
-      for (let i = 0; i < a.length; i++) s += (a[i] < 16 ? "0" : "") + a[i].toString(16);
+      const a = u8(buf), d = "0123456789abcdef"; let s = "";
+      for (let i = 0; i < a.length; i++) s += d[a[i] >> 4] + d[a[i] & 15];
       return s;
     }
     function hexToArrayBuffer(hex) {         // one byte per complete pair; a non-hex pair reads 0
