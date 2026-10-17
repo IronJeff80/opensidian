@@ -733,15 +733,65 @@
   });
   reg("ui:setting", function (K) {
     const { host, be } = K;
-    const tabsChanged = () => { const s = window.__osPluginSettings; if (s) try { s.tabsChanged(); } catch (e) { console.error(e); } };
-    const setting = {   // Settings modal hook — ui/plugins/settings.js renders the tabs (item 6)
-      activeTab: null, pluginTabs: [],
-      open() { if (typeof openSettings === "function" && typeof settingsOpen !== "undefined" && !settingsOpen) openSettings(); },
-      close() { if (typeof closeSettings === "function") closeSettings(); },
-      openTabById(id) { if (typeof openPluginSettingTab === "function") return openPluginSettingTab(id); setting.open(); },
-      closeActiveTab() { if (setting.activeTab) { try { setting.activeTab.hide(); } catch (_) {} setting.activeTab = null; } },
+    const ui = () => window.__osPluginSettings;   // ui/plugins/settings.js: puts tabs on the settings page
+    const isOpen = () => typeof settingsOpen !== "undefined" && !!settingsOpen;
+    const tabsChanged = () => { const s = ui(); if (s) try { s.tabsChanged(); } catch (e) { console.error(e); } };
+    /* the app's own panes as SettingTab objects, under stock 1.13.7's tab ids (about = General,
+       file = Files and links). Their content is opensidian's settings page, which main.js builds into
+       #spage, so display() asks settings.js to show the pane and containerEl stays an empty detached
+       div. Core plugins ("plugins") has no tab: the pane is gone by operator ruling (goal/noplugins). */
+    /* built without SettingTab's constructor: that installs the DOM augments, which must wait for a plugin */
+    const appTabProto = Object.create(K.SettingTab ? K.SettingTab.prototype : Object.prototype, {
+      display: { value() { const s = ui(); if (s) s.builtin(this); }, writable: true, configurable: true },
+      hide: { value() {}, writable: true, configurable: true },
+    });
+    const appTab = (id, name, pane) => {
+      const t = Object.create(appTabProto), c = document.createElement("div");
+      c.className = "vertical-tab-content";
+      Object.defineProperty(t, "app", { get: () => K.app, enumerable: true, configurable: true });
+      Object.defineProperty(t, "_pane", { value: pane });
+      return Object.assign(t, { containerEl: c, icon: undefined, settingItems: [], _dom: null, _pages: [], id, name });
+    };
+    const settingTabs = [["about", "General", "general"], ["appearance", "Appearance", "appearance"], ["interface", "Interface", "interface"],
+      ["editor", "Editor", "editor"], ["file", "Files and links", "fileslinks"], ["hotkeys", "Hotkeys", "hotkeys"],
+      ["keychain", "Keychain", "keychain"], ["community-plugins", "Community plugins", "community"]].map(a => appTab(...a));
+    const byId = id => settingTabs.find(t => t.id === id) || setting.pluginTabs.find(t => t && t.id === id) || null;
+    /* app.setting, stock 1.13.7's behaviour (scripts/api-probes.d/shost.js):
+       openTab(t) hides the active tab, makes t active (lastTabId = t.id) and runs t.display(); it never
+       opens the modal (a tab opened while it is closed renders into its detached containerEl).
+       open() is a no-op while open, else opens on lastTabId's tab (gone: General). close() hides the
+       active tab, activeTab = null, lastTabId kept. closeActiveTab() does the same with the modal left
+       open. openTabById(id): the tab with that exact id (built-in or plugin) after openTab, or null with
+       nothing changed. One divergence: openTabById on a CLOSED modal also opens it (stock leaves it
+       closed) — this app's own callers and plugins that skip open() expect the tab on screen. */
+    const setting = {
+      activeTab: null, lastTabId: undefined, pluginTabs: [], settingTabs,
+      open() {
+        if (isOpen() || typeof openSettings !== "function") return;
+        const s = ui(); if (s) s.pane(byId(setting.lastTabId) || settingTabs[0]);
+        openSettings();
+      },
+      close() { if (isOpen() && typeof closeSettings === "function") closeSettings(); else setting.closeActiveTab(); },
+      openTab(t) {
+        setting.closeActiveTab();
+        const id = t.id;   // stock: null / undefined throw a TypeError here, after the active tab is closed
+        setting.activeTab = t; setting.lastTabId = id;
+        const s = ui(); if (s) s.mount(t);
+        t.display();
+      },
+      openTabById(id) {
+        const t = byId(id);
+        if (!t) return null;
+        setting.openTab(t);
+        if (!isOpen()) setting.open();
+        return t;
+      },
+      closeActiveTab() { const t = setting.activeTab; if (t) { try { t.hide(); } catch (e) { console.error("[plugin] SettingTab.hide:", e); } setting.activeTab = null; } },
       addSettingTab(t) { if (t && typeof t.update === "function") { try { t.update(); } catch (e) { console.error("[plugin] SettingTab.update:", e); } } setting.pluginTabs.push(t); tabsChanged(); },
-      removeSettingTab(t) { const i = setting.pluginTabs.indexOf(t); if (i >= 0) { setting.pluginTabs.splice(i, 1); tabsChanged(); } },
+      removeSettingTab(t) {
+        if (t && setting.activeTab === t) setting.closeActiveTab();
+        const i = setting.pluginTabs.indexOf(t); if (i >= 0) { setting.pluginTabs.splice(i, 1); tabsChanged(); }
+      },
     };
     Object.assign(K, { setting });
   });

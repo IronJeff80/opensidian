@@ -29,7 +29,6 @@
   let busy = false;           // one toggle round-trip at a time (a double click is one intent)
 
   const el = (tag, cls, txt) => { const d = document.createElement(tag); if (cls) d.className = cls; if (txt != null) d.textContent = txt; return d; };
-  const isOurs = id => id === "community" || String(id).startsWith("plg:");
   const tabOf = id => setting.pluginTabs.find(t => t && t.id === id) || null;
 
   function toggle(on, onclick) {
@@ -71,30 +70,79 @@
     for (const t of tabs.slice().sort((a, b) => String(a.name).localeCompare(String(b.name))))
       entry("plg:" + t.id, String(t.name || t.id));
   }
-  /* a plugin added/removed a setting tab: the group follows (nav is otherwise built once) */
+  /* a plugin added/removed a setting tab: the group follows (nav is otherwise built once). A tab
+     removed while on screen was hidden by removeSettingTab (activeTab null); like stock, the page
+     stays where it is (the next open() goes to General, a nav click anywhere) */
   function tabsChanged() {
     const n = document.getElementById("snav");
     if (n && n.dataset.built === "1") nav(n);
-    if (typeof settingsOpen !== "undefined" && settingsOpen && String(sPane).startsWith("plg:") && !tabOf(sPane.slice(4)))
-      showSettingsPage("community");     // the tab on screen belonged to a plugin that just unloaded
   }
 
   function leaveTab() { if (setting.activeTab) setting.closeActiveTab(); }
-
-  /* ---- panes ---- */
-  function show(id) {
-    if (!isOurs(id)) { leaveTab(); return false; }
-    if (String(id).startsWith("plg:") && !tabOf(id.slice(4))) id = "community";   // its plugin unloaded since
+  /* closeSettings: the active tab is hidden and a plugin tab's containerEl leaves the page */
+  function closeUi() {
+    const t = setting.activeTab;
     leaveTab();
-    fontPage = null;
-    sPane = id;
-    for (const d of document.getElementById("snav").querySelectorAll(".snavi")) d.classList.toggle("sel", d.dataset.pane === id);
-    const pg = document.getElementById("spage"); pg.innerHTML = ""; pg.className = "rows";
+    if (t && t._pane === undefined && t.containerEl && t.containerEl.parentNode === document.getElementById("spage")) t.containerEl.remove();
+  }
+
+  /* ---- panes ----
+     Every pane is a tab of app.setting (api-ui.js ui:setting): the app's own panes are its built-in
+     tabs (settingTabs, pane id in _pane), a loaded plugin's tab is "plg:<id>". A nav click or
+     showSettingsPage goes through app.setting.openTab, so activeTab / lastTabId / hide() / display()
+     are the same whether the user or a plugin switched the pane. */
+  let inBuiltin = false;      // main.js is building one of its own panes for a built-in tab
+  const builtinOf = pane => setting.settingTabs.find(t => t._pane === pane) || null;
+  const paneOf = t => t._pane !== undefined ? t._pane : "plg:" + t.id;
+  function selNav(id) { for (const d of document.getElementById("snav").querySelectorAll(".snavi")) d.classList.toggle("sel", d.dataset.pane === id); }
+  function clearPage(id, cls) {
+    fontPage = null; sPane = id; selNav(id);
+    const pg = document.getElementById("spage"); pg.innerHTML = ""; pg.className = cls;
     sRowsShown = 0; sEnabledShown = 0;
-    if (id === "community") { buildCommunity(pg); host.refresh().then(() => { if (settingsOpen && sPane === "community") rebuild(); }, () => {}); }
-    else buildTab(pg, id.slice(4));
-    updateTitle();
+    return pg;
+  }
+  /* showSettingsPage(id) asks here first: true = handled */
+  function show(id) {
+    if (inBuiltin) return false;
+    let t;
+    if (id === "community") t = builtinOf("community");
+    else if (String(id).startsWith("plg:")) t = tabOf(id.slice(4)) || builtinOf("community");   // its plugin unloaded since
+    else {
+      const e = typeof SMODEL !== "undefined" && SMODEL ? SMODEL.nav.find(n => n.id === id) || SMODEL.nav.find(n => n.entry === id) : null;
+      t = builtinOf(e ? e.id : "hotkeys");     // main.js's own fallback pane
+    }
+    if (!t) { leaveTab(); return false; }
+    try { setting.openTab(t); } catch (e) {
+      console.error("[plugin] " + t.id + " settings display:", e);
+      const pg = document.getElementById("spage");
+      if (pg && t._pane === undefined) pg.appendChild(el("div", "sempty", "This plugin's settings failed to render: " + (e && e.message || e)));
+    }
+    if (t._pane === undefined || t._pane === "community") updateTitle();   // main.js's panes update the census themselves
     return true;
+  }
+  /* app.setting.open(): the pane the modal opens on */
+  function pane(t) { sPane = paneOf(t); }
+  /* app.setting.openTab(t), before t.display(): a plugin tab goes on the page when the modal is open */
+  function mount(t) {
+    pane(t);
+    if (t._pane !== undefined || typeof settingsOpen === "undefined" || !settingsOpen) return;
+    const pg = clearPage(sPane, "rows os-plugin-tab");
+    t.containerEl.empty ? t.containerEl.empty() : (t.containerEl.innerHTML = "");
+    pg.appendChild(t.containerEl);
+    // api-settings: a declarative tab (getSettingDefinitions) refreshes its settingItems on every open
+    try { if (typeof t.update === "function") t.update(); } catch (e) { console.error("[plugin] " + t.id + " settings update:", e); }
+  }
+  /* a built-in tab's display(): its pane, built by main.js (or the community pane, built here) */
+  function builtin(t) {
+    if (typeof settingsOpen === "undefined" || !settingsOpen) return;
+    if (t._pane === "community") {
+      const pg = clearPage("community", "rows");
+      buildCommunity(pg);
+      host.refresh().then(() => { if (settingsOpen && sPane === "community") rebuild(); }, () => {});
+      return;
+    }
+    inBuiltin = true;
+    try { showSettingsPage(t._pane); } finally { inBuiltin = false; }
   }
   function rebuild() {
     const pg = document.getElementById("spage"); if (!pg) return;
@@ -146,21 +194,6 @@
     if (settingsOpen && sPane === "community") rebuild();
     const n = document.getElementById("snav"); if (n && n.dataset.built === "1") nav(n);
   }
-  function buildTab(pg, id) {
-    const t = tabOf(id);
-    if (!t) { row(pg.appendChild(el("div", "scard")), "This plugin has no settings tab", "", [], true); return; }
-    pg.className = "rows os-plugin-tab";
-    t.containerEl.empty ? t.containerEl.empty() : (t.containerEl.innerHTML = "");
-    pg.appendChild(t.containerEl);
-    setting.activeTab = t;
-    // api-settings: a declarative tab (getSettingDefinitions) refreshes its settingItems on every open
-    try { if (typeof t.update === "function") t.update(); } catch (e) { console.error("[plugin] " + id + " settings update:", e); }
-    try { t.display(); } catch (e) {
-      console.error("[plugin] " + id + " settings display:", e);
-      pg.appendChild(el("div", "sempty", "This plugin's settings failed to render: " + (e && e.message || e)));
-    }
-  }
-
   /* ---- census ---- */
   const ctr = d => { const b = d.getBoundingClientRect(); return Math.round(b.left + b.width / 2) + "," + Math.round(b.top + b.height / 2); };
   function tok() {
@@ -185,13 +218,10 @@
     return t;
   }
 
-  /* Obsidian's app.setting.openTabById(id): "community-plugins" is its id for the pane */
-  async function openTab(id) {
-    if (!settingsOpen) await openSettings();
-    showSettingsPage(id === "community-plugins" ? "community" : tabOf(id) ? "plg:" + id : "community");
-  }
+  /* kept for older callers: app.setting.openTabById */
+  const openTab = id => setting.openTabById(id);
 
-  const api = Object.freeze({ nav, show, tok, tabsChanged, close: leaveTab, openTab });
+  const api = Object.freeze({ nav, show, tok, tabsChanged, close: closeUi, openTab, pane, mount, builtin });
   Object.defineProperty(window, "__osPluginSettings", { value: api, writable: false, configurable: false });
   Object.defineProperty(window, "openPluginSettingTab", { value: openTab, writable: false, configurable: false });
 })();
