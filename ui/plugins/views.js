@@ -436,3 +436,177 @@
     },
   });
 })();
+
+/* the "obsidian" module, part WORKSPACE (api-parity stage 0: moved here from api.js,
+   behaviour-neutral): the views factory is taken ONCE and removed from window, then
+   app.workspace over the app's tab groups. A separate closure: it sees only what
+   api.js hands it in K. Segment contract: see api-core.js. */
+(function () {
+  "use strict";
+  const parts = window.__osApiParts || (window.__osApiParts = Object.create(null));
+  const reg = (id, fn) => { if (!(id in parts)) parts[id] = fn; };
+  reg("workspace:views", function (K) {
+    const { host, be } = K;
+    const { Component, Events, installDom, mk, setIcon, touch } = K;
+    /* --------------------------------------------- views (ui/plugins/views.js)
+       View / ItemView / FileView / WorkspaceLeaf live in views.js (goal
+       plugin-views). Its factory is taken ONCE here and removed from window, so
+       plugin code cannot reach it; its deps are read at call time. */
+    const viewsFactory = window.__osPluginViews;
+    try { delete window.__osPluginViews; } catch (_) {}
+    if (typeof viewsFactory !== "function") { console.error("[plugin] views.js did not load"); return false; }
+    const { View, ItemView, FileView, EditableFileView, TextFileView, WorkspaceLeaf, host: views } = viewsFactory({
+      Component, Events, installDom, mk, setIcon, app: () => K.app, touch: () => touch(),
+      vault: () => K.vault, TFile: () => K.TFile,
+      leafView: l => K.leafView(l), groupFile: g => K.groupFile(g), openFileIn: (l, f, o) => K.openFileIn(l, f, o),
+    });
+    Object.assign(K, { EditableFileView, FileView, ItemView, TextFileView, View, WorkspaceLeaf, views });
+  });
+  reg("workspace:workspace", function (K) {
+    const { host, be } = K;
+    const { EA, Events, MarkdownView, Menu, TFile, View, WorkspaceLeaf, bridge, changed, debounce, files, normalizePath, noteOf, parseLinktext, resolveLink, touch, vault, views } = K;
+    /* ------------------------------------------- workspace (item 5)
+       Leaves are the app's tab groups (main.js `groups()` / `state.focused`),
+       read at call time. file-open / active-leaf-change are detected by
+       focusTick(), which the [plg:] census runs on every updateTitle — the one
+       place main.js already reports "something on screen changed" — so this
+       needs no new hook in main.js. */
+    const leafOf = new WeakMap();
+    const groupLeaf = g => { if (!g) return null; let l = leafOf.get(g); if (!l) { l = new WorkspaceLeaf(K.app); l._g = g; leafOf.set(g, l); } return l; };
+    const leafFor = g => (g ? views.leafOfGroup(g, groupLeaf) : null);   // plugin-views: a plugin-view tab is its own leaf
+    const allGroups = () => { try { return typeof groups === "function" ? groups() : []; } catch (_) { return []; } };
+    const focusedGroup = () => { try { return typeof state !== "undefined" && state ? state.focused : null; } catch (_) { return null; } };
+    function groupFile(g) {
+      const t = g && g.active >= 0 ? g.tabs[g.active] : null;
+      if (!t || t.kind || !K.st.modelOn) return null;
+      const f = files.get(t.name + ".md");
+      return f instanceof TFile ? f : null;
+    }
+    function leafView(l) {
+      const f = groupFile(l._g);
+      if (!l._v) {
+        const mv = new MarkdownView(l); Object.defineProperty(mv, "file", { configurable: true, get: () => groupFile(l._g) });   // no editor-api: a file-only stand-in
+        const ev = new View(l); ev.getViewType = () => "empty";
+        l._v = { mv, ev };
+      }
+      if (f && EA) { const mv = EA.viewFor(l._g.view, l); if (mv) return mv; }   // editor-api: the active tab's own MarkdownView (.editor = its CM6 view)
+      return f ? l._v.mv : l._v.ev;
+    }
+    async function openFileIn(leaf, file, openState) {
+      if (!(file instanceof TFile) || file.extension !== "md") return;
+      const name = noteOf(file.path), g = leaf && leaf._g;
+      if (g && g !== focusedGroup() && typeof focusGroup === "function") try { focusGroup(g); } catch (_) {}
+      if (leaf && leaf._split && g && typeof splitWith === "function" && typeof mkTab === "function") { const d0 = leaf._split; leaf._split = null; await splitWith(g, d0, mkTab(name)); }
+      else if (leaf && leaf._nt && typeof openNewTab === "function") { leaf._nt = false; await openNewTab(name, g || undefined); }
+      else if (typeof openInTab === "function") await openInTab(name);
+      const sub = openState && openState.eState && openState.eState.subpath;
+      if (sub && typeof navAnchor === "function") try { await navAnchor(focusedGroup(), sub.replace(/^#/, "")); } catch (_) {}
+      touch();
+    }
+    let lastLeaf = null, lastFile;
+    function focusTick() {
+      views.sweep();                       // plugin-views: a plugin-view tab the app closed -> its view closes
+      if (!K.st.modelOn || !K.st.layoutReady) return;
+      const l = leafFor(focusedGroup()), f = l ? groupFile(l._g) : null;
+      if (l !== lastLeaf) { lastLeaf = l; queueMicrotask(() => workspace.trigger("active-leaf-change", l)); }
+      if (f !== lastFile) { lastFile = f; queueMicrotask(() => { workspace.trigger("file-open", f); if (l) workspace.trigger("layout-change"); }); }
+    }
+    const workspace = new Events();
+    Object.assign(workspace, {
+      layoutReady: false,
+      containerEl: document.body,
+      onLayoutReady(cb) { if (K.st.layoutReady) queueMicrotask(() => { try { cb(); } catch (e) { console.error(e); } }); else workspace.on("layout-ready", cb); },
+      iterateAllLeaves(cb) { views.iterateLeaves(cb, groupLeaf, true); },
+      iterateRootLeaves(cb) { views.iterateLeaves(cb, groupLeaf, false); },
+      getLeavesOfType(t) { const pv = views.leavesOfType(t); if (pv.length || views.types.has(t)) return pv; return allGroups().map(groupLeaf).filter(l => l && l.view.getViewType() === t); },
+      detachLeavesOfType(t) { for (const l of views.leavesOfType(t)) l.detach(); },
+      getRightLeaf() { return views.getSideLeaf("right"); },
+      getLeftLeaf() { return views.getSideLeaf("left"); },
+      async ensureSideLeaf(type, side, o) {
+        o = o || {}; let l = views.leavesOfType(type)[0];
+        if (!l) { l = views.getSideLeaf(side === "left" ? "left" : "right"); await l.setViewState({ type, state: o.state || {}, active: !!o.active }); }
+        if (o.reveal !== false) await views.reveal(l);
+        return l;
+      },
+      getActiveViewOfType(C) { const l = workspace.activeLeaf, v = l && l.view; return v && C && v instanceof C ? v : null; },
+      getActiveFile() { return groupFile(focusedGroup()); },
+      getMostRecentLeaf() { return workspace.activeLeaf; },
+      getUnpinnedLeaf() { return workspace.activeLeaf; },
+      getLeaf(newLeaf, dir) { if (!newLeaf) return workspace.activeLeaf; return views.getLeaf(newLeaf, dir) || workspace.activeLeaf; },
+      splitActiveLeaf(dir) { return workspace.getLeaf("split", dir); },
+      createLeafBySplit(leaf, dir) { return workspace.getLeaf("split", dir); },
+      createLeafInParent() { return workspace.getLeaf("tab"); },
+      setActiveLeaf(l) { if (l && (l._t || l._side)) { views.reveal(l); return; } if (l && l._g && typeof focusGroup === "function") try { focusGroup(l._g); } catch (_) {} },
+      revealLeaf(l) { if (l && (l._t || l._side)) return views.reveal(l); workspace.setActiveLeaf(l); return Promise.resolve(); },
+      async openLinkText(lt, src, newLeaf, openState) {
+        const { path, subpath } = parseLinktext(lt);
+        let f = path ? resolveLink(path, src) : vault.getFileByPath(src || "");
+        if (!f) f = await vault.create(normalizePath(path.endsWith(".md") ? path : path + ".md"), "");
+        const os = Object.assign({}, openState || {}); if (subpath) os.eState = Object.assign({}, os.eState, { subpath });
+        return workspace.getLeaf(newLeaf).openFile(f, os);
+      },
+      getLastOpenFiles() { return []; },
+      updateOptions() { if (EA) EA.reconfigureAll(); },   // editor-api: a plugin mutated its registered extension array
+      requestSaveLayout: debounce(() => {}, 0),
+      leftRibbon: {
+        collapsed: false,
+        get ribbonItemsEl() { return document.getElementById("ribbon"); },
+        // read-only view of plugin ribbon icons (cmdr's "Left Ribbon" tab maps it); a copy, so remove() on it can't detach app buttons
+        get items() { return [...document.querySelectorAll("#ribbon .os-plugin-ribbon")].map(b => ({ id: (b.dataset.plugin || "") + ":" + b.title, title: b.title, icon: (b.firstElementChild && b.firstElementChild.dataset.icon) || "", buttonEl: b })); },
+      },
+      rightRibbon: { collapsed: false },
+    });
+    /* plugin-views item 5: workspace "file-menu" / "editor-menu". main.js builds its
+       own .ctxmenu (noteMenu: the explorer row) and asks PMENU before placing it; a
+       plugin's handler gets a Menu whose rows land in THAT menu after a rule, so they
+       share its styling, its close-on-mousedown and its [menu:] census. Nothing is
+       added — not even the rule — when no handler adds a row. "editor-menu" opens a
+       menu of plugin rows only, and only once bridge.editor yields an Editor. */
+    function menuHook(name, m, args) {
+      const a = workspace._ev.get(name);
+      if (!a || !a.length) return 0;
+      const menu = new Menu(); menu.dom = m;
+      workspace.trigger(name, menu, ...args);
+      const it = menu.items.slice();
+      while (it.length && it[0] === null) it.shift();
+      while (it.length && it[it.length - 1] === null) it.pop();
+      const n = it.filter(Boolean).length;
+      if (!n) return 0;
+      if (m.childElementCount) { const s = document.createElement("div"); s.className = "sep"; m.appendChild(s); }
+      for (const x of it) {
+        if (x === null) { const s = document.createElement("div"); s.className = "sep"; m.appendChild(s); }
+        else m.appendChild(x.dom);
+      }
+      return n;
+    }
+    const PM = {
+      fileMenu(m, name, source) {
+        const f = files.get(name + ".md");
+        return f instanceof TFile ? menuHook("file-menu", m, [f, source || "file-explorer-context-menu", null]) : 0;
+      },
+      editorMenu(e) {
+        const x = bridge.editor ? bridge.editor() : null;
+        if (!x || !x.editor) return false;
+        const m = document.createElement("div");
+        m.className = "ctxmenu menu os-plugin-menu";
+        if (!menuHook("editor-menu", m, [x.editor, x.view])) return false;
+        if (typeof closeMenu === "function") closeMenu();
+        if (typeof placeMenu === "function") placeMenu(m, e.clientX, e.clientY);
+        return true;
+      },
+    };
+    const menuOn = workspace.on;
+    workspace.on = function (name, cb, ctx) {   // main.js's PMENU is set lazily: api.js loads before main.js declares it
+      if (name === "file-menu" || name === "editor-menu") try { PMENU = PM; } catch (_) {}
+      return menuOn.call(this, name, cb, ctx);
+    };
+    Object.defineProperty(workspace, "activeLeaf", { configurable: true, enumerable: true, get() {
+      const g = focusedGroup() || allGroups()[0];
+      return g ? leafFor(g) : null;
+    } });
+    // editor-api: the focused note's MarkdownView (a MarkdownFileInfo: .editor, .file), or null
+    Object.defineProperty(workspace, "activeEditor", { configurable: true, enumerable: true, get() { return EA && K.st.modelOn ? EA.activeEditor() : null; } });
+    if (EA) bridge.editor = () => { const mv = K.st.modelOn ? EA.activeEditor() : null; return mv && mv.editor ? { editor: mv.editor, view: mv } : null; };
+    Object.assign(K, { allGroups, focusTick, focusedGroup, groupFile, leafFor, leafView, openFileIn, workspace });
+  });
+})();

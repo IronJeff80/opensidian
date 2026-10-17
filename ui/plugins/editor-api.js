@@ -430,3 +430,104 @@
     Object.defineProperty(window, "CodeMirror", { value: CM, configurable: true, writable: true, enumerable: false });
   }
 })();
+
+/* the "obsidian" module, part EDITOR (api-parity stage 0: moved here from api.js,
+   behaviour-neutral): MarkdownRenderChild, markdown post / code-block processors,
+   MarkdownRenderer, and the editor-api install (EA, MarkdownView). A separate closure
+   from the one above (its S / V are CM6 names): it sees only what api.js hands it in K.
+   Segment contract: see api-core.js. */
+(function () {
+  "use strict";
+  const parts = window.__osApiParts || (window.__osApiParts = Object.create(null));
+  const reg = (id, fn) => { if (!(id in parts)) parts[id] = fn; };
+  reg("editor:render", function (K) {
+    const { host, be } = K;
+    const { Component, P, touch, views } = K;
+    class MarkdownRenderChild extends Component { constructor(el) { super(); this.containerEl = el; } }
+
+    /* ------------------- markdown post / code-block processors (plugin-views item 7)
+       The Rust renderer (render / render_view) emits a fenced block as
+       <pre><code class="language-L">. A registered code-block processor for L
+       replaces that <pre> with div.block-language-L and gets (source, el, ctx);
+       post processors then run, in sortOrder, on every top-level block element.
+       Both run over the reading view (main.js preview() asks PPOST after its
+       innerHTML) and over MarkdownRenderer.render. ctx.addChild ties a
+       MarkdownRenderChild to that render: the next render of the same pane (or
+       the caller's component) unloads it. PPOST is set only once a plugin
+       registers one, so a vault without such plugins pays nothing; gen bumps on
+       every (un)register so the reading view's retained DOM is re-rendered. */
+    const MDP = { post: [], code: new Map(), gen: 0, used: false };
+    function mdpChanged() { MDP.gen++; MDP.used = true; try { PPOST = (MDP.post.length || MDP.code.size) ? PP : null; } catch (_) {} touch(); }
+    const pathOf = n => (n ? n + ".md" : "");   // the app names notes without ".md"
+    function mdCtx(sourcePath, holder) {
+      let fm; try { const c = K.metadataCache.getCache(sourcePath); fm = c ? c.frontmatter : undefined; } catch (_) {}
+      return {
+        docId: sourcePath, sourcePath, frontmatter: fm,
+        addChild: ch => { holder.addChild(ch); return ch; },
+        getSectionInfo: () => null,
+      };
+    }
+    function runCode(lang, p, src, el, ctx) {
+      try { const r = p(src, el, ctx); if (r && typeof r.catch === "function") r.catch(e => console.error("[plugin] code block " + lang + ":", e)); }
+      catch (e) { console.error("[plugin] code block " + lang + ":", e); }
+    }
+    async function mdProcess(root, sourcePath, holder) {
+      if (!MDP.code.size && !MDP.post.length) return;
+      const ctx = mdCtx(sourcePath, holder);
+      if (MDP.code.size) for (const code of [...root.querySelectorAll("pre > code[class*='language-']")]) {
+        const m = /(?:^|\s)language-(\S+)/.exec(code.className), lang = m ? m[1] : "";
+        const p = MDP.code.get(lang), pre = code.parentElement;
+        if (!p || !pre || !pre.parentNode) continue;
+        const el = document.createElement("div"); el.className = "block-language-" + lang;
+        pre.replaceWith(el);
+        runCode(lang, p, code.textContent.replace(/\n$/, ""), el, ctx);
+      }
+      if (!MDP.post.length) return;
+      const posts = MDP.post.slice().sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+      for (const el of [...root.children]) for (const p of posts) {
+        try { const r = p(el, ctx); if (r && typeof r.then === "function") await r.catch(e => console.error("[plugin] post processor:", e)); }
+        catch (e) { console.error("[plugin] post processor:", e); }
+      }
+    }
+    const PP = {   // main.js preview(): PPOST.run(pane, note) after the reading html is in
+      get gen() { return MDP.gen; },
+      run(P, note) {
+        if (P._ppHold) try { P._ppHold.unload(); } catch (e) { console.error(e); }
+        const h = P._ppHold = new Component(); h.load();
+        return mdProcess(P, pathOf(note), h);
+      },
+    };
+    // [pmd:p<post processors>|c<code langs>|r<processed blocks in reading panes>] — only once a plugin used it
+    function mdpCensus() {
+      if (!MDP.used) return "";
+      const r = document.querySelectorAll(".preview [class^='block-language-'], .preview [class*=' block-language-']").length;
+      if (!MDP.post.length && !MDP.code.size && !r) return "";
+      return " [pmd:p" + MDP.post.length + "|c" + [...MDP.code.keys()].join("+") + "|r" + r + "]";
+    }
+    const MarkdownRenderer = {
+      async render(app_, markdown, el, sourcePath, component) {
+        const html = await K.inv("render", { content: String(markdown == null ? "" : markdown) });
+        const t = document.createElement("div"); t.innerHTML = html;
+        await mdProcess(t, sourcePath || "", component instanceof Component ? component : new Component());
+        while (t.firstChild) el.appendChild(t.firstChild);
+      },
+      renderMarkdown(markdown, el, sourcePath, component) { return MarkdownRenderer.render(K.app, markdown, el, sourcePath, component); },
+    };
+    Object.assign(K, { MDP, MarkdownRenderChild, MarkdownRenderer, mdpCensus, mdpChanged });
+  });
+  reg("editor:editor", function (K) {
+    const { host, be } = K;
+    const { FileView, TextFileView, touch } = K;
+    /* editor-api (ui/plugins/editor-api.js): Editor / MarkdownView / EditorSuggest + the editor
+       extension compartment, installed ONCE here; the installer is then deleted from window */
+    const EA = window.__osEditorApi ? window.__osEditorApi({
+      TextFileView, FileView,
+      app: () => K.app, groups: () => K.allGroups(), focused: () => K.focusedGroup(), leafFor: g => K.leafFor(g), touch: () => touch(),
+      fileOf: name => { const f = K.st.modelOn ? K.files.get(name + ".md") : null; return f instanceof K.TFile ? f : null; },
+    }) : null;
+    try { delete window.__osEditorApi; } catch (_) {}
+    const MarkdownView = EA ? EA.MarkdownView : class extends TextFileView { getViewType() { return "markdown"; } };
+
+    Object.assign(K, { EA, MarkdownView });
+  });
+})();
