@@ -923,14 +923,16 @@
       if (!a || !a.length) return 0;
       const menu = new Menu(); menu.dom = m;
       workspace.trigger(name, menu, ...args);
+      // a MenuSeparator row (when that class exists) counts as a rule, like null
+      const isSep = x => x === null || (typeof K.MenuSeparator === "function" && x instanceof K.MenuSeparator);
       const it = menu.items.slice();
-      while (it.length && it[0] === null) it.shift();
-      while (it.length && it[it.length - 1] === null) it.pop();
-      const n = it.filter(Boolean).length;
+      while (it.length && isSep(it[0])) it.shift();
+      while (it.length && isSep(it[it.length - 1])) it.pop();
+      const n = it.filter(x => x && !isSep(x)).length;
       if (!n) return 0;
       if (m.childElementCount) { const s = document.createElement("div"); s.className = "sep"; m.appendChild(s); }
       for (const x of it) {
-        if (x === null) { const s = document.createElement("div"); s.className = "sep"; m.appendChild(s); }
+        if (isSep(x)) { const s = document.createElement("div"); s.className = "sep"; m.appendChild(s); }
         else m.appendChild(x.dom);
       }
       return n;
