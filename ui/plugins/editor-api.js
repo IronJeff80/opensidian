@@ -120,10 +120,15 @@
         const f = C && C[map[cmd]];
         if (typeof f === "function") f(this.cm);
       }
+      /* the lines the selections touch (each line once, top to bottom; a caret is its own line):
+         read(line, text) -> state, then write(line, text, state) -> EditorChange | void, all
+         changes in ONE dispatch against the unchanged doc (oracle: stock 1.13.7 visits only the
+         selected line, not the whole document) */
       processLines(read, write, ignoreEmpty) {
-        const d = this._d, ch = [];
-        for (let i = 0; i < d.lines; i++) {
-          const l = d.line(i + 1); if (ignoreEmpty && !l.text) continue;
+        const d = this._d, ch = [], seen = new Set();
+        for (const r of this.cm.state.selection.ranges) for (let n = d.lineAt(r.from).number; n <= d.lineAt(r.to).number; n++) seen.add(n);
+        for (const n of [...seen].sort((a, b) => a - b)) {
+          const i = n - 1, l = d.line(n); if (ignoreEmpty && !l.text) continue;
           const st = read(i, l.text), r = write(i, l.text, st);
           if (r) ch.push({ from: this.posToOffset(r.from), to: r.to ? this.posToOffset(r.to) : this.posToOffset(r.from), insert: String(r.text) });
         }
@@ -133,15 +138,104 @@
     const edOf = new WeakMap();   // tab view -> Editor
     const editorFor = v => { if (!v || !v.cm) return null; let e = edOf.get(v); if (!e) { e = new Editor(v); edOf.set(v, e); } return e; };
 
-    /* ---------------------------------------------------------- MarkdownView
-       One per tab view (v): .editor drives v.cm, .file is that tab's note.
-       Extends api.js's TextFileView (or plugin-views' FileView once it lands). */
-    const Base = ctx.TextFileView || ctx.FileView || class { constructor(leaf) { this.leaf = leaf; } };
+    /* a field declared on the PROTOTYPE (so `name in Cls.prototype` holds, as obsidian.d.ts
+       declares it) that becomes an ordinary own data property the first time it is assigned;
+       until then reads give `def` */
+    const protoField = (C, name, def) => Object.defineProperty(C.prototype, name, {
+      configurable: true, enumerable: false,
+      get() { return def; },
+      set(x) { Object.defineProperty(this, name, { value: x, writable: true, enumerable: true, configurable: true }); },
+    });
     const tabOf = v => (v && v.tab && !v.tab.kind ? v.tab : null);
+    const scrollerOf = v => (v && (v.lp || (v.cm && v.cm.scrollDOM))) || null;
+    const isActiveView = v => !!(v && v.g && v.g.view === v);
+
+    /* ------------------------------------------------------ MarkdownEditView
+       The edit side of one MarkdownView (view.editMode): text in and out of that view's
+       CM6 editor. Scroll positions are in LINES (fractional), the unit Obsidian's ephemeral
+       state uses: 0 = the first line at the top. */
+    class MarkdownEditView {
+      constructor(view) {
+        Object.defineProperty(this, "view", { value: view, enumerable: false });
+        this.app = (view && view.app) || ctx.app();
+      }
+      get file() { return this.view ? this.view.file : null; }
+      get editor() { return this.view ? this.view.editor : null; }
+      get sourceMode() { const v = this.view && this.view._tv; return !!(v && v.lp && v.lp.classList.contains("src")); }
+      get() { const e = this.editor; return e ? e.getValue() : ""; }
+      set(data, clear) { const v = this.view && this.view._tv; setText(v, data, clear); }
+      clear() { const v = this.view && this.view._tv; setText(v, "", true); }
+      getSelection() { const e = this.editor; return e ? e.getSelection() : ""; }
+      getScroll() {
+        const v = this.view && this.view._tv, s = scrollerOf(v), cm = v && v.cm;
+        if (!s || !cm || s.scrollTop <= 0) return 0;
+        const top = cm.documentTop - s.getBoundingClientRect().top + s.scrollTop, h = s.scrollTop - top;
+        if (h <= 0) return 0;
+        const b = cm.lineBlockAtHeight(h), n = cm.state.doc.lineAt(b.from).number - 1;
+        return Math.round((n + (b.height > 0 ? Math.min(1, (h - b.top) / b.height) : 0)) * 1000) / 1000;
+      }
+      applyScroll(scroll) {
+        const v = this.view && this.view._tv, s = scrollerOf(v), cm = v && v.cm;
+        const y = Number(scroll); if (!s || !cm || !Number.isFinite(y)) return;
+        const d = cm.state.doc, n = clamp(Math.floor(y), 0, d.lines - 1);
+        const b = cm.lineBlockAt(d.line(n + 1).from);
+        const top = cm.documentTop - s.getBoundingClientRect().top + s.scrollTop;
+        s.scrollTop = y <= 0 ? 0 : top + b.top + (y - n) * b.height;
+      }
+    }
+    protoField(MarkdownEditView, "app", null);
+    protoField(MarkdownEditView, "hoverPopover", undefined);   // oracle: undefined until a hover popover is shown
+    // load / replace the text of one tab view: the shown view takes a fresh state (Ed.setText:
+    // new history, rebuilds the plugin compartment) when `clear`, otherwise an ordinary edit
+    function setText(v, data, clear) {
+      if (!v || !v.cm) return;
+      const s = String(data == null ? "" : data);
+      if (clear && isActiveView(v)) Ed.setText(v.g, s);
+      else { const e = editorFor(v); if (e) e.setValue(s); }
+    }
+
+    /* --------------------------------------------------- MarkdownPreviewView
+       The reading side (view.previewMode): containerEl is that tab's reading pane, which
+       main.js preview() renders from the editor text; set() goes through the editor so the
+       two never disagree; rerender() re-renders a shown reading pane, otherwise it drops
+       the retained DOM so the next show renders fresh. getScroll() is null until the pane
+       has been rendered (oracle). */
+    const MR = ctx.MarkdownRenderer || class { constructor(el) { this.containerEl = el; } };
+    class MarkdownPreviewView extends MR {
+      constructor(view) {
+        super(null);
+        Object.defineProperty(this, "view", { value: view, enumerable: false });
+        const tv = () => (view ? view._tv : null);
+        Object.defineProperty(this, "containerEl", { configurable: true, enumerable: true,
+          get() { const v = tv(); return v ? v.preview || (v.g && v.g.preview) || null : null; }, set() {} });
+        this.app = (view && view.app) || ctx.app();
+        this.hoverPopover = null;
+      }
+      get file() { return this.view ? this.view.file : null; }
+      get() { const e = this.view && this.view.editor; return e ? e.getValue() : ""; }
+      set(data, clear) { setText(this.view && this.view._tv, data, clear); this.rerender(false); }
+      clear() { const P = this.containerEl; if (!P) return; P._pvk = null; P.textContent = ""; }
+      rerender(full) {
+        const v = this.view && this.view._tv, P = this.containerEl, t = tabOf(v);
+        if (!P) return;
+        if (full) P._pvk = null;
+        if (t && t.mode === "reading" && isActiveView(v) && typeof preview === "function") {
+          try { const r = preview(v.g); if (r && typeof r.catch === "function") r.catch(e => console.error("[plugin] rerender:", e)); } catch (e) { console.error("[plugin] rerender:", e); }
+        } else P._pvk = null;
+      }
+      getScroll() { const P = this.containerEl; return P && P._pvk ? P.scrollTop : null; }
+      applyScroll(y) { const P = this.containerEl, n = Number(y); if (P && Number.isFinite(n)) P.scrollTop = n; }
+    }
+
+    /* ---------------------------------------------------------- MarkdownView
+       One per tab view (v): .editor drives v.cm, .file is that tab's note, .editMode /
+       .previewMode are its two (stable) sub-views. Extends api.js's TextFileView. */
+    const Base = ctx.TextFileView || ctx.FileView || class { constructor(leaf) { this.leaf = leaf; } };
     class MarkdownView extends Base {
       constructor(leaf, v) {
         super(leaf);
         Object.defineProperty(this, "_tv", { value: v || null, writable: true });
+        if (!this.app) this.app = ctx.app();
         if (v) {
           const self = this;
           Object.defineProperty(this, "file", { configurable: true, enumerable: true, get() { const t = tabOf(self._tv); return t ? ctx.fileOf(t.name) : null; }, set() {} });
@@ -149,11 +243,8 @@
           Object.defineProperty(this, "contentEl", { configurable: true, enumerable: true, get() { const g = self._tv.g; return (g && g.content) || self._tv.lp; }, set() {} });
           Object.defineProperty(this, "leaf", { configurable: true, enumerable: true, get() { return ctx.leafFor(self._tv.g) || leaf; }, set() {} });
         }
-        this.previewMode = {
-          containerEl: v ? v.preview : null,
-          rerender() {}, getScroll: () => (v && v.preview ? v.preview.scrollTop : 0), applyScroll(y) { if (v && v.preview) v.preview.scrollTop = y; },
-          get: () => (v && v.cm ? v.cm.state.doc.toString() : ""), set() {}, clear() {},
-        };
+        this.editMode = new MarkdownEditView(this);
+        this.previewMode = new MarkdownPreviewView(this);
       }
       getViewType() { return "markdown"; }
       getDisplayText() { const f = this.file; return f ? f.basename : ""; }
@@ -161,14 +252,9 @@
       get editor() { return editorFor(this._tv); }
       get sourceMode() { return { cmEditor: this.editor }; }
       get currentMode() { return this.getMode() === "preview" ? this.previewMode : this.editMode; }
-      get editMode() { return { editor: this.editor, sourceMode: !!(this._tv && this._tv.lp && this._tv.lp.classList.contains("src")) }; }
       getMode() { const t = tabOf(this._tv); return t && t.mode === "reading" ? "preview" : "source"; }
       getViewData() { const e = this.editor; return e ? e.getValue() : ""; }
-      setViewData(data, clear) {
-        const e = this.editor; if (!e) return;
-        if (clear && this._tv && this._tv.g && this._tv.g.view === this._tv) Ed.setText(this._tv.g, data);   // fresh state + history; setText rebuilds the plugin compartment
-        else e.setValue(data);
-      }
+      setViewData(data, clear) { setText(this._tv, data, clear); }
       clear() {}
       getState() { const t = tabOf(this._tv), f = this.file; return { mode: this.getMode(), source: !!(t && t.mode === "source"), file: f ? f.path : null }; }
       getEphemeralState() { const e = this.editor; return e ? { cursor: { from: e.getCursor("from"), to: e.getCursor("to") } } : {}; }
@@ -177,7 +263,15 @@
       requestSave() { const g = this._tv && this._tv.g; if (g && typeof scheduleSave === "function") try { scheduleSave(g); } catch (_) {} }
       save() { this.requestSave(); return Promise.resolve(); }
     }
+    protoField(MarkdownView, "hoverPopover", undefined);   // oracle: undefined until a hover popover is shown
     const mvOf = new WeakMap();   // tab view -> MarkdownView
+    // the MarkdownView of ANY note editor view, tab or not yet (a scratch view is adopted by a
+    // tab later; .file follows the tab): what editorInfoField holds from the state's creation on
+    function infoFor(v) {
+      if (!v) return null;
+      let mv = mvOf.get(v); if (!mv) { mv = new MarkdownView(ctx.leafFor(v.g) || null, v); mvOf.set(v, mv); }
+      return mv;
+    }
     function viewFor(v, leaf) {
       if (!v || !tabOf(v)) return null;
       let mv = mvOf.get(v); if (!mv) { mv = new MarkdownView(leaf || ctx.leafFor(v.g), v); mvOf.set(v, mv); }
@@ -194,7 +288,18 @@
     const infoField = S.StateField.define({ create: () => null, update: v => v });
     const lpFx = S.StateEffect.define();
     const lpField = S.StateField.define({ create: () => true, update(v, tr) { for (const e of tr.effects) if (e.is(lpFx)) v = e.value; return v; } });
-    const edField = S.StateField.define({ create: () => null, update: v => v });
+    const edFx = S.StateEffect.define();
+    const edField = S.StateField.define({ create: () => null, update(v, tr) { for (const e of tr.effects) if (e.is(edFx)) v = e.value; return v; } });
+    // a view mounted after the first plugin loaded builds its state BEFORE the EditorView exists
+    // (Ed.mount): editorEditorField is filled in right after construction
+    const edFill = V.ViewPlugin.fromClass(class { constructor(view) { if (view.state.field(edField, false) === null) queueMicrotask(() => { try { if (view.state.field(edField, false) === null) view.dispatch({ effects: edFx.of(view) }); } catch (_) {} }); } });
+    /* livePreviewState: the ViewPlugin whose value tells a plugin whether a mouse button went
+       down in this editor and is not yet released ({mousedown}), the way live-preview widgets
+       defer a re-render while the user drags a selection */
+    const livePreviewState = V.ViewPlugin.fromClass(class {
+      constructor(view) { this.mousedown = false; this._doc = view.dom.ownerDocument; this._up = () => { this.mousedown = false; }; this._doc.addEventListener("mouseup", this._up, true); }
+      destroy() { this._doc.removeEventListener("mouseup", this._up, true); }
+    }, { eventHandlers: { mousedown(e) { if (e.button === 0) this.mousedown = true; } } });
     const isLp = v => !(v.lp && v.lp.classList.contains("src"));
 
     /* ---------------------------------------------------- registered exts */
@@ -217,7 +322,7 @@
     }
     EdG.pxExt = function (v) {
       if (!active) return [];
-      const out = [infoField.init(() => viewFor(v)), lpField.init(() => isLp(v)), edField.init(() => v.cm || null), hooks(v)];
+      const out = [infoField.init(() => infoFor(v)), lpField.init(() => isLp(v)), edField.init(() => v.cm || null), edFill, livePreviewState, hooks(v)];
       for (const x of exts) out.push(x.ext);
       return out;
     };
@@ -247,18 +352,28 @@
        drawn with the wikilink autocomplete's .ac styling; ArrowUp/Down, Enter/Tab
        choose, Escape closes (keydown at Prec.highest, ahead of Ed.onKey). */
     class PopoverSuggest {
-      constructor(app_) { this.app = app_; this.isOpen = false; this.suggestEl = document.createElement("div"); this.suggestEl.className = "ac os-esug suggestion-container"; this.suggestEl.hidden = true; this._items = []; this._sel = 0; }
+      // scope: the suggest's own key scope, a child of the one passed in (oracle: a new Scope,
+      // not the caller's); its handlers see a key before the built-in arrows / Enter / Escape
+      constructor(app_, scope) {
+        this.app = app_; this.scope = ctx.Scope ? new ctx.Scope(scope || undefined) : null;
+        this.isOpen = false; this.suggestEl = document.createElement("div"); this.suggestEl.className = "ac os-esug suggestion-container"; this.suggestEl.hidden = true; this._items = []; this._sel = 0;
+      }
       open() { this.isOpen = true; this.suggestEl.hidden = false; }
       close() { this.isOpen = false; this.suggestEl.hidden = true; this.suggestEl.textContent = ""; this._items = []; ctx.touch(); }
+      onHistoryBack() { if (this.isOpen) this.close(); }   // history back (mouse back button) dismisses an open popover
       renderSuggestion() {} selectSuggestion() {}
     }
+    protoField(PopoverSuggest, "app", null);
+    protoField(PopoverSuggest, "scope", null);
     class EditorSuggest extends PopoverSuggest {
-      constructor(app_) { super(app_); this.context = null; this.limit = 100; this.instructions = []; }
+      constructor(app_) { super(app_); this.context = null; this.instructions = []; }
       setInstructions(i) { this.instructions = i || []; }
       onTrigger() { return null; }
       getSuggestions() { return []; }
       close() { super.close(); this.context = null; }
     }
+    protoField(EditorSuggest, "context", null);
+    protoField(EditorSuggest, "limit", 100);   // oracle: 100 until a subclass sets its own
     let openS = null, reqN = 0;
     function draw(s, v) {
       const el = s.suggestEl, g = v.g;
@@ -298,7 +413,7 @@
         const n = ++reqN;
         Promise.resolve().then(() => s.getSuggestions(s.context)).then(items => {
           if (n !== reqN || openS !== s) return;
-          s._items = (items || []).slice(0, s.limit || 100); s._sel = 0;
+          { const lim = Number(s.limit); s._items = (items || []).slice(0, Number.isFinite(lim) && lim > 0 ? lim : 100); } s._sel = 0;
           if (!s._items.length) { s.close(); openS = null; return; }
           draw(s, v);
         }).catch(e => console.error("[plugin] getSuggestions:", e));
@@ -308,6 +423,10 @@
     }
     function suggestKey(v, e) {
       const s = openS; if (!s || !s.isOpen || !s._items.length) return false;
+      if (s.scope && s.scope.keys && s.scope.keys.length) {   // the suggest's own scope first: a handler returning false consumed the key
+        let r; try { r = s.scope.handle(e); } catch (er) { console.error("[plugin] suggest scope:", er); }
+        if (r === false) { e.preventDefault(); e.stopPropagation(); return true; }
+      }
       if (e.key === "ArrowDown" || e.key === "ArrowUp") { s._sel = (s._sel + (e.key === "ArrowDown" ? 1 : s._items.length - 1)) % s._items.length; draw(s, v); }
       else if (e.key === "Enter" || e.key === "Tab") choose(s, s._sel, e);
       else if (e.key === "Escape") { s.close(); openS = null; }
@@ -339,7 +458,7 @@
     }
 
     return {
-      Editor, MarkdownView, EditorSuggest, PopoverSuggest,
+      Editor, MarkdownView, MarkdownEditView, MarkdownPreviewView, EditorSuggest, PopoverSuggest, livePreviewState,
       editorInfoField: infoField, editorViewField: infoField, editorLivePreviewField: lpField, editorEditorField: edField,
       viewFor, editorFor, activeTabView, addExt, addSuggest, activate, reconfigureAll, tick, tok,
       activeEditor() { const v = activeTabView(), mv = v && viewFor(v); return mv ? mv : null; },
@@ -471,23 +590,44 @@
       try { const r = p(src, el, ctx); if (r && typeof r.catch === "function") r.catch(e => console.error("[plugin] code block " + lang + ":", e)); }
       catch (e) { console.error("[plugin] code block " + lang + ":", e); }
     }
-    async function mdProcess(root, sourcePath, holder) {
+    // the fenced blocks of language `lang` (or any registered one when lang is null) inside
+    // `scope` (an element, or a list of them; a <pre> itself counts) -> [{pre, code, lang}]
+    function fences(scope, lang) {
+      const out = [], els = Array.isArray(scope) ? scope : [scope];
+      for (const r of els) {
+        if (!r || r.nodeType !== 1) continue;
+        const cs = r.matches && r.matches("pre") ? [...r.querySelectorAll(":scope > code[class*='language-']")] : [...r.querySelectorAll("pre > code[class*='language-']")];
+        for (const code of cs) {
+          const m = /(?:^|\s)language-(\S+)/.exec(code.className), l = m ? m[1] : "";
+          if (lang == null || l === lang) out.push({ pre: code.parentElement, code, lang: l });
+        }
+      }
+      return out;
+    }
+    // one fence -> div.block-language-L, then the handler gets (source, div, ctx)
+    function codeBlock(f, p, ctx) {
+      const { pre, code, lang } = f;
+      if (!pre || !pre.parentNode) return;
+      const el = document.createElement("div"); el.className = "block-language-" + lang;
+      pre.replaceWith(el);
+      runCode(lang, p, code.textContent.replace(/\n$/, ""), el, ctx);
+    }
+    async function runPost(p, el, ctx) {
+      try { const r = p(el, ctx); if (r && typeof r.then === "function") await r.catch(e => console.error("[plugin] post processor:", e)); }
+      catch (e) { console.error("[plugin] post processor:", e); }
+    }
+    /* whole = MarkdownRenderer.render: the post processors run ONCE on the target element
+       (oracle: stock 1.13.7 hands them the element passed to render, not one call per block);
+       the reading view (PP.run) hands them every top-level block. `nodes` limits the code
+       block scan to what this render added. */
+    async function mdProcess(root, sourcePath, holder, whole, nodes) {
       if (!MDP.code.size && !MDP.post.length) return;
       const ctx = mdCtx(sourcePath, holder);
-      if (MDP.code.size) for (const code of [...root.querySelectorAll("pre > code[class*='language-']")]) {
-        const m = /(?:^|\s)language-(\S+)/.exec(code.className), lang = m ? m[1] : "";
-        const p = MDP.code.get(lang), pre = code.parentElement;
-        if (!p || !pre || !pre.parentNode) continue;
-        const el = document.createElement("div"); el.className = "block-language-" + lang;
-        pre.replaceWith(el);
-        runCode(lang, p, code.textContent.replace(/\n$/, ""), el, ctx);
-      }
+      if (MDP.code.size) for (const f of fences(nodes || root, null)) { const p = MDP.code.get(f.lang); if (p) codeBlock(f, p, ctx); }
       if (!MDP.post.length) return;
       const posts = MDP.post.slice().sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
-      for (const el of [...root.children]) for (const p of posts) {
-        try { const r = p(el, ctx); if (r && typeof r.then === "function") await r.catch(e => console.error("[plugin] post processor:", e)); }
-        catch (e) { console.error("[plugin] post processor:", e); }
-      }
+      if (whole) { for (const p of posts) await runPost(p, root, ctx); return; }
+      for (const el of [...root.children]) for (const p of posts) await runPost(p, el, ctx);
     }
     const PP = {   // main.js preview(): PPOST.run(pane, note) after the reading html is in
       get gen() { return MDP.gen; },
@@ -504,29 +644,73 @@
       if (!MDP.post.length && !MDP.code.size && !r) return "";
       return " [pmd:p" + MDP.post.length + "|c" + [...MDP.code.keys()].join("+") + "|r" + r + "]";
     }
-    const MarkdownRenderer = {
-      async render(app_, markdown, el, sourcePath, component) {
+    const prop = (C, name, def) => Object.defineProperty(C.prototype, name, {   // see protoField in the editor-api closure
+      configurable: true, enumerable: false, get() { return typeof def === "function" ? def() : def; },
+      set(x) { Object.defineProperty(this, name, { value: x, writable: true, enumerable: true, configurable: true }); },
+    });
+
+    /* MarkdownRenderer: the abstract base of a rendered-markdown child (MarkdownPreviewView
+       extends it); the statics render markdown into an element through the app's renderer
+       (Rust render), then the registered code-block and post processors. */
+    class MarkdownRenderer extends MarkdownRenderChild {
+      static async render(app_, markdown, el, sourcePath, component) {
         const html = await K.inv("render", { content: String(markdown == null ? "" : markdown) });
         const t = document.createElement("div"); t.innerHTML = html;
-        await mdProcess(t, sourcePath || "", component instanceof Component ? component : new Component());
+        const added = [...t.childNodes];
         while (t.firstChild) el.appendChild(t.firstChild);
-      },
-      renderMarkdown(markdown, el, sourcePath, component) { return MarkdownRenderer.render(K.app, markdown, el, sourcePath, component); },
-    };
-    Object.assign(K, { MDP, MarkdownRenderChild, MarkdownRenderer, mdpCensus, mdpChanged });
+        await mdProcess(el, sourcePath || "", component instanceof Component ? component : new Component(), true, added);
+      }
+      static renderMarkdown(markdown, el, sourcePath, component) { return MarkdownRenderer.render(K.app, markdown, el, sourcePath, component); }
+    }
+    prop(MarkdownRenderer, "app", () => K.app);
+    prop(MarkdownRenderer, "hoverPopover", null);
+    // exported as a value (api.js's fixed list), so it gets the same ES5-callable wrapper api.js gives every
+    // exported class here: `_super.call(this, ...)` from a TypeScript-to-ES5 subclass constructs it too
+    const MarkdownRendererX = (() => {
+      const F = function (...args) { const nt = new.target || (this && this.constructor) || F; return Reflect.construct(MarkdownRenderer, args, nt === F ? MarkdownRenderer : nt); };
+      Object.defineProperty(F, "name", { value: "MarkdownRenderer" });
+      F.prototype = MarkdownRenderer.prototype; Object.setPrototypeOf(F, MarkdownRenderer);
+      return F;
+    })();
+
+    /* MarkdownPreviewRenderer: the global post-processor registry (the same one
+       Plugin.registerMarkdownPostProcessor feeds; these statics are NOT tied to a plugin's
+       lifetime) and the code-block post processor factory. */
+    class MarkdownPreviewRenderer {
+      static registerPostProcessor(postProcessor, sortOrder) {
+        if (typeof postProcessor !== "function") return;
+        if (sortOrder !== undefined) postProcessor.sortOrder = sortOrder;
+        if (!MDP.post.includes(postProcessor)) { MDP.post.push(postProcessor); mdpChanged(); }
+      }
+      static unregisterPostProcessor(postProcessor) {
+        const i = MDP.post.indexOf(postProcessor);
+        if (i >= 0) { MDP.post.splice(i, 1); mdpChanged(); }
+      }
+      static createCodeBlockPostProcessor(language, handler) {
+        const lang = String(language);
+        return (el, ctx) => { for (const f of fences(el, lang)) codeBlock(f, handler, ctx || mdCtx("", new Component())); };
+      }
+    }
+    K.exportClasses.MarkdownPreviewRenderer = MarkdownPreviewRenderer;
+    Object.assign(K, { MDP, MarkdownRenderChild, MarkdownRenderer: MarkdownRendererX, mdpCensus, mdpChanged });
   });
   reg("editor:editor", function (K) {
     const { host, be } = K;
-    const { FileView, TextFileView, touch } = K;
+    const { FileView, TextFileView, touch, MarkdownRenderer, Scope } = K;
     /* editor-api (ui/plugins/editor-api.js): Editor / MarkdownView / EditorSuggest + the editor
        extension compartment, installed ONCE here; the installer is then deleted from window */
     const EA = window.__osEditorApi ? window.__osEditorApi({
-      TextFileView, FileView,
+      TextFileView, FileView, MarkdownRenderer, Scope,
       app: () => K.app, groups: () => K.allGroups(), focused: () => K.focusedGroup(), leafFor: g => K.leafFor(g), touch: () => touch(),
       fileOf: name => { const f = K.st.modelOn ? K.files.get(name + ".md") : null; return f instanceof K.TFile ? f : null; },
     }) : null;
     try { delete window.__osEditorApi; } catch (_) {}
     const MarkdownView = EA ? EA.MarkdownView : class extends TextFileView { getViewType() { return "markdown"; } };
+    if (EA) {   // api-parity stage 1 (api-editor): the sub-view classes + livePreviewState, appended after api.js's fixed list
+      K.exportClasses.MarkdownEditView = EA.MarkdownEditView;
+      K.exportClasses.MarkdownPreviewView = EA.MarkdownPreviewView;
+      K.exportValues.livePreviewState = EA.livePreviewState;
+    }
 
     Object.assign(K, { EA, MarkdownView });
   });
