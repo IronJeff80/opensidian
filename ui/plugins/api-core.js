@@ -298,8 +298,31 @@
       removeCommand(id) { K.removeCmd(id); },
       addCommand(cmd) { return K.addCmd(null, cmd); },
     };
+    /* app.plugins.manifests, stock's shape: keyed by the manifest's OWN id (a dir whose
+       manifest has no id is not listed; two dirs claiming one id: the later dir in sort
+       order wins), each entry the manifest's fields plus dir (vault-relative plugin
+       folder) and author ("" when absent/null). The SAME object between loads (a
+       plugin's edits stay visible), a NEW one after loadManifests(). K.st.manifests
+       (dir -> manifest, what the loader runs by) is untouched. */
+    let manView = null, manSrc = null;
+    const manifestsView = () => {
+      if (manView && manSrc === K.st.manifests) return manView;
+      const o = {}, src = K.st.manifests || {};
+      for (const dir of Object.keys(src).sort()) {
+        const m = src[dir];
+        if (!m || typeof m !== "object" || Array.isArray(m) || !m.id) continue;
+        const e = Object.assign({}, m, { dir: ".obsidian/plugins/" + dir });
+        if (e.author == null) e.author = "";
+        o[m.id] = e;
+      }
+      manSrc = K.st.manifests; manView = o;
+      return o;
+    };
     const plugins = {
-      get manifests() { return Object.assign({}, K.st.manifests); },
+      get manifests() { return manifestsView(); },
+      /* re-read every <configDir>/plugins/<dir>/manifest.json (the backend's confined
+         listing: dot dirs and names outside [A-Za-z0-9._-] are not plugin dirs here) */
+      async loadManifests() { await K.refresh(); manifestsView(); },
       get plugins() { const o = {}; for (const [id, r] of registry) o[id] = r.plugin; return o; },
       get enabledPlugins() { return new Set(registry.keys()); },
       getPlugin(id) { const r = registry.get(id); return r ? r.plugin : null; },
