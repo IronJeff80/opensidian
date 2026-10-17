@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* the "obsidian" module, part CORE (api-parity stage 0: split out of api.js,
    behaviour-neutral). Events, Component, touch(), Platform / PlatformGuarded,
-   requireApiVersion, Keymap, Notice, Scope + the keydown scope stack, the
+   requireApiVersion, Keymap (class; app.keymap is one), Tasks, Notice,
+   Scope + the keydown scope stack, the
    plugin registry and the shared bridge, loadMoment, app.keymap /
    app.commands / app.plugins, commands -> CMDS, Plugin, and the manager
    (enable / disable / refresh / boot / censusTok).
@@ -81,6 +82,28 @@
       registerInterval(id) { this.register(() => clearInterval(id)); return id; }
     }
 
+    /* ------------------------------------------------------------- Tasks */
+    /* a set of promises to wait for (cleanup work, ...). add() starts the task
+       at once; promise() resolves once every task added so far has settled,
+       fulfilled or rejected, so one failing task never blocks the wait.
+       (Stock 1.13.7 declares Tasks in its typings but exports no runtime
+       class, measured by the core oracle; this one follows the typings.) */
+    const TASKS = new WeakMap();   // Tasks instance -> pending promises
+    class Tasks {
+      constructor() { TASKS.set(this, []); }
+      add(callback) { this.addPromise(callback()); }
+      addPromise(promise) {
+        const st = TASKS.get(this); if (!st) return;
+        const p = Promise.resolve(promise);
+        const done = () => { const i = st.indexOf(p); if (i >= 0) st.splice(i, 1); };
+        p.then(done, done);
+        st.push(p);
+      }
+      isEmpty() { const st = TASKS.get(this); return !st || st.length === 0; }
+      promise() { return Promise.allSettled((TASKS.get(this) || []).slice()).then(() => undefined); }   // a failed task still counts as completed
+    }
+    K.exportClasses.Tasks = Tasks;
+
     /* ------------------------------------------------------ the manager */
     let touchT = 0;
     function touch() { if (touchT) return; touchT = requestAnimationFrame(() => { touchT = 0; if (typeof updateTitle === "function") try { updateTitle(); } catch (_) {} }); }
@@ -103,7 +126,42 @@
     const API_VERSION = "1.4.4";
     const vcmp = (a, b) => { const x = String(a).split("."), y = String(b).split("."); for (let i = 0; i < 3; i++) { const d = (+x[i] || 0) - (+y[i] || 0); if (d) return d; } return 0; };
     const requireApiVersion = v => vcmp(API_VERSION, v) >= 0;
-    const Keymap = { isModEvent: e => !!(e && (e.ctrlKey || e.metaKey)), isModifier: (e, m) => !!e && ({ Mod: e.ctrlKey || e.metaKey, Ctrl: e.ctrlKey, Meta: e.metaKey, Shift: e.shiftKey, Alt: e.altKey })[m] };
+    /* Keymap: the scope stack manager (app.keymap is the instance) + the
+       modifier helpers. "Mod" is Meta on macOS and Ctrl elsewhere. */
+    const IS_MAC = /Mac/.test(navigator.platform);
+    const STACK = new WeakMap();   // Keymap instance -> its scope stack (never on the object)
+    class Keymap {
+      constructor(stack) { STACK.set(this, Array.isArray(stack) ? stack : []); }
+      pushScope(scope) {
+        const st = STACK.get(this); if (!st || !scope) return;
+        const i = st.lastIndexOf(scope); if (i >= 0) st.splice(i, 1);
+        st.push(scope);
+      }
+      popScope(scope) {
+        const st = STACK.get(this); if (!st) return;
+        const i = st.lastIndexOf(scope); if (i >= 0) st.splice(i, 1);
+      }
+      static isModifier(evt, modifier) {
+        if (!evt) return false;
+        switch (modifier) {
+          case "Mod": return !!(IS_MAC ? evt.metaKey : evt.ctrlKey);
+          case "Ctrl": return !!evt.ctrlKey;
+          case "Meta": return !!evt.metaKey;
+          case "Shift": return !!evt.shiftKey;
+          case "Alt": return !!evt.altKey;
+          default: return false;
+        }
+      }
+      static isModEvent(evt) {
+        if (!evt) return false;
+        const mod = Keymap.isModifier(evt, "Mod");
+        if (mod && evt.altKey && evt.shiftKey) return "window";
+        if (mod && evt.altKey) return "split";
+        if (mod) return "tab";
+        if (typeof MouseEvent === "function" && evt instanceof MouseEvent && evt.button === 1) return "tab";
+        return false;
+      }
+    }
     Object.assign(K, { API_VERSION, Keymap, Platform, PlatformGuarded, requireApiVersion });
   });
   reg("core:notice", function (K) {
@@ -112,41 +170,67 @@
     /* ------------------------------------------------------------ Notice */
     let noticeBox = null;
     const notices = [];   // live Notice objects, newest last — [pnotice:] census
+    /* containerEl is the toast (click dismisses it); messageEl (= the older
+       noticeEl) is the element inside it that holds the message. */
     class Notice {
       constructor(message, duration) {
         installDom();
         if (!noticeBox || !noticeBox.isConnected) { noticeBox = document.createElement("div"); noticeBox.className = "notice-container"; document.body.appendChild(noticeBox); }
-        this.noticeEl = document.createElement("div");
-        this.noticeEl.className = "notice";
-        this.containerEl = this.noticeEl;
-        this.messageEl = this.noticeEl;
+        this.containerEl = document.createElement("div");
+        this.containerEl.className = "notice";
+        this.messageEl = this.containerEl.appendChild(document.createElement("div"));
+        this.messageEl.className = "os-notice-message";
+        this.noticeEl = this.messageEl;
         this.setMessage(message);
-        this.noticeEl.addEventListener("click", () => this.hide());
-        noticeBox.appendChild(this.noticeEl);
+        this.containerEl.addEventListener("click", () => this.hide());
+        noticeBox.appendChild(this.containerEl);
         notices.push(this);
         const ms = duration === undefined ? 5000 : duration;
         if (ms > 0) this._t = setTimeout(() => this.hide(), ms);
         touch();
       }
-      setMessage(m) { if (m instanceof Node) { this.noticeEl.textContent = ""; this.noticeEl.appendChild(m); } else this.noticeEl.textContent = m == null ? "" : String(m); touch(); return this; }
-      hide() { clearTimeout(this._t); this.noticeEl.remove(); const i = notices.indexOf(this); if (i >= 0) notices.splice(i, 1); touch(); }
+      setMessage(m) { if (m instanceof Node) { this.messageEl.textContent = ""; this.messageEl.appendChild(m); } else this.messageEl.textContent = m == null ? "" : String(m); touch(); return this; }
+      hide() { clearTimeout(this._t); this.containerEl.remove(); const i = notices.indexOf(this); if (i >= 0) notices.splice(i, 1); touch(); }
     }
+    for (const k of ["containerEl", "messageEl", "noticeEl"])   // declared on the class; every instance sets its own
+      Object.defineProperty(Notice.prototype, k, { value: null, writable: true, configurable: true });
 
     /* ------------------------------------------------------------- Scope */
+    /* A handler matches when its modifiers equal the event's exactly (null =
+       any) and its key equals event.key ignoring case (null = any). Modifier
+       lists are kept as one canonical string: "Mod" resolved for the platform,
+       names sorted, joined with ",". A handler returning false ends the event
+       (preventDefault); otherwise the next handler, then the parent, is tried. */
+    const IS_MAC = /Mac/.test(navigator.platform);
+    const MODS = ["Alt", "Ctrl", "Meta", "Shift"];
+    const modsOf = e => MODS.filter(m => e[m.toLowerCase() + "Key"]).join(",");
+    const VKEY = { 8: "Backspace", 9: "Tab", 13: "Enter", 16: "Shift", 17: "Ctrl", 18: "Alt", 19: "Pause", 20: "CapsLock",
+      27: "Escape", 32: " ", 33: "PageUp", 34: "PageDown", 35: "End", 36: "Home", 37: "ArrowLeft", 38: "ArrowUp",
+      39: "ArrowRight", 40: "ArrowDown", 45: "Insert", 46: "Delete", 91: "Meta", 106: "*", 107: "+", 109: "-", 110: ".", 111: "/",
+      144: "NumLock", 145: "ScrollLock", 186: ";", 187: "=", 188: ",", 189: "-", 190: ".", 191: "/", 192: "`",
+      219: "[", 220: "\\", 221: "]", 222: "'" };
+    const vkeyOf = e => {   // the layout-independent key, from the key code
+      const c = e.keyCode | 0;
+      if ((c >= 65 && c <= 90) || (c >= 48 && c <= 57)) return String.fromCharCode(c);
+      if (c >= 96 && c <= 105) return "Numpad" + (c - 96);
+      if (c >= 112 && c <= 135) return "F" + (c - 111);
+      return VKEY[c] || "Key" + c;
+    };
     class Scope {
       constructor(parent) { this.parent = parent; this.keys = []; }
       register(modifiers, key, func) {
-        const h = { scope: this, modifiers: (modifiers || []).map(m => m.toLowerCase()), key: key == null ? null : String(key).toLowerCase(), func };
+        const mods = modifiers == null ? null : modifiers.map(m => (m === "Mod" ? (IS_MAC ? "Meta" : "Ctrl") : m)).sort().join(",");
+        const h = { scope: this, modifiers: mods, key: key == null ? null : key, func };
         this.keys.push(h); return h;
       }
       unregister(h) { const i = this.keys.indexOf(h); if (i >= 0) this.keys.splice(i, 1); }
       handle(e) {
-        const mods = new Set([e.ctrlKey && "mod", e.ctrlKey && "ctrl", e.metaKey && "meta", e.altKey && "alt", e.shiftKey && "shift"].filter(Boolean));
-        for (const h of this.keys) {
-          if (h.key != null && h.key !== e.key.toLowerCase()) continue;
-          if (h.modifiers.length && !h.modifiers.every(m => mods.has(m))) continue;
-          if (!h.modifiers.length && h.key != null && (e.ctrlKey || e.altKey || e.metaKey)) continue;
-          const r = h.func(e, { modifiers: [...mods].join(","), key: e.key, vkey: e.code });
+        const mods = modsOf(e), k = String(e.key).toLowerCase();
+        const ctx = { modifiers: mods, key: e.key, vkey: vkeyOf(e) };
+        for (const h of this.keys.slice()) {
+          if (h.modifiers !== null && h.modifiers !== mods) continue;
+          if (h.key !== null && String(h.key).toLowerCase() !== k) continue;
+          const r = h.func(e, ctx);
           if (r === false) { e.preventDefault(); return false; }
         }
         return this.parent ? this.parent.handle(e) : true;
@@ -192,11 +276,8 @@
   });
   reg("core:keymap", function (K) {
     const { host, be } = K;
-    const { scopes } = K;
-    const keymap = {
-      pushScope(s) { if (s) scopes.push(s); },
-      popScope(s) { const i = scopes.lastIndexOf(s); if (i >= 0) scopes.splice(i, 1); },
-    };
+    const { Keymap, scopes } = K;
+    const keymap = new Keymap(scopes);   // app.keymap: drives the keydown scope stack (core:notice)
     Object.assign(K, { keymap });
   });
   reg("core:commands", function (K) {
@@ -224,7 +305,7 @@
       getPlugin(id) { const r = registry.get(id); return r ? r.plugin : null; },
       isEnabled() { return K.st.trusted; },
       enablePlugin: id => K.enable(id), disablePlugin: id => K.disable(id),
-      enablePluginAndSave: id => K.setEnabled(id, true), disablePluginAndSave: id => K.setEnabled(id, false),
+      enablePluginAndSave: id => K.saveEnabled(id, true), disablePluginAndSave: id => K.saveEnabled(id, false),
     };
     Object.assign(K, { commands, plugins });
   });
@@ -264,6 +345,8 @@
       if (typeof hkRebuild === "function") hkRebuild();
       touch();
     }
+
+    const CLI = new Map();   // registerCliHandler: command id -> {command, description, flags, handler, plugin}
 
     /* ------------------------------------------------------------ Plugin */
     class Plugin extends Component {
@@ -335,8 +418,22 @@
       }
       registerEditorSuggest(s) { if (EA) this.register(EA.addSuggest(s)); }
       registerObsidianProtocolHandler() {}
-      registerCliHandler() {}
+      /* opensidian has no Bases: the documented answer is false ("bases are not enabled") */
+      registerBasesView(viewId, registration) { return false; }
+      /* CLI handlers: ids are global; a second registration of one id throws. The
+         handler is released when the plugin unloads. */
+      registerCliHandler(command, description, flags, handler) {
+        command = String(command);
+        if (!command || /\s/.test(command)) throw new Error("registerCliHandler: invalid command id \"" + command + "\"");
+        if (typeof handler !== "function") throw new TypeError("registerCliHandler: handler must be a function");
+        if (CLI.has(command)) throw new Error("registerCliHandler: command \"" + command + "\" is already registered");
+        const rec = { command, description: String(description == null ? "" : description), flags: flags || null, handler, plugin: this.manifest.id };
+        CLI.set(command, rec);
+        this.register(() => { if (CLI.get(command) === rec) CLI.delete(command); });
+      }
+      onUserEnable() {}
     }
+    Plugin.prototype.settings = undefined;   // declared by the API (since 1.13.0); a plugin assigns its loaded data here
 
     Object.assign(K, { Plugin, addCmd, removeCmd });
   });
@@ -404,11 +501,23 @@
       for (const p of s.installed || []) if (p && p.id && p.manifest) K.st.manifests[p.id] = p.manifest;
       return s;
     }
-    async function setEnabled(id, on) {
+    /* the user's toggle (settings -> host.setEnabled): a plugin switched on here
+       that was not running gets onUserEnable() after its onload. A plugin calling
+       app.plugins.enablePluginAndSave goes through saveEnabled (no onUserEnable). */
+    async function saveEnabled(id, on) {
       await be.set({ id, on: !!on });
       await refresh();
       if (!K.st.trusted) { touch(); return { ok: true, id }; }   // restricted: the choice is saved, nothing runs
       return on ? enable(id) : disable(id);
+    }
+    async function setEnabled(id, on) {
+      const was = registry.has(id);
+      const r = await saveEnabled(id, on);
+      const rec = on && !was && r && r.ok && registry.get(id);
+      if (rec && rec.plugin && typeof rec.plugin.onUserEnable === "function") {
+        try { rec.plugin.onUserEnable(); } catch (e) { console.error("[plugin] onUserEnable " + id + ":", e); }
+      }
+      return r;
     }
     async function setRestricted(restricted) {
       await be.set({ trusted: !restricted });
@@ -447,6 +556,6 @@
       return " [plg:" + (K.st.trusted ? "T" : "R") + "|" + ids + "] [preg:c" + c + ",r" + rb + ",s" + st + ",t" + tb + "]" + nt + md + views.censusTok() + mdpCensus() + (EA ? EA.tok() : "");
     }
 
-    Object.assign(K, { boot, censusTok, disable, enable, refresh, setEnabled, setRestricted });
+    Object.assign(K, { boot, censusTok, disable, enable, refresh, saveEnabled, setEnabled, setRestricted });
   });
 })();
