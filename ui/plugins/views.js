@@ -524,10 +524,9 @@
         registerView(type, creator) { return addView(null, type, creator); }
         unregisterView(type) { dropView(type); }
         registerExtensions(exts, type) {
-          for (const e of exts) {
-            if (own(this.typeByExtension, e)) throw new Error("Attempting to register an existing file extension \"" + e + "\"");
-            this.typeByExtension[e] = type;
-          }
+          // all or nothing (stock: a batch with one registered extension registers none of it)
+          for (const e of exts) if (own(this.typeByExtension, e)) throw new Error("Attempting to register an existing file extension \"" + e + "\"");
+          for (const e of exts) this.typeByExtension[e] = type;
           this.trigger("extensions-updated");
         }
         unregisterExtensions(exts) { for (const e of exts) if (own(this.typeByExtension, e)) delete this.typeByExtension[e]; this.trigger("extensions-updated"); }
