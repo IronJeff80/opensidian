@@ -591,8 +591,9 @@
     const MDP = { post: [], code: new Map(), gen: 0, used: false };
     function mdpChanged() { MDP.gen++; MDP.used = true; try { PPOST = (MDP.post.length || MDP.code.size || embPluginExts()) ? PP : null; } catch (_) {} touch(); }
     // main.js tabGone: a closed tab unloads its reading embed children, even once no processor or plugin
-    // embed is left (PPOST null by then)
-    try { PTABGONE = t => embRelease(t); } catch (_) {}
+    // embed is left (PPOST null by then). Armed by embHolder, the only maker of tab-owned children:
+    // this part runs from api.js before main.js has declared PTABGONE, so it cannot be set here.
+    const armTabGone = () => { try { if (PTABGONE !== embRelease) PTABGONE = embRelease; } catch (_) {} };
     const pathOf = n => (n ? n + ".md" : "");   // the app names notes without ".md"
     function mdCtx(sourcePath, holder) {
       let fm; try { const c = K.metadataCache.getCache(sourcePath); fm = c ? c.frontmatter : undefined; } catch (_) {}
@@ -720,6 +721,7 @@
     }
     function embHolder(t, note) {
       if (!t || typeof t !== "object") { const h = new Component(); h.load(); return h; }
+      armTabGone();
       if (!t._emb) Object.defineProperty(t, "_emb", { value: { prev: null, cur: null, note }, configurable: true });
       const e = t._emb;
       if (e.note !== note) { embRelease(t); e.note = note; }
