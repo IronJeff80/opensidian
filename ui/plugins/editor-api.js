@@ -589,7 +589,10 @@
        registers one, so a vault without such plugins pays nothing; gen bumps on
        every (un)register so the reading view's retained DOM is re-rendered. */
     const MDP = { post: [], code: new Map(), gen: 0, used: false };
-    function mdpChanged() { MDP.gen++; MDP.used = true; try { PPOST = (MDP.post.length || MDP.code.size) ? PP : null; } catch (_) {} touch(); }
+    function mdpChanged() { MDP.gen++; MDP.used = true; try { PPOST = (MDP.post.length || MDP.code.size || embPluginExts()) ? PP : null; } catch (_) {} touch(); }
+    // main.js tabGone: a closed tab unloads its reading embed children, even once no processor or plugin
+    // embed is left (PPOST null by then)
+    try { PTABGONE = t => embRelease(t); } catch (_) {}
     const pathOf = n => (n ? n + ".md" : "");   // the app names notes without ".md"
     function mdCtx(sourcePath, holder) {
       let fm; try { const c = K.metadataCache.getCache(sourcePath); fm = c ? c.frontmatter : undefined; } catch (_) {}
@@ -629,11 +632,73 @@
       try { const r = p(el, ctx); if (r && typeof r.then === "function") await r.catch(e => console.error("[plugin] post processor:", e)); }
       catch (e) { console.error("[plugin] post processor:", e); }
     }
+    /* SEAM S3 — plugin embeds (app.embedRegistry). The Rust renderer emits an internal embed
+       ![[f.ext#sub]] it does not render itself (not an image / pdf) as the text "!" followed by
+       <a class="wiki" data-note="f.ext" data-anchor="sub">. When f resolves to a TFile whose
+       extension a PLUGIN registered (the built-in md entry is left to the app's own rendering),
+       the "!" + link is replaced by span.internal-embed[alt][src] = the linktext, the creator gets
+       (ctx, file, subpath) with ctx {app, containerEl, depth: 1, displayMode, linktext, showInline:
+       true, sourcePath} (displayMode true from MarkdownRenderer.render, present but undefined in the
+       reading view — as stock 1.13.7), the child is added to `holder` (so unloading it unloads the
+       child) and loadFile() is called once with no arguments; then the span gets is-loaded. A
+       creator or loadFile that throws leaves an error embed in that span and the rest renders. */
+    const embOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+    function embPluginExts() {
+      const r = K.app && K.app.embedRegistry, m = r && r.embedByExtension;
+      if (!m) return false;
+      for (const k in m) if (embOwn(m, k) && k !== "md") return true;
+      return false;
+    }
+    function embError(span, linktext, e) {
+      console.error("[plugin] embed " + linktext + ":", e);
+      span.classList.add("embed-error");
+      const d = document.createElement("div"); d.className = "embed-error-message";
+      d.textContent = "Unable to render embed “" + linktext + "”: " + ((e && e.message) || String(e));
+      span.appendChild(d);
+    }
+    function embedPass(scope, sourcePath, holder, displayMode) {
+      const r = K.app && K.app.embedRegistry, mc = K.app && K.app.metadataCache;
+      if (!r || !mc || !scope || !embPluginExts()) return [];
+      const pend = [], links = [];
+      for (const n of Array.isArray(scope) ? scope : [scope]) {
+        if (!n || n.nodeType !== 1) continue;
+        if (n.matches("a.wiki")) links.push(n);
+        links.push(...n.querySelectorAll("a.wiki"));
+      }
+      for (const a of links) {
+        const bang = a.previousSibling;
+        if (!bang || bang.nodeType !== 3 || !bang.data.endsWith("!")) continue;
+        const note = a.dataset.note;
+        if (!note || a.closest(".internal-embed")) continue;
+        let file = null; try { file = mc.getFirstLinkpathDest(note, sourcePath); } catch (_) {}
+        if (!file || file.extension === "md" || !embOwn(r.embedByExtension, file.extension)) continue;
+        const creator = r.getEmbedCreator(file);
+        if (typeof creator !== "function") continue;
+        const an = a.dataset.anchor, subpath = an ? "#" + an : "", linktext = note + subpath;
+        const span = document.createElement("span");
+        span.setAttribute("alt", linktext); span.setAttribute("src", linktext); span.className = "internal-embed";
+        if (bang.data.length > 1) bang.data = bang.data.slice(0, -1); else bang.remove();
+        a.replaceWith(span);
+        const ctx = { app: K.app, containerEl: span, depth: 1, displayMode, linktext, showInline: true, sourcePath };
+        let child;
+        try {
+          child = creator(ctx, file, subpath);
+          if (child instanceof Component) holder.addChild(child);
+          const p = child && typeof child.loadFile === "function" ? child.loadFile() : undefined;
+          if (p && typeof p.then === "function")
+            pend.push(Promise.resolve(p).then(() => span.classList.add("is-loaded"), e => embError(span, linktext, e)));
+          else span.classList.add("is-loaded");
+        } catch (e) { embError(span, linktext, e); }
+      }
+      return pend;
+    }
     /* whole = MarkdownRenderer.render: the post processors run ONCE on the target element
        (oracle: stock 1.13.7 hands them the element passed to render, not one call per block);
        the reading view (PP.run) hands them every top-level block. `nodes` limits the code
        block scan to what this render added. */
-    async function mdProcess(root, sourcePath, holder, whole, nodes) {
+    async function mdProcess(root, sourcePath, holder, whole, nodes, embHold) {
+      const pend = embedPass(nodes || [root], sourcePath, embHold || holder, whole ? true : undefined);
+      if (pend.length) await Promise.all(pend);
       if (!MDP.code.size && !MDP.post.length) return;
       const ctx = mdCtx(sourcePath, holder);
       if (MDP.code.size) for (const f of fences(nodes || root, null)) { const p = MDP.code.get(f.lang); if (p) codeBlock(f, p, ctx); }
@@ -642,13 +707,34 @@
       if (whole) { for (const p of posts) await runPost(p, root, ctx); return; }
       for (const el of [...root.children]) for (const p of posts) await runPost(p, el, ctx);
     }
-    const PP = {   // main.js preview(): PPOST.run(pane, note) after the reading html is in
+    /* the reading view's embed children belong to the TAB (stock: the view), not to one render:
+       a re-render keeps the previous render's children (stock 1.13.7: rerender(true) unloads
+       nothing) and unloads the ones from the render before that, so a pane re-rendered many
+       times holds at most two renders' worth; a different note in the tab, or the tab closing
+       (main.js tabGone -> embRelease), unloads them all. */
+    function embRelease(t) {
+      const e = t && t._emb;
+      if (!e) return;
+      for (const h of [e.prev, e.cur]) if (h) try { h.unload(); } catch (err) { console.error(err); }
+      e.prev = e.cur = null;
+    }
+    function embHolder(t, note) {
+      if (!t || typeof t !== "object") { const h = new Component(); h.load(); return h; }
+      if (!t._emb) Object.defineProperty(t, "_emb", { value: { prev: null, cur: null, note }, configurable: true });
+      const e = t._emb;
+      if (e.note !== note) { embRelease(t); e.note = note; }
+      if (e.prev) try { e.prev.unload(); } catch (err) { console.error(err); }
+      e.prev = e.cur; e.cur = new Component(); e.cur.load();
+      return e.cur;
+    }
+    const PP = {   // main.js preview(): PPOST.run(pane, note, tab) after the reading html is in
       get gen() { return MDP.gen; },
-      run(P, note) {
+      run(P, note, tab) {
         if (P._ppHold) try { P._ppHold.unload(); } catch (e) { console.error(e); }
         const h = P._ppHold = new Component(); h.load();
-        return mdProcess(P, pathOf(note), h);
+        return mdProcess(P, pathOf(note), h, false, null, embPluginExts() ? embHolder(tab, note) : null);
       },
+      release: embRelease,
     };
     // [pmd:p<post processors>|c<code langs>|r<processed blocks in reading panes>] — only once a plugin used it
     function mdpCensus() {

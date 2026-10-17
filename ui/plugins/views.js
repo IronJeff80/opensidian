@@ -847,14 +847,17 @@
       onunload() { if (!this._reading) this.containerEl.textContent = ""; }
     }
 
+    // SEAM S3: the renderers (editor-api embedPass) read this map; a change re-arms the reading view
+    // hook (PPOST) and bumps its generation so a retained reading DOM is rendered again
+    const embChanged = () => { try { if (K.mdpChanged) K.mdpChanged(); } catch (e) { console.error(e); } };
     class EmbedRegistry extends Events {
       constructor() { super(); this.embedByExtension = { md: (ctx, file, subpath) => new MarkdownEmbed(ctx, file, subpath) }; }
       registerExtension(ext, creator) {
         if (ownKey(this.embedByExtension, ext)) throw new Error("Attempting to register an embed for an already registered extension \"" + ext + "\"");
-        this.embedByExtension[ext] = creator;
+        this.embedByExtension[ext] = creator; embChanged();
       }
       registerExtensions(exts, creator) { for (const e of exts) this.registerExtension(e, creator); }
-      unregisterExtension(ext) { if (ownKey(this.embedByExtension, ext)) delete this.embedByExtension[ext]; }
+      unregisterExtension(ext) { if (ownKey(this.embedByExtension, ext)) { delete this.embedByExtension[ext]; embChanged(); } }
       unregisterExtensions(exts) { for (const e of exts) this.unregisterExtension(e); }
       isExtensionRegistered(ext) { return ownKey(this.embedByExtension, ext); }
       getEmbedCreator(file) { const e = file.extension; return ownKey(this.embedByExtension, e) ? this.embedByExtension[e] : null; }

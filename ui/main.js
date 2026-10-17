@@ -100,8 +100,11 @@ let PVHOST = null;
    noteMenu and the editor right-click ask it to add the plugin rows. */
 let PMENU = null;
 /* plugin-views item 7: set by ui/plugins/api.js while a plugin has a markdown post / code-block
-   processor; preview() runs it over the fresh reading html. Its gen keys the retained reading DOM. */
+   processor or a plugin embed extension; preview() runs it over the fresh reading html. Its gen keys the retained reading DOM. */
 let PPOST = null;
+/* SEAM S3: set by ui/plugins/editor-api.js; tabGone hands it the closed tab so the reading
+   view's plugin embed children of that tab are unloaded. */
+let PTABGONE = null;
 const curOf = g => (g.active >= 0 ? g.tabs[g.active].name : null);
 const cur = () => (state && fg() ? curOf(fg()) : null);
 // R18: is this group's active tab showing the READING pane? (the only pane the
@@ -5821,6 +5824,7 @@ function tabGone(cause, t, opts) {
   tgHist.push((bad ? "BAD" : cause) + ":" + (dirty ? "d" : "c")
     + (o.flushed ? "f" : "") + (o.preserved ? "p" : "") + ":" + tgSafe(name));
   if (tgHist.length > 8) tgHist.shift();              // the census is a title, not a journal
+  if (PTABGONE && t && typeof t === "object") try { PTABGONE(t); } catch (e) { console.error(e); }
   try {
     inv("tab_removed", {
       cause: bad ? "BAD-" + cause : cause, note: String(name).slice(0, 120),
@@ -6378,7 +6382,7 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   // plugin-views item 7: plugin code-block / post processors over the fresh html. Before the
   // observer is armed, so their synchronous output is part of the retained DOM; async writes
   // later mark it dirty (the next switch re-renders). Not awaited: a slow plugin never holds the switch.
-  if (PPOST) try { PPOST.run(P, curOf(g)).catch(e => console.error("[plugin] markdown processors:", e)); } catch (e) { console.error(e); }
+  if (PPOST) try { PPOST.run(P, curOf(g), g.active >= 0 ? g.tabs[g.active] : null).catch(e => console.error("[plugin] markdown processors:", e)); } catch (e) { console.error(e); }
   // modeswitch opt2: arm the retained-DOM key. Our own innerHTML above is the
   // last write: drop its records synchronously, from here on any record = dirty.
   if (!P._pvObs) {
