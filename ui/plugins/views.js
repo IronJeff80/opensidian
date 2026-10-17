@@ -491,22 +491,62 @@
         else n._nt = true;               // true | "tab" | "window" (no windows here: a tab)
         return n;
       }
-      function registerView(pid, type, factory) {
+      /* app.viewRegistry: the registry of view types and the file extensions they open (an Events:
+         "view-registered"(type), "view-unregistered"(type), "extensions-updated"()). It is the source of
+         truth for "is this type registered"; `types` beside it keeps the owning plugin and outlives an
+         unregister until that type's leaves are detached. Lookups are case-sensitive. The app
+         opens markdown only, so the built-in extension map is {md: "markdown"}; viewByType holds the types
+         registered through it (the app's own panes are not creatable views). The two getters are plain
+         property reads (as stock: an inherited name answers), isExtensionRegistered and the duplicate checks own keys. */
+      const own = (o, k) => k != null && Object.prototype.hasOwnProperty.call(o, k);
+      class ViewRegistry extends Events {
+        constructor() { super(); this.viewByType = {}; this.typeByExtension = { md: "markdown" }; }
+        registerView(type, creator) { return addView(null, type, creator); }
+        unregisterView(type) { dropView(type); }
+        registerExtensions(exts, type) {
+          for (const e of exts) {
+            if (own(this.typeByExtension, e)) throw new Error("Attempting to register an existing file extension \"" + e + "\"");
+            this.typeByExtension[e] = type;
+          }
+          this.trigger("extensions-updated");
+        }
+        unregisterExtensions(exts) { for (const e of exts) if (own(this.typeByExtension, e)) delete this.typeByExtension[e]; this.trigger("extensions-updated"); }
+        registerViewWithExtensions(exts, type, creator) { this.registerView(type, creator); this.registerExtensions(exts, type); }
+        isExtensionRegistered(ext) { return own(this.typeByExtension, ext); }
+        getTypeByExtension(ext) { return this.typeByExtension[ext]; }
+        getViewCreatorByType(type) { return this.viewByType[type]; }
+      }
+      const viewRegistry = new ViewRegistry();
+      function addView(pid, type, factory) {
         type = String(type);
-        if (types.has(type)) throw new Error("View type \"" + type + "\" is already registered");
+        if (own(viewRegistry.viewByType, type)) throw new Error("Attempting to register an existing view type \"" + type + "\"");
+        viewRegistry.viewByType[type] = factory;
         types.set(type, { factory, pid });
+        // main.js mounts a plugin-view tab only through PVHOST: a type registered here (by a plugin or straight
+        // on the registry) arms it
+        try { if (typeof PVHOST !== "undefined" && !PVHOST) PVHOST = PV; } catch (_) {}
         // tabs restored from workspace.json (kind unk) of this type come alive; a SHOWING one re-mounts now
         for (const g of M().groups()) { const t = activeTab(g); if (t && t.kind === "unk" && t.utype === type && typeof loadActive === "function") safe("remount " + type, () => loadActive(g)); }
+        viewRegistry.trigger("view-registered", type);
         d.touch();
       }
-      async function unregisterView(type) {   // plugin unload: its views go (Obsidian detaches them)
-        if (!types.has(type)) return;
-        const leaves = leavesOfType(type);
-        for (const l of leaves) { try { await l.detach(); } catch (e) { console.error(e); } }
-        types.delete(type);
-        for (const [t, r] of [...recs]) if (r.type === type) closeRec(r);
-        d.touch();
+      function dropView(type) {         // the registry forgets now; the type's leaves detach after (Obsidian detaches them)
+        type = String(type);
+        if (!own(viewRegistry.viewByType, type)) return null;
+        delete viewRegistry.viewByType[type];
+        const ty = types.get(type);
+        viewRegistry.trigger("view-unregistered", type);
+        return (async () => {
+          const leaves = leavesOfType(type);
+          for (const l of leaves) { try { await l.detach(); } catch (e) { console.error(e); } }
+          if (types.get(type) !== ty) return;   // registered again meanwhile: the new registration stands
+          types.delete(type);
+          for (const [, r] of [...recs]) if (r.type === type) closeRec(r);
+          d.touch();
+        })();
       }
+      function registerView(pid, type, factory) { addView(pid, type, factory); }
+      async function unregisterView(type) { await dropView(type); }   // plugin unload: its views go
 
       /* sidebars (getRightLeaf / getLeftLeaf): a plugin view gets its own icon
          button in the sidebar's strip (#rtabs before #rtoggle / #stabs) and its
@@ -702,7 +742,7 @@
         const one = r => cs(r.type) + "@" + (r.side ? r.side[0] : "t" + gs.indexOf(groupOfTab(r.t))) + (r.view.containerEl.isConnected && !r.view.containerEl.hidden && r.view.containerEl.getClientRects().length ? "+" : "-");
         return " [pview:" + types.size + "|" + [...recs.values(), ...sides].map(one).join(",") + "]";
       }
-      const host = { PV, sweep, censusTok, registerView, unregisterView, leavesOfType, iterateLeaves, getLeaf, getSideLeaf,
+      const host = { PV, sweep, censusTok, registerView, unregisterView, viewRegistry, leavesOfType, iterateLeaves, getLeaf, getSideLeaf,
                      reveal, leafOfGroup, leafOfTab, bindLeaf, activeTab, groupOfTab, typeOfTab, isPvTab, recs, types, sideHide, sideShowing,
                      mainRoot, newRoot() { rootGen++; }, dock, ribbon };
       const layout = { WorkspaceItem, WorkspaceParent, WorkspaceSplit, WorkspaceContainer, WorkspaceRoot, WorkspaceWindow,
@@ -735,6 +775,8 @@
       groupLeaf: g => K.groupLeaf(g), leafState: l => K.leafState(l), activeLeaf: () => (K.workspace ? K.workspace.activeLeaf : null),
     });
     Object.assign(K, { EditableFileView, FileView, ItemView, TextFileView, View, WorkspaceLeaf, views, layout });
+    // app-level members (vault:app builds app later and defines these on it)
+    K.appMembers = Object.assign(K.appMembers || {}, { viewRegistry: { value: views.viewRegistry, writable: true } });
     Object.assign(K.exportClasses, layout);
     K.exportValues.PopoverState = PopoverState;
   });
