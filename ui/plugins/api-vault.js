@@ -284,6 +284,36 @@
         await changed({ renamed: [[old, nn]] });
       },
       async copy(f, newPath) { const s = await vault.read(f); return vault.create(newPath, s); },
+      /* binary I/O on any file: a markdown note goes through the note commands
+         (UTF-8 text, so tabs/tree/watcher see one change), anything else through
+         the confined VFS core, then the model and the Vault events. */
+      async readBinary(f) {
+        if (!(f instanceof TFile)) throw new Error("readBinary: not a file (" + (f && f.path) + ")");
+        return adapter.readBinary(f.path);
+      },
+      async createBinary(path, data) {
+        const p = normalizePath(path), u8 = toBytes(data);
+        if (noteOf(p) != null) return vault.create(p, td.decode(u8));
+        if (files.has(p) || await core.exists(p)) throw new Error("File already exists.");
+        await core.write(p, u8);
+        const [f, made] = ensureFile(p); f.stat.size = u8.byteLength;
+        if (made) vault.trigger("create", f);
+        return f;
+      },
+      async modifyBinary(f, data) {
+        if (!(f instanceof TFile)) throw new Error("modifyBinary: not a file (" + (f && f.path) + ")");
+        const u8 = toBytes(data);
+        if (noteOf(f.path) != null) return vault.modify(f, td.decode(u8));
+        await core.write(f.path, u8);
+        f.stat.mtime = Date.now(); f.stat.size = u8.byteLength; vault.trigger("modify", f);
+      },
+      async appendBinary(f, data) {
+        if (!(f instanceof TFile)) throw new Error("appendBinary: not a file (" + (f && f.path) + ")");
+        const u8 = toBytes(data);
+        if (noteOf(f.path) != null) return vault.append(f, td.decode(u8));
+        await core.append(f.path, u8);
+        f.stat.mtime = Date.now(); f.stat.size += u8.byteLength; vault.trigger("modify", f);
+      },
       getResourcePath() { return ""; },
       getConfig(k) { return ({ useMarkdownLinks: false, newLinkFormat: "shortest", attachmentFolderPath: "/", newFileLocation: "root", newFileFolderPath: "", alwaysUpdateLinks: false, showUnsupportedFiles: false })[k] ?? null; },
       adapter,
@@ -401,31 +431,230 @@
       }
       return o;
     }
-    const metadataCache = new Events();
-    Object.assign(metadataCache, {
-      resolved: false,
-      getFileCache(f) { if (!f) return null; const c = caches.get(f.path); if (!c) indexFile(f); return c || null; },
-      getCache(p) { const f = vault.getFileByPath(p); return f ? metadataCache.getFileCache(f) : null; },
-      getFirstLinkpathDest(lp, src) { return resolveLink(lp, src); },
-      getLinkpathDest(lp, src) { const f = resolveLink(lp, src); return f ? [f] : []; },
+    /* MetadataCache: the typings' class; app.metadataCache is its one instance.
+       The methods live on the prototype (a plugin may patch them there) and
+       read the closure state above; `new MetadataCache()` elsewhere yields an
+       empty cache that knows no file. */
+    let theCache = null;
+    const mine = mc => mc === theCache;
+    class MetadataCache extends Events {
+      constructor() { super(); this.resolved = false; }
+      getFileCache(f) { if (!f || !mine(this)) return null; const c = caches.get(f.path); if (!c) indexFile(f); return c || null; }
+      getCache(p) { const f = vault.getFileByPath(p); return f ? this.getFileCache(f) : null; }
+      getFirstLinkpathDest(lp, src) { return mine(this) ? resolveLink(lp, src) : null; }
+      getLinkpathDest(lp, src) { const f = this.getFirstLinkpathDest(lp, src); return f ? [f] : []; }
       fileToLinktext(f, src, omitMd = true) {
         const same = vault.getMarkdownFiles().filter(x => x.basename === f.basename).length;
         const p = same > 1 || f.extension !== "md" ? f.path : f.name;
         return omitMd && f.extension === "md" ? p.replace(/\.md$/, "") : p;
-      },
-      get resolvedLinks() { return linkMap(true); },
-      get unresolvedLinks() { return linkMap(false); },
-      getBacklinksForFile(f) { const d = new Map(); for (const [p, c] of caches) { const ls = (c.links || []).filter(l => resolveLink(l.link, p) === f); if (ls.length) d.set(p, ls); } return { data: d, keys: () => [...d.keys()], get: k => d.get(k) }; },
-    });
+      }
+      get resolvedLinks() { return mine(this) ? linkMap(true) : {}; }
+      get unresolvedLinks() { return mine(this) ? linkMap(false) : {}; }
+      getBacklinksForFile(f) { const d = new Map(); if (mine(this)) for (const [p, c] of caches) { const ls = (c.links || []).filter(l => resolveLink(l.link, p) === f); if (ls.length) d.set(p, ls); } return { data: d, keys: () => [...d.keys()], get: k => d.get(k) }; }
+    }
+    const metadataCache = theCache = new MetadataCache();
+    K.exportClasses.MetadataCache = MetadataCache;
 
-    Object.assign(K, { DataAdapter, FileSystemAdapter, TAbstractFile, TFile, TFolder, Vault, adapter, changed, ensureModel, files, inv, metadataCache, noteOf, resolveLink, sweep, td, vault });
+    /* TExternalFile (typings 1.14.4): a file outside the vault, by its real
+       host path. The plugin VFS is confined to one virtual root and never
+       names a host path (vaultfs.rs), so this is design-gated: exported,
+       and both construction and getRealPath throw. */
+    const unsupported = why => new Error("unsupported in opensidian: " + why);
+    const EXT_WHY = "TExternalFile would expose a host path outside the confined vault";
+    class TExternalFile extends TFile {
+      constructor() { super(); throw unsupported(EXT_WHY); }
+      getRealPath() { throw unsupported(EXT_WHY); }
+    }
+    K.exportClasses.TExternalFile = TExternalFile;
+
+    /* ------------------------------------- FileManager (api-parity meta)
+       Written from the typings and the stock behaviour oracle (black box,
+       scripts/api-probes.d/meta.js): links follow the vault's link settings
+       (getConfig), attachment paths dedupe as "name 1.ext", "name 2.ext", ...,
+       processFrontMatter rewrites the YAML block (block lists, insertion order;
+       an emptied block is removed; a throwing callback writes nothing). */
+    const dirOf = p => { const s = String(p || ""), i = s.lastIndexOf("/"); return i < 0 ? "" : s.slice(0, i); };
+    const joinP = (d, n) => (d && d !== "/" ? d + "/" : "") + n;
+    function relPath(from, to) {
+      const a = dirOf(from).split("/").filter(Boolean), b = String(to).split("/");
+      let i = 0; while (i < a.length && i < b.length - 1 && a[i] === b[i]) i++;
+      return "../".repeat(a.length - i) + b.slice(i).join("/");
+    }
+    function folderFor(dir) { const d = normalizePath(dir || "/"); return d === "/" ? vroot : vault.getFolderByPath(d); }
+    function attachDir(sourcePath) {       // attachmentFolderPath: "/" root | "./" next to the note | "./x" below it | "x"
+      const c = String(vault.getConfig("attachmentFolderPath") ?? "/");
+      if (c === "" || c === "/") return "";
+      if (c === "." || c === "./") return dirOf(sourcePath);
+      if (c.startsWith("./")) return normalizePath(joinP(dirOf(sourcePath), c.slice(2)));
+      return normalizePath(c);
+    }
+    async function taken(p) { return files.has(p) || await core.exists(p).catch(() => false); }
+    // YAML for a frontmatter object: block style, keys in insertion order, plain scalars unless quoting is needed
+    function yScalar(v) {
+      if (v == null) return "";
+      if (typeof v === "number") return Number.isFinite(v) ? String(v) : v !== v ? ".nan" : v > 0 ? ".inf" : "-.inf";
+      if (typeof v === "boolean") return String(v);
+      if (v instanceof Date) return v.toISOString();
+      const s = String(v);
+      const plain = s !== "" && s === s.trim() && !/[\n\r\t]/.test(s) && !/^[-?:,\[\]{}#&*!|>'"%@`]/.test(s)
+        && !/: |:$| #/.test(s) && !/^(true|false|yes|no|on|off|null|~|[-+]?(\d[\d_]*)?\.?\d+([eE][-+]?\d+)?|0x[0-9a-f]+|\.(inf|nan))$/i.test(s);
+      return plain ? s : JSON.stringify(s);
+    }
+    function yEmit(o, ind) {
+      let out = "";
+      for (const k of Object.keys(o)) {
+        const v = o[k], key = ind + (/^[\w][\w .\/-]*$/.test(k) && k === k.trim() ? k : JSON.stringify(k)) + ":";
+        if (v === undefined || typeof v === "function") continue;
+        if (Array.isArray(v)) {
+          if (!v.length) { out += key + " []\n"; continue; }
+          out += key + "\n";
+          for (const x of v) out += ind + "  - " + (x !== null && typeof x === "object" && !(x instanceof Date) ? JSON.stringify(x) : yScalar(x)) + "\n";
+        } else if (v !== null && typeof v === "object" && !(v instanceof Date)) {
+          out += Object.keys(v).length ? key + "\n" + yEmit(v, ind + "  ") : key + " {}\n";
+        } else { const s = yScalar(v); out += key + (s === "" ? "" : " " + s) + "\n"; }
+      }
+      return out;
+    }
+    /* the frontmatter subset parseYaml reads faithfully: `key: scalar`, `key: [a, b]`,
+       `key:` + `  - item` lines. Anything else (nested maps, block scalars, anchors,
+       escaped quotes) would be lost on the rewrite, so it is refused, not mangled. */
+    function yamlError(msg) { const e = new Error(msg); e.name = "YAMLParseError"; return e; }
+    function splitFrontMatter(text) {
+      const m = /^---\r?\n/.exec(text);
+      if (!m) return { yaml: null, body: text };
+      const re = /^(---|\.\.\.)[ \t]*(\r?\n|$)/gm; re.lastIndex = m[0].length;
+      let c;
+      while ((c = re.exec(text))) if (c.index === m[0].length || text[c.index - 1] === "\n") return { yaml: text.slice(m[0].length, c.index), body: text.slice(c.index + c[0].length) };
+      return { yaml: null, body: text };
+    }
+    function readFrontMatter(yaml) {
+      let listKey = false;
+      for (const raw of yaml.split("\n")) {
+        const l = raw.replace(/\r$/, "");
+        if (!l.trim() || /^\s*#/.test(l)) continue;
+        if (/^\s*-(\s|$)/.test(l) && listKey) { if (/^\s*-\s*[{|>&*!]/.test(l) || /^\s*-\s*"[^"]*\\/.test(l)) throw yamlError("frontmatter list item not supported: " + l.trim()); continue; }
+        const kv = l.match(/^([^\s:#-][^:]*?)\s*:(?:\s+(.*))?$/);
+        if (!kv) throw yamlError("frontmatter line not supported: " + l.trim());
+        const v = (kv[2] || "").trim();
+        if (/^[{|>&*!]/.test(v) || /^"[^"]*\\/.test(v)) throw yamlError("frontmatter value not supported: " + kv[1]);
+        listKey = v === "";
+      }
+      return parseYaml(yaml) || {};
+    }
+    function prompt(file) {
+      return new Promise(resolve => {
+        const { Modal, ButtonComponent } = K;
+        let done = false;
+        const m = new Modal(K.app);
+        m.setTitle(file instanceof TFolder ? "Move folder to trash?" : "Move file to trash?");
+        m.contentEl.createEl("p", { text: "“" + file.name + "” goes to the vault's .trash folder." });
+        const row = m.modalEl.createDiv({ cls: "modal-button-container" });
+        new ButtonComponent(row).setButtonText("Cancel").setClass("mod-cancel").onClick(() => m.close());
+        new ButtonComponent(row).setButtonText("Move to trash").setClass("mod-cta").setClass("mod-destructive").onClick(async () => {
+          done = true; m.close();
+          try { await fileManager.trashFile(file); resolve(true); } catch (e) { console.error("[plugin] promptForDeletion:", e); resolve(false); }
+        });
+        m.onClose = () => { if (!done) { done = true; resolve(false); } };
+        m.open();
+      });
+    }
+    function notesUnder(folder) { const out = []; Vault.recurseChildren(folder, f => { const n = f instanceof TFile ? noteOf(f.path) : null; if (n != null) out.push(n); }); return out; }
+    class FileManager {
+      getNewFileParent(sourcePath, newFilePath) {
+        if (newFilePath != null && noteOf(normalizePath(newFilePath)) == null) return folderFor(attachDir(sourcePath)) || vroot;
+        const loc = vault.getConfig("newFileLocation");
+        if (loc === "current") return folderFor(dirOf(sourcePath)) || vroot;
+        if (loc === "folder") return folderFor(vault.getConfig("newFileFolderPath")) || vroot;
+        return vroot;
+      }
+      async getAvailablePathForAttachment(filename, sourcePath) {
+        if (sourcePath == null) { const a = K.workspace && K.workspace.getActiveFile && K.workspace.getActiveFile(); sourcePath = a ? a.path : ""; }
+        const dir = attachDir(sourcePath);
+        if (dir && !vault.getFolderByPath(dir) && !await taken(dir)) await vault.createFolder(dir);
+        const name = String(filename), d = name.lastIndexOf(".");
+        const base = d > 0 ? name.slice(0, d) : name, ext = d > 0 ? name.slice(d) : "";
+        let p = joinP(dir, name);
+        for (let i = 1; await taken(p); i++) p = joinP(dir, base + " " + i + ext);
+        return p;
+      }
+      generateMarkdownLink(file, sourcePath, subpath, alias) {
+        const fmt = vault.getConfig("newLinkFormat") || "shortest", md = file.extension === "md";
+        const sub = subpath ? String(subpath) : "", al = alias ? String(alias) : "";
+        let target = fmt === "absolute" ? file.path : fmt === "relative" ? relPath(sourcePath, file.path) : metadataCache.fileToLinktext(file, sourcePath, false);
+        if (!vault.getConfig("useMarkdownLinks")) {
+          if (md) target = target.replace(/\.md$/, "");
+          return "[[" + target + sub + (al ? "|" + al : "") + "]]";
+        }
+        return "[" + (al || (md ? file.basename : file.name)) + "](" + encodeURI(target) + encodeURI(sub) + ")";
+      }
+      async processFrontMatter(file, fn) {
+        if (!(file instanceof TFile) || file.extension !== "md") throw new Error("processFrontMatter: not a markdown file (" + (file && file.path) + ")");
+        const text = await vault.read(file);
+        const { yaml, body } = splitFrontMatter(text);
+        const fm = yaml == null ? {} : readFrontMatter(yaml);
+        fn(fm);
+        const out = Object.keys(fm).some(k => fm[k] !== undefined && typeof fm[k] !== "function") ? "---\n" + yEmit(fm, "") + "---\n" + body : body;
+        if (out !== text) await vault.modify(file, out);
+      }
+      async renameFile(file, newPath) {
+        const np = normalizePath(newPath), op = file && file.path;
+        if (!(file instanceof TAbstractFile) || files.get(op) !== file) throw new Error("renameFile: not a vault file (" + op + ")");
+        if (np === op) return;
+        if (await taken(np)) throw new Error("Destination file already exists!");
+        if (file instanceof TFile && noteOf(op) != null && noteOf(np) != null) return vault.rename(file, np);
+        if (file instanceof TFile && (noteOf(op) != null) !== (noteOf(np) != null)) throw new Error("renameFile: a note stays a .md file in opensidian (" + op + " -> " + np + ")");
+        const before = file instanceof TFolder ? notesUnder(file) : [];
+        const moved = [];
+        if (file instanceof TFolder) Vault.recurseChildren(file, f => moved.push([f, f.path]));
+        else moved.push([file, op]);
+        await core.rename(op, np);
+        movePath(file, np);
+        for (const [f, o] of moved) vault.trigger("rename", f, o);
+        if (before.length) await changed({ renamed: before.map(o => [o, np + o.slice(op.length)]) });
+        else if (typeof refreshTree === "function") try { await refreshTree(); } catch (_) {}
+      }
+      async trashFile(file) {
+        if (!(file instanceof TAbstractFile) || files.get(file.path) !== file) throw new Error("trashFile: not a vault file (" + (file && file.path) + ")");
+        if (file instanceof TFile && noteOf(file.path) != null) return vault.trash(file);
+        const notes = file instanceof TFolder ? notesUnder(file) : [], gone = [];
+        Vault.recurseChildren(file, f => gone.push(f));
+        await adapter.trashLocal(file.path);
+        removeTree(file);
+        for (const f of gone.reverse()) vault.trigger("delete", f);
+        if (notes.length) await changed({ removed: notes });
+        else if (typeof refreshTree === "function") try { await refreshTree(); } catch (_) {}
+      }
+      promptForDeletion(file) { return prompt(file); }
+    }
+    const fileManager = new FileManager();
+    K.exportClasses.FileManager = FileManager;
+
+    Object.assign(K, { DataAdapter, FileSystemAdapter, TAbstractFile, TFile, TFolder, Vault, adapter, changed, ensureModel, files, fileManager, unsupported, inv, metadataCache, noteOf, resolveLink, sweep, td, vault });
   });
   reg("vault:app", function (K) {
     const { host, be } = K;
-    const { Scope, commands, keymap, metadataCache, plugins, setting, statusBox, vault, workspace } = K;
+    const { Events, Scope, commands, fileManager, keymap, metadataCache, plugins, setting, statusBox, unsupported, vault, workspace } = K;
+    /* RenderContext (typings 1.10.0): what a rendered value hangs its hover popover
+       on; app.renderContext is the app-wide one, no popover until something shows one. */
+    class RenderContext { constructor() { this.hoverPopover = null; } }
+    RenderContext.prototype.hoverPopover = null;
+    /* SecretStorage (typings 1.11.4) is design-gated: secrets belong in the OS keyring
+       with a per-plugin namespace, which needs a Rust backend this part does not own;
+       a plaintext/JSON store is ruled out. Exported, app.secretStorage is an instance,
+       and every method (and any other construction) throws. */
+    const SS_WHY = "secretStorage needs keyring backend", ssTok = {};
+    class SecretStorage extends Events {
+      constructor(tok) { super(); if (tok !== ssTok) throw unsupported(SS_WHY); }
+      setSecret() { throw unsupported(SS_WHY); }
+      getSecret() { throw unsupported(SS_WHY); }
+      listSecrets() { throw unsupported(SS_WHY); }
+    }
+    K.exportClasses.RenderContext = RenderContext;
+    K.exportClasses.SecretStorage = SecretStorage;
     const app = {
       appId: "",
-      vault, workspace, metadataCache, keymap, commands, plugins, setting,
+      vault, workspace, metadataCache, fileManager, keymap, commands, plugins, setting,
+      renderContext: new RenderContext(), secretStorage: new SecretStorage(ssTok),
       scope: new Scope(),
       internalPlugins: { getPluginById() { return null; }, getEnabledPluginById() { return null; }, plugins: {} },
       statusBar: { get containerEl() { return statusBox(); } },
@@ -437,7 +666,9 @@
       loadLocalStorage(k) { try { const v = localStorage.getItem(app.appId + "-" + k); return v == null ? null : JSON.parse(v); } catch (_) { return null; } },
       saveLocalStorage(k, v) { try { if (v == null) localStorage.removeItem(app.appId + "-" + k); else localStorage.setItem(app.appId + "-" + k, JSON.stringify(v)); } catch (_) {} },
     };
-    class App {}   // typings expose App as a class; plugins only ever receive `app`
+    class App {     // typings expose App as a class; plugins only ever receive `app`
+      isDarkMode() { return document.body.classList.contains("theme-dark"); }
+    }
     Object.setPrototypeOf(app, App.prototype);
 
     Object.assign(K, { App, app });
