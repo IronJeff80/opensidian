@@ -670,6 +670,12 @@
       isDarkMode() { return document.body.classList.contains("theme-dark"); }
     }
     Object.setPrototypeOf(app, App.prototype);
+    // K.appMembers: app-level members contributed by a segment that runs BEFORE this one
+    // (name -> property descriptor, e.g. views.js). Empty or absent = no change.
+    for (const [k, d] of Object.entries(K.appMembers || {})) {
+      if (Object.prototype.hasOwnProperty.call(app, k)) throw new Error("K.appMembers: app." + k + " is already defined");
+      Object.defineProperty(app, k, Object.assign({ enumerable: true, configurable: true }, d));
+    }
 
     Object.assign(K, { App, app });
   });
