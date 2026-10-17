@@ -110,6 +110,8 @@
         // i.e. never in restricted mode.
         if (!("app" in window)) Object.defineProperty(window, "app", { value: K.app, configurable: true, enumerable: false, writable: false });
         await buildModel();
+        await loadVaultConfig();
+        await metadataTypeManager.load();
         K.st.modelOn = true;
         if (!unlisten && be.listen) unlisten = await be.listen("vault-changed", e => applyChange(e.payload));
         sweep();
@@ -316,6 +318,26 @@
       },
       getResourcePath() { return ""; },
       getConfig(k) { return ({ useMarkdownLinks: false, newLinkFormat: "shortest", attachmentFolderPath: "/", newFileLocation: "root", newFileFolderPath: "", alwaysUpdateLinks: false, showUnsupportedFiles: false })[k] ?? null; },
+      /* vault.config (undocumented, part vint): the vault's own .obsidian/app.json
+         as read when the model is built — {} when there is none; no defaults are
+         merged in (getConfig answers those). One object for the vault's life. */
+      config: {},
+      /* lookups the stock app makes WITHOUT normalizePath (oracle part vint):
+         "/x", "a//b" and "dir/" find nothing; a non-string throws TypeError. */
+      getAbstractFileByPathInsensitive(p) {
+        const lc = p.toLowerCase();
+        if (p === "/") return vroot;
+        const exact = files.get(p); if (exact) return exact;
+        for (const [k, f] of files) if (k.toLowerCase() === lc) return f;
+        return null;
+      },
+      // "base.ext", else "base 1.ext", "base 2.ext", ...: the first name no file or folder holds, in any case
+      getAvailablePath(base, ext) {
+        const b = String(base), e = ext ? "." + ext : "";
+        let p = b + e;
+        for (let i = 1; vault.getAbstractFileByPathInsensitive(p); i++) p = b + " " + i + e;
+        return p;
+      },
       adapter,
     });
 
@@ -326,7 +348,13 @@
        ('changed'). A miss returns null and queues that file. Parsed in JS from
        the note text: frontmatter (YAML subset), headings, [[links]], ![[embeds]],
        [md](links), #tags — all with Obsidian-shaped positions. */
-    const caches = new Map();           // path -> CachedMetadata
+    // path -> CachedMetadata; cacheVer counts every change, so derived indexes
+    // (metadataTypeManager.properties) rebuild lazily instead of on each event
+    let cacheVer = 0;
+    const caches = new (class extends Map {
+      set(k, v) { cacheVer++; return super.set(k, v); }
+      delete(k) { cacheVer++; return super.delete(k); }
+    })();
     let sweepDone = false;
     function parseMeta(src) {
       const lines = String(src).split("\n"), out = {};
@@ -365,7 +393,7 @@
           let link; try { link = decodeURI(m[3]); } catch (_) { link = m[3]; }
           push(m[1] ? "embeds" : "links", { link, original: m[0], displayText: m[2], position: P(m.index, m.index + m[0].length) });
         }
-        if (!h) {
+        {   // a heading line's tags count too ("## title #tag": stock getTags, oracle part vint)
           const tg = /(^|\s)#([\p{L}\p{N}_/-]*[\p{L}_/-][\p{L}\p{N}_/-]*)/gu;
           while ((m = tg.exec(s))) { const a = m.index + m[1].length; push("tags", { tag: "#" + m[2], position: P(a, a + 1 + m[2].length) }); }
         }
@@ -437,6 +465,21 @@
        empty cache that knows no file. */
     let theCache = null;
     const mine = mc => mc === theCache;
+    /* frontmatter "tags" (key case-insensitive; not "tag"): a list's items, or a
+       string as ONE item; a leading "#" dropped; an item that is not a valid tag
+       (space, comma, all digits, empty) is not a tag (stock getTags, part vint) */
+    function fmTags(fm) {
+      if (!fm || typeof fm !== "object") return [];
+      const k = Object.keys(fm).find(x => x.toLowerCase() === "tags");
+      if (k === undefined || fm[k] == null) return [];
+      const out = [];
+      for (const v of [].concat(fm[k])) {
+        if (typeof v !== "string" && typeof v !== "number") continue;
+        const t = String(v).replace(/^#/, "");
+        if (/^[\p{L}\p{N}_/-]*[\p{L}_/-][\p{L}\p{N}_/-]*$/u.test(t)) out.push(t);
+      }
+      return out;
+    }
     class MetadataCache extends Events {
       constructor() { super(); this.resolved = false; }
       getFileCache(f) { if (!f || !mine(this)) return null; const c = caches.get(f.path); if (!c) indexFile(f); return c || null; }
@@ -451,10 +494,190 @@
       get resolvedLinks() { return mine(this) ? linkMap(true) : {}; }
       get unresolvedLinks() { return mine(this) ? linkMap(false) : {}; }
       getBacklinksForFile(f) { const d = new Map(); if (mine(this)) for (const [p, c] of caches) { const ls = (c.links || []).filter(l => resolveLink(l.link, p) === f); if (ls.length) d.set(p, ls); } return { data: d, keys: () => [...d.keys()], get: k => d.get(k) }; }
+      /* getTags (undocumented, part vint): a fresh {"#tag": count} over the whole
+         cache — every body occurrence plus the frontmatter "tags" items, each nested
+         tag also counting its parents ("#a/b" -> "#a"); merged case-insensitively
+         under the first spelling seen (frontmatter before body within a note). */
+      getTags() {
+        const out = {}, keyOf = new Map();
+        if (!mine(this)) return out;
+        const add = t => {
+          const segs = t.split("/");
+          for (let i = 1; i <= segs.length; i++) {
+            if (!segs[i - 1]) break;
+            const k = "#" + segs.slice(0, i).join("/"), lc = k.toLowerCase();
+            let key = keyOf.get(lc);
+            if (key === undefined) { key = k; keyOf.set(lc, k); out[k] = 0; }
+            out[key]++;
+          }
+        };
+        for (const c of caches.values()) {
+          for (const t of fmTags(c.frontmatter)) add(t);
+          for (const t of c.tags || []) add(String(t.tag).slice(1));
+        }
+        return out;
+      }
     }
     const metadataCache = theCache = new MetadataCache();
     K.exportClasses.MetadataCache = MetadataCache;
 
+    /* ------------------------------------- property types (part vint)
+       app.metadataTypeManager, undocumented, from the stock oracle (black box,
+       scripts/api-probes.d/vint.js): the vault's frontmatter properties
+       (lowercase key -> {name: first spelling seen, occurrences: notes holding it,
+       widget}), the types the user assigned (.obsidian/types.json) and the
+       registered type widgets. A widget's render() is the property editor UI,
+       which opensidian does not have: it throws 'unsupported in opensidian'. */
+    const TYPES_WHY = "the property editor widgets are not part of opensidian";
+    const isDateStr = s => {
+      const m = window.moment;
+      if (m && m.ISO_8601) return m(s, m.ISO_8601, true).isValid();
+      return /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?)?$/.test(s) && !isNaN(Date.parse(s));
+    };
+    const vDate = v => v == null || v === "" || typeof v === "number" || (typeof v === "string" && isDateStr(v));
+    const vStr = v => typeof v === "string", vList = v => typeof v === "string" || Array.isArray(v);
+    const widget = (type, icon, label, validate, extra) => Object.assign({
+      type, icon, name: () => label, validate,
+      render() { throw unsupported(TYPES_WHY); },
+    }, extra);
+    const UNKNOWN_W = widget("unknown", "lucide-file-question", "Unknown", () => false);
+    function inferType(v) {
+      if (typeof v === "number") return "number";
+      if (typeof v === "boolean") return "checkbox";
+      if (typeof v === "string") {
+        if (/^\d{4}-\d{2}-\d{2}$/.test(v) && isDateStr(v)) return "date";
+        if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(v) && isDateStr(v)) return "datetime";
+        return "text";
+      }
+      if (v == null) return "text";
+      if (Array.isArray(v)) return v.every(x => typeof x === "string") ? "multitext" : "unknown";
+      return "unknown";
+    }
+    let typesSaveT = 0;
+    const DEFAULT_TYPES = [["aliases", "aliases"], ["cssclasses", "multitext"], ["tags", "tags"]];
+    class MetadataTypeManager extends Events {
+      constructor() {
+        super();
+        this.app = null; this._loaded = false; this.lastSave = 0;
+        this.properties = {}; this.assignedWidgets = {};
+        this.registeredTypeWidgets = {};
+        for (const w of [
+          widget("aliases", "lucide-forward", "Aliases", vList, { reservedKeys: ["aliases"] }),
+          widget("checkbox", "lucide-check-square", "Checkbox", v => typeof v === "boolean"),
+          widget("date", "lucide-calendar", "Date", vDate),
+          widget("datetime", "lucide-clock", "Date & time", vDate),
+          widget("file", "lucide-file", "File", vStr, { reservedKeys: [] }),
+          widget("folder", "lucide-folder", "Folder", vStr, { reservedKeys: [] }),
+          widget("multitext", "lucide-list", "List", vList),
+          widget("number", "lucide-binary", "Number", v => typeof v === "number"),
+          widget("property", "lucide-info", "Property", vStr, { reservedKeys: [] }),
+          widget("tags", "lucide-tags", "Tags", vList, { reservedKeys: ["tags"] }),
+          widget("text", "lucide-text", "Text", vStr),
+        ]) this.registeredTypeWidgets[w.type] = w;
+        Object.defineProperty(this, "_ver", { value: { built: "", assigned: 0 }, writable: true });
+        this.setAssigned(DEFAULT_TYPES);
+      }
+      setAssigned(pairs) {
+        for (const k of Object.keys(this.assignedWidgets)) delete this.assignedWidgets[k];
+        for (const [name, w] of pairs) this.assignedWidgets[String(name).toLowerCase()] = { name: String(name), widget: w };
+        this._ver.assigned++;
+      }
+      async load() {
+        let pairs = DEFAULT_TYPES;
+        try {
+          const j = JSON.parse(await adapter.read(vault.configDir + "/types.json"));
+          if (j && j.types && typeof j.types === "object") pairs = Object.entries(j.types);
+        } catch (_) {}
+        this.setAssigned(pairs); this._loaded = true;
+      }
+      save() {
+        clearTimeout(typesSaveT);
+        typesSaveT = setTimeout(() => {
+          const types = {};
+          for (const a of Object.values(this.assignedWidgets)) types[a.name] = a.widget;
+          this.lastSave = Date.now();
+          adapter.write(vault.configDir + "/types.json", JSON.stringify({ types }, null, 2))
+            .then(() => { this._ver.assigned++; })
+            .catch(e => console.error("[plugin] metadataTypeManager.save:", e));
+        }, 100);
+      }
+      updatePropertyInfoCache() {
+        const stamp = cacheVer + ":" + this._ver.assigned;
+        if (this._ver.built === stamp) return;
+        this._ver.built = stamp;
+        const P = this.properties;
+        for (const k of Object.keys(P)) delete P[k];
+        if (this === theTypes) for (const c of caches.values()) {
+          const fm = c.frontmatter;
+          if (!fm || typeof fm !== "object") continue;
+          for (const k of Object.keys(fm)) {
+            const lc = k.toLowerCase();
+            if (!P[lc]) P[lc] = { name: k, occurrences: 0, widget: inferType(fm[k]) };
+            P[lc].occurrences++;
+          }
+        }
+        for (const [lc, a] of Object.entries(this.assignedWidgets)) {
+          if (a.widget == null) continue;
+          if (P[lc]) P[lc].widget = a.widget; else P[lc] = { name: a.name, occurrences: 0, widget: a.widget };
+        }
+      }
+      getAllProperties() { this.updatePropertyInfoCache(); return this.properties; }
+      getPropertyInfo(name) {
+        this.updatePropertyInfoCache();
+        return this.properties[String(name).toLowerCase()] || { name, occurrences: 0, widget: "text" };
+      }
+      getAssignedWidget(name) { const a = this.assignedWidgets[String(name).toLowerCase()]; return a && a.widget != null ? a.widget : null; }
+      getWidget(type) { return Object.prototype.hasOwnProperty.call(this.registeredTypeWidgets, type) ? this.registeredTypeWidgets[type] : UNKNOWN_W; }
+      /* {expected, inferred}: expected = the assigned type's widget, else the one the
+         value (or, without a value, the property's recorded widget) suggests; with an
+         assigned type, inferred stays it while the value validates, else follows the value */
+      getTypeInfo(name, value) {
+        const as = this.getAssignedWidget(name);
+        if (value === undefined) {
+          let t = as;
+          if (t == null) { const w = this.getPropertyInfo(name).widget; t = Object.prototype.hasOwnProperty.call(this.registeredTypeWidgets, w) ? w : "text"; }
+          const w = this.getWidget(t);
+          return { expected: w, inferred: w };
+        }
+        const inf = this.getWidget(inferType(value));
+        if (as == null) return { expected: inf, inferred: inf };
+        const exp = this.getWidget(as);
+        return { expected: exp, inferred: exp.validate(value) ? exp : inf };
+      }
+      /* setType: the assignment is live at once — an entry already in properties takes
+         the new widget, a registered type also lists a name no note uses yet — and the
+         whole index is rebuilt once types.json is written (stock: an unregistered type
+         shows up in getAllProperties only then). "changed" carries the lowercase name;
+         re-assigning keeps the first spelling. */
+      setType(name, type) {
+        const lc = String(name).toLowerCase(), had = this.assignedWidgets[lc];
+        this.updatePropertyInfoCache();
+        this.assignedWidgets[lc] = { name: had ? had.name : String(name), widget: type };
+        const P = this.properties;
+        if (P[lc]) { if (type != null) P[lc].widget = type; }
+        else if (type != null && Object.prototype.hasOwnProperty.call(this.registeredTypeWidgets, type)) P[lc] = { name: String(name), occurrences: 0, widget: type };
+        this.trigger("changed", lc);
+        this.save();
+      }
+      unsetType(name) {
+        const lc = String(name).toLowerCase();
+        if (!(lc in this.assignedWidgets)) return;
+        delete this.assignedWidgets[lc];
+        this._ver.assigned++;
+        this.trigger("changed", lc);
+        this.save();
+      }
+    }
+    const metadataTypeManager = new MetadataTypeManager();
+    const theTypes = metadataTypeManager;
+    async function loadVaultConfig() {
+      const c = vault.config;
+      for (const k of Object.keys(c)) delete c[k];
+      try {
+        const j = JSON.parse(await adapter.read(vault.configDir + "/app.json"));
+        if (j && typeof j === "object" && !Array.isArray(j)) Object.assign(c, j);
+      } catch (_) {}
+    }
     /* TExternalFile (typings 1.14.4): a file outside the vault, by its real
        host path. The plugin VFS is confined to one virtual root and never
        names a host path (vaultfs.rs), so this is design-gated: exported,
@@ -625,15 +848,34 @@
         else if (typeof refreshTree === "function") try { await refreshTree(); } catch (_) {}
       }
       promptForDeletion(file) { return prompt(file); }
+      /* createNewMarkdownFile (undocumented, part vint): a new note in `folder`
+         (null/undefined: the root) named `name` ("Untitled" when absent or blank;
+         trimmed; a trailing .md dropped) at the first free "name", "name 1", ...
+         (case-insensitive); missing folders on the way ("a/b/c") are created first.
+         Not a folder, a non-string name or non-string data: TypeError, like stock. */
+      async createNewMarkdownFile(folder, name, data) {
+        if (folder == null) folder = vroot;
+        if (!(folder instanceof TFolder)) throw new TypeError("createNewMarkdownFile: not a folder (" + (folder && folder.path) + ")");
+        if (name != null && typeof name !== "string") throw new TypeError("createNewMarkdownFile: name is not a string");
+        if (data != null && typeof data !== "string") throw new TypeError("createNewMarkdownFile: data is not a string");
+        const n = String(name == null ? "" : name).trim().replace(/\.md$/i, "") || "Untitled";
+        const p = vault.getAvailablePath((folder.isRoot() ? "" : folder.path + "/") + n, "md");
+        const segs = p.split("/");
+        for (let i = 1; i < segs.length; i++) {
+          const d = segs.slice(0, i).join("/");
+          if (!vault.getAbstractFileByPath(d)) await vault.createFolder(d);
+        }
+        return vault.create(p, data == null ? "" : data);
+      }
     }
     const fileManager = new FileManager();
     K.exportClasses.FileManager = FileManager;
 
-    Object.assign(K, { DataAdapter, FileSystemAdapter, TAbstractFile, TFile, TFolder, Vault, adapter, changed, ensureModel, files, fileManager, unsupported, inv, metadataCache, noteOf, resolveLink, sweep, td, vault });
+    Object.assign(K, { DataAdapter, FileSystemAdapter, TAbstractFile, TFile, TFolder, Vault, adapter, changed, ensureModel, files, fileManager, unsupported, inv, metadataCache, metadataTypeManager, noteOf, resolveLink, sweep, td, vault });
   });
   reg("vault:app", function (K) {
     const { host, be } = K;
-    const { Events, Scope, commands, fileManager, keymap, metadataCache, plugins, setting, statusBox, unsupported, vault, workspace } = K;
+    const { Events, Scope, commands, fileManager, keymap, metadataCache, metadataTypeManager, plugins, setting, statusBox, unsupported, vault, workspace } = K;
     /* RenderContext (typings 1.10.0): what a rendered value hangs its hover popover
        on; app.renderContext is the app-wide one, no popover until something shows one. */
     class RenderContext { constructor() { this.hoverPopover = null; } }
@@ -653,10 +895,12 @@
     K.exportClasses.SecretStorage = SecretStorage;
     const app = {
       appId: "",
-      vault, workspace, metadataCache, fileManager, keymap, commands, plugins, setting,
+      vault, workspace, metadataCache, metadataTypeManager, fileManager, keymap, commands, plugins, setting,
       renderContext: new RenderContext(), secretStorage: new SecretStorage(ssTok),
       scope: new Scope(),
-      internalPlugins: { getPluginById() { return null; }, getEnabledPluginById() { return null; }, plugins: {} },
+      // no core plugin is exposed to plugins (getPluginById is null for every id), so the
+      // id -> enabled map over them, config, is empty: stock keeps config[k] === !!getEnabledPluginById(k)
+      internalPlugins: { getPluginById() { return null; }, getEnabledPluginById() { return null; }, plugins: {}, config: {} },
       statusBar: { get containerEl() { return statusBox(); } },
       dom: { get appContainerEl() { return document.body; } },
       lastEvent: null,
@@ -670,6 +914,7 @@
       isDarkMode() { return document.body.classList.contains("theme-dark"); }
     }
     Object.setPrototypeOf(app, App.prototype);
+    metadataTypeManager.app = app;
     // K.appMembers: app-level members contributed by a segment that runs BEFORE this one
     // (name -> property descriptor, e.g. views.js). Empty or absent = no change.
     for (const [k, d] of Object.entries(K.appMembers || {})) {
