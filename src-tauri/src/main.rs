@@ -58,6 +58,12 @@ struct Vault {
     /// vaultbleed B: the flock that makes this the ONLY backend on the vault
     /// (vaultlock.rs); held until the process exits
     lock: OnceLock<vaultlock::VaultLock>,
+    /// typing-srclong: the watcher baseline, walked by bind BEFORE Index::build
+    /// and taken by the first watch_tick. Without it that first tick seeded its
+    /// baseline from its own later walk, and a note created in between was in
+    /// neither the index nor any diff: never reported (the typing phase red
+    /// "external create of TYPEGATE not in the tree", 4/8 runs under load).
+    seed: Mutex<Option<watcher::Snapshot>>,
 }
 
 fn cur_vault(v: &Vault) -> Option<PathBuf> {
@@ -128,8 +134,10 @@ fn bind_vault_locked(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr
     // which runs after this returns — sees the built-ins as ordinary theme
     // dirs. Seeding writes only paths that do not exist (builtins.rs).
     builtins::seed_and_record(p);
+    let base = watcher::snapshot(p); // the watcher baseline: walked first, so nothing created after it is missed
     let ix = span_timed!("index_build", Index::build(p), serde_json::json!({"notes": 0}));
     *v.index.lock().unwrap() = ix;
+    *v.seed.lock().unwrap() = Some(base);
     Ok(())
 }
 /// component-wise traversal check: only plain, non-hidden components allowed
@@ -4522,6 +4530,11 @@ fn watch_tick(v: &Vault, prev: &mut Option<(PathBuf, watcher::Snapshot)>) -> wat
         *prev = None;
         return watcher::Change::default();
     };
+    if !matches!(&*prev, Some((r, _)) if *r == root) {
+        if let Some(s) = v.seed.lock().unwrap().take() {
+            *prev = Some((root.clone(), s)); // bind's pre-index walk, not this tick's
+        }
+    }
     let mut cur = watcher::snapshot(&root);
     let change = match &*prev {
         Some((r, s)) if *r == root => {
@@ -5282,7 +5295,7 @@ fn main() {
     // perf-index: one walk + read now, so the first note_open is already warm.
     // vaultbleed: the argv/last-vault boot binds through the SAME set-once
     // bind_vault the picker uses (seed + index build happen inside it).
-    let vault = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new() };
+    let vault = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) };
     if let Some(p) = &init {
         // vaultbleed B: a vault already open in another process is refused —
         // no second backend, no window; the other window stays the only one.
@@ -9851,7 +9864,7 @@ mod vaultbleed_tests {
         root
     }
     fn vault_at(p: &Path) -> Arc<Vault> {
-        let v = Arc::new(Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new() });
+        let v = Arc::new(Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) });
         bind_vault(&v, p).unwrap();
         v
     }
@@ -9914,9 +9927,9 @@ mod vaultbleed_tests {
         // an index; a second spelling of the path keys the same lock.
         let a = mk("dup-a", &[("onlyA-note", "seed #onlyA\n")]);
         let locks = std::env::temp_dir().join(format!("opensidian-vb-locks-{}", std::process::id()));
-        let v1 = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new() };
+        let v1 = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) };
         bind_vault_locked(&v1, &a, &locks).expect("first backend binds");
-        let v2 = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new() };
+        let v2 = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) };
         let alias = a.join("..").join(a.file_name().unwrap());
         match bind_vault_locked(&v2, &alias, &locks) {
             Err(BindErr::Lock(vaultlock::LockErr::Busy(_))) => {}
@@ -9977,6 +9990,27 @@ mod vaultbleed_tests {
         assert_eq!(log.len(), 20, "the hook fired once per round");
         assert!(log.iter().all(|r| r.is_err()), "a live process was re-rooted: {log:?}");
         let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b));
+    }
+
+    /* typing-srclong: a note created from outside AFTER bind_vault built the
+       index but BEFORE the watcher's first tick. That tick used to seed its
+       baseline silently from its own walk, which already held the new file,
+       so the create was in neither the index nor any later diff: never
+       reported, never in the tree (the typing phase's "external create of
+       TYPEGATE not in the tree", 4/8 loaded runs at e1542275). The baseline
+       is now the walk bind took before Index::build. */
+    #[test]
+    fn external_create_before_the_first_watcher_tick_is_reported() {
+        let a = mk("seedrace", &[("A", "a\n")]);
+        let v = vault_at(&a);
+        fs::write(a.join("TYPEGATE.md"), "").unwrap(); // the phase's `: > TYPEGATE.md`, ahead of the watcher
+        let mut prev = None;
+        let ch = watch_tick(&v, &mut prev);
+        assert_eq!(ch.added, ["TYPEGATE"], "the first tick after bind must report the create: {ch:?}");
+        assert!(cur_notes(&v).iter().any(|n| n == "TYPEGATE"), "the index must hold it: {:?}", cur_notes(&v));
+        let ch2 = watch_tick(&v, &mut prev);
+        assert!(ch2.is_empty(), "a steady tick reports nothing: {ch2:?}");
+        let _ = fs::remove_dir_all(&a);
     }
 
     /* The command side: write_note reads the root, then takes the index lock.
