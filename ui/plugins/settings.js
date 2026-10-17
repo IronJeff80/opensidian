@@ -153,6 +153,8 @@
     t.containerEl.empty ? t.containerEl.empty() : (t.containerEl.innerHTML = "");
     pg.appendChild(t.containerEl);
     setting.activeTab = t;
+    // api-settings: a declarative tab (getSettingDefinitions) refreshes its settingItems on every open
+    try { if (typeof t.update === "function") t.update(); } catch (e) { console.error("[plugin] " + id + " settings update:", e); }
     try { t.display(); } catch (e) {
       console.error("[plugin] " + id + " settings display:", e);
       pg.appendChild(el("div", "sempty", "This plugin's settings failed to render: " + (e && e.message || e)));

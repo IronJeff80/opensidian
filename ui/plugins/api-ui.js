@@ -32,7 +32,12 @@
         this.bgEl.addEventListener("click", () => this.close());
         this.scope.register([], "Escape", () => { this.close(); return false; });
         this._open = false;
+        this._closeCb = null;
       }
+      /* api-settings: the callback runs after onClose(), once per close */
+      setCloseCallback(cb) { this._closeCb = typeof cb === "function" ? cb : null; return this; }
+      /* a history "back" (mouse back button / swipe) dismisses the modal */
+      onHistoryBack() { this.close(); }
       open() {
         if (this._open) return;
         this._open = true;
@@ -49,6 +54,7 @@
         const i = openModals.indexOf(this); if (i >= 0) openModals.splice(i, 1);
         const j = scopes.lastIndexOf(this.scope); if (j >= 0) scopes.splice(j, 1);
         try { this.onClose(); } catch (e) { console.error("[plugin] Modal.onClose:", e); }
+        if (this._closeCb) try { this._closeCb(); } catch (e) { console.error("[plugin] Modal close callback:", e); }
         if (this.shouldRestoreSelection && this._prevFocus && this._prevFocus.focus) try { this._prevFocus.focus(); } catch (_) {}
         touch();
       }
@@ -82,7 +88,7 @@
         let r; try { r = await this.getSuggestions(this.inputEl.value); } catch (e) { console.error(e); r = []; }
         this._items = (r || []).slice(0, this.limit); this._sel = 0;
         this.resultContainerEl.empty();
-        if (!this._items.length) { this.resultContainerEl.createDiv({ cls: "suggestion-empty", text: this.emptyStateText }); touch(); return; }
+        if (!this._items.length) { try { this.onNoSuggestion(); } catch (e) { console.error(e); } touch(); return; }
         this._items.forEach((v, i) => {
           const el = this.resultContainerEl.createDiv({ cls: "suggestion-item" + (i === 0 ? " is-selected" : "") });
           try { this.renderSuggestion(v, el); } catch (e) { console.error(e); }
@@ -94,6 +100,10 @@
       _setSel(i) { const k = this.resultContainerEl.children; if (k[this._sel]) k[this._sel].classList.remove("is-selected"); this._sel = i; if (k[i]) { k[i].classList.add("is-selected"); k[i].scrollIntoView({ block: "nearest" }); } }
       _move(d) { if (this._items.length) this._setSel((this._sel + d + this._items.length) % this._items.length); }
       _choose(e) { const v = this._items[this._sel]; if (v !== undefined) this.selectSuggestion(v, e); }
+      /* the empty state: the result list shows emptyStateText */
+      onNoSuggestion() { this.resultContainerEl.empty(); this.resultContainerEl.createDiv({ cls: "suggestion-empty", text: this.emptyStateText }); }
+      /* choose the highlighted suggestion, as Enter does */
+      selectActiveSuggestion(e) { this._choose(e); }
       selectSuggestion(v, e) { this.close(); this.onChooseSuggestion(v, e); }
       getSuggestions() { return []; }
       renderSuggestion(v, el) { el.setText(String(v)); }
@@ -149,9 +159,17 @@
       constructor(containerEl) { installDom(); super(containerEl.createEl("textarea", { attr: { spellcheck: "false" } })); }
     }
     class MomentFormatComponent extends TextComponent {
-      setDefaultFormat(f) { this.defaultFormat = f; if (!this.inputEl.placeholder) this.setPlaceholder(f); return this; }
-      setSampleEl(el) { this.sampleEl = el; return this; }
-      updateSample() {}
+      constructor(containerEl) { super(containerEl); this.sampleEl = undefined; this.defaultFormat = ""; }
+      setDefaultFormat(f) { this.defaultFormat = f; if (!this.inputEl.placeholder) this.setPlaceholder(f); this.updateSample(); return this; }
+      setSampleEl(el) { this.sampleEl = el; this.updateSample(); return this; }
+      setValue(v) { super.setValue(v); this.updateSample(); return this; }
+      onChanged() { this.updateSample(); super.onChanged(); }
+      /* the sample element shows the current time in the entered format (the default format when empty) */
+      updateSample() {
+        if (!this.sampleEl) return;
+        const f = this.getValue() || this.defaultFormat || "", m = window.moment;
+        this.sampleEl.textContent = typeof m === "function" ? m().format(f) : f;
+      }
     }
     class ToggleComponent extends ValueComponent {
       constructor(containerEl) {
@@ -183,7 +201,9 @@
       setLimits(min, max, step) { if (min != null) this.sliderEl.min = min; if (max != null) this.sliderEl.max = max; this.sliderEl.step = step === "any" || step == null ? "any" : step; return this; }
       getValue() { return +this.sliderEl.value; }
       setValue(v) { this.sliderEl.value = v; return this; }
-      getValuePretty() { return String(this.getValue()); }
+      getValuePretty() { const v = this.getValue(); if (this._fmt) { try { return String(this._fmt(v)); } catch (e) { console.error("[plugin] slider display format:", e); } } return String(v); }
+      /* api-settings: a custom formatter for the value shown next to the slider */
+      setDisplayFormat(f) { this._fmt = typeof f === "function" ? f : null; return this; }
       setDynamicTooltip() { return this; }
       showTooltip() {}
       setInstant() { return this; }
@@ -206,6 +226,8 @@
       setCta() { this.buttonEl.addClass("mod-cta"); return this; }
       removeCta() { this.buttonEl.removeClass("mod-cta"); return this; }
       setWarning() { this.buttonEl.addClass("mod-warning"); return this; }
+      setDestructive() { this.buttonEl.addClass("mod-destructive"); return this; }
+      removeDestructive() { this.buttonEl.removeClass("mod-destructive"); return this; }
       setTooltip(t) { this.buttonEl.setAttribute("aria-label", t); this.buttonEl.title = t; return this; }
       setButtonText(t) { this.buttonEl.textContent = t; return this; }
       setIcon(i) { setIcon(this.buttonEl, i); return this; }
@@ -219,6 +241,60 @@
       setIcon(i) { setIcon(this.extraSettingsEl, i); return this; }
       onClick(cb) { this._cb = cb; return this; }
     }
+    /* api-settings: a determinate progress bar, value 0..100 (unset until setValue) */
+    class ProgressBarComponent extends ValueComponent {
+      constructor(containerEl) {
+        super(); installDom();
+        this.progressBar = containerEl.createDiv({ cls: "setting-progress-bar", attr: { role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100" } });
+        this.lineEl = this.progressBar.createDiv({ cls: "setting-progress-bar-line" });
+        this._v = undefined;
+      }
+      getValue() { return this._v; }
+      setValue(v) {
+        this._v = v;
+        const n = Math.max(0, Math.min(100, Number(v) || 0));
+        this.lineEl.style.width = n + "%"; this.progressBar.setAttribute("aria-valuenow", String(n));
+        return this;
+      }
+    }
+    /* api-settings: a read-only value label on a setting row, with an optional warning marker */
+    class DisplayValueComponent {
+      constructor(containerEl) {
+        installDom();
+        this.valueEl = containerEl.createDiv({ cls: "setting-display-value" });
+        this.statusEl = null;
+      }
+      setValue(v) { this.valueEl.textContent = v == null ? "" : String(v); return this; }
+      setStatus(s) {
+        if (s === "warning") {
+          if (!this.statusEl) { this.statusEl = this.valueEl.createSpan({ cls: "setting-display-status mod-warning" }); setIcon(this.statusEl, "alert-triangle"); }
+          this.valueEl.addClass("mod-warning");
+        } else {
+          if (this.statusEl) { this.statusEl.remove(); this.statusEl = null; }
+          this.valueEl.removeClass("mod-warning");
+        }
+        return this;
+      }
+    }
+    /* api-settings: the button type of ConfirmationModal.addButton. A click runs the handler,
+       then closes the modal (after the handler's promise settles, if it returns one). */
+    class ConfirmationButton extends ButtonComponent {
+      constructor(containerEl, modal) {
+        super(containerEl);
+        this.modal = modal || null;
+        this.buttonEl.addEventListener("click", e => {
+          if (this.disabled) return;
+          let r;
+          try { r = this._handler ? this._handler(e) : undefined; } catch (er) { console.error("[plugin] confirmation button:", er); }
+          const done = () => { if (this.modal) this.modal.close(); };
+          if (r && typeof r.then === "function") r.then(done, er => { console.error("[plugin] confirmation button:", er); done(); }); else done();
+        });
+      }
+      onClick(h) { this._handler = h; return this; }
+      setInitialFocus() { if (this.modal) this.modal._initialFocus = this; return this; }
+      setSecondary() { this.buttonEl.addClass("mod-secondary"); return this; }
+      setCancel() { this.buttonEl.addClass("mod-cancel"); return this; }
+    }
     class Setting {
       constructor(containerEl) {
         installDom();
@@ -228,13 +304,25 @@
         this.descEl = this.infoEl.createDiv({ cls: "setting-item-description" });
         this.controlEl = this.settingEl.createDiv({ cls: "setting-item-control" });
         this.components = [];
+        this.errorEl = null;
       }
-      setName(n) { this.nameEl.setText(n); return this; }
-      setDesc(d) { this.descEl.setText(d); return this; }
+      setName(n) { if (n instanceof Node) { this.nameEl.empty(); this.nameEl.appendChild(n); } else this.nameEl.setText(n == null ? "" : String(n)); return this; }
+      setDesc(d) { if (d instanceof Node) { this.descEl.empty(); this.descEl.appendChild(d); } else this.descEl.setText(d == null ? "" : String(d)); return this; }
+      /* api-settings: a persistent validation message under the row; empty / null clears it */
+      setErrorMessage(msg) {
+        if (msg) {
+          if (!this.errorEl) this.errorEl = this.infoEl.createDiv({ cls: "setting-item-error" });
+          this.errorEl.textContent = String(msg); this.settingEl.addClass("is-invalid");
+        } else {
+          if (this.errorEl) this.errorEl.remove();
+          this.errorEl = null; this.settingEl.removeClass("is-invalid");
+        }
+        return this;
+      }
       setClass(c) { this.settingEl.addClass(c); return this; }
       setTooltip(t) { this.nameEl.title = t; return this; }
       setHeading() { this.settingEl.addClass("setting-item-heading"); return this; }
-      setDisabled(d) { this.settingEl.toggleClass("is-disabled", !!d); for (const c of this.components) c.setDisabled && c.setDisabled(d); return this; }
+      setDisabled(d) { this.settingEl.toggleClass("is-disabled", !!d); for (const c of this.components) if (c && typeof c.setDisabled === "function") c.setDisabled(d); return this; }
       _add(C, cb) { const c = new C(this.controlEl); this.components.push(c); if (cb) cb(c); return this; }
       addButton(cb) { return this._add(ButtonComponent, cb); }
       addExtraButton(cb) { return this._add(ExtraButtonComponent, cb); }
@@ -246,58 +334,331 @@
       addDropdown(cb) { return this._add(DropdownComponent, cb); }
       addColorPicker(cb) { return this._add(ColorComponent, cb); }
       addSlider(cb) { return this._add(SliderComponent, cb); }
+      addProgressBar(cb) { return this._add(ProgressBarComponent, cb); }
+      /* the display value labels the row; it is not one of the row's input components */
+      addDisplayValue(cb) { const d = new DisplayValueComponent(this.controlEl); if (cb) cb(d); return this; }
+      /* a caller-built component: cb gets the control element and returns the component */
+      addComponent(cb) { const c = cb(this.controlEl); this.components.push(c); return this; }
       then(cb) { cb(this); return this; }
       clear() { this.controlEl.empty(); this.components = []; return this; }
     }
+    /* ----------------------------------------- declarative settings (api-settings)
+       SettingTab.getSettingDefinitions() returns definitions (rows with a control /
+       render / action), groups and lists (type "group" | "list") and navigable pages
+       (type "page"). update() stores them in settingItems; the base display() renders
+       settingItems into containerEl (a tab that overrides display() renders itself).
+       control rows read tab.getControlValue(key) (?? defaultValue) and persist through
+       tab.setControlValue(key, value) after validate() accepts; visible / disabled
+       predicates are evaluated on render and again by refreshDomState(), which only
+       flips state on the rendered nodes. Behaviour checked against stock 1.13.7 by the
+       harness oracle (scripts/api-probes.d/settings.js). */
+    const flagOf = (v, dflt) => {
+      if (typeof v === "function") { try { return !!v(); } catch (e) { console.error("[plugin] setting predicate:", e); return dflt; } }
+      return v === undefined ? dflt : !!v;
+    };
+    const valOf = v => { if (typeof v === "function") { try { return v(); } catch (e) { console.error("[plugin] setting value:", e); return undefined; } } return v; };
+    const onActivate = (el, f) => {
+      el.tabIndex = 0;
+      el.addEventListener("click", e => { if (e.target && e.target.closest && e.target.closest("input,select,textarea,button")) return; f(e); });
+      el.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); f(e); } });
+    };
+    function sdTeardown(tab) {
+      const d = tab._dom; tab._dom = null;
+      if (!d) return;
+      for (const f of d.cleanups.splice(0)) try { f(); } catch (e) { console.error("[plugin] setting cleanup:", e); }
+      if (d.page) try { d.page.hide(); } catch (e) { console.error("[plugin] SettingPage.hide:", e); }
+    }
+    function sdApply(d) {
+      for (const n of d.nodes) {
+        const vis = flagOf(n.visible, true) && !n.searchHidden;
+        n.el.hidden = !vis; n.el.toggleClass("is-hidden", !vis);
+        if (n.setting) { n.isDisabled = flagOf(n.disabled, false); n.setting.setDisabled(n.isDisabled); }
+      }
+    }
+    function sdControl(d, s, c) {
+      const tab = d.tab;
+      const read = () => { let v; try { v = tab.getControlValue(c.key); } catch (e) { console.error("[plugin] getControlValue:", e); } return v == null ? c.defaultValue : v; };
+      const commit = async v => {
+        if (typeof c.validate === "function") {
+          let m; try { m = await c.validate(v); } catch (e) { m = String((e && e.message) || e); }
+          if (m) { s.setErrorMessage(m); return; }
+        }
+        s.setErrorMessage(null);
+        try { await tab.setControlValue(c.key, v); } catch (e) { console.error("[plugin] setControlValue:", e); }
+        if (tab._dom === d) tab.refreshDomState();
+      };
+      const v0 = read(), str = v => (typeof v === "string" ? v : "");
+      const suggest = (t, kind) => {
+        const AIS = K.AbstractInputSuggest, vault = K.app && K.app.vault;
+        if (typeof AIS !== "function" || !vault) return;
+        const pool = () => {
+          if (kind === "file") return (vault.getFiles ? vault.getFiles() : []).filter(f => { try { return !c.filter || c.filter(f); } catch (e) { return false; } }).map(f => f.path);
+          const out = [], walk = f => { if (!f || !f.children) return; if (f.path !== "/" || c.includeRoot) { let ok = true; try { ok = !c.filter || c.filter(f); } catch (e) { ok = false; } if (ok) out.push(f.path); } for (const ch of f.children) walk(ch); };
+          walk(vault.getRoot ? vault.getRoot() : null); return out;
+        };
+        const sg = new (class extends AIS {
+          getSuggestions(q) { const l = String(q || "").toLowerCase(); return pool().filter(p => p.toLowerCase().includes(l)); }
+          renderSuggestion(p, el) { el.setText(p); }
+        })(K.app, t.inputEl);
+        sg.onSelect(p => { t.setValue(p); commit(p); });
+      };
+      switch (c.type) {
+        case "toggle": s.addToggle(t => { t.setValue(!!v0); t.onChange(commit); }); break;
+        case "dropdown": s.addDropdown(x => { x.addOptions(c.options || {}); if (v0 != null) x.setValue(String(v0)); x.onChange(commit); }); break;
+        case "text": case "file": case "folder":
+          s.addText(t => { if (c.placeholder) t.setPlaceholder(c.placeholder); t.setValue(str(v0)); t.onChange(commit); if (c.type !== "text") suggest(t, c.type); });
+          break;
+        case "textarea": s.addTextArea(t => { if (c.placeholder) t.setPlaceholder(c.placeholder); if (c.rows) t.inputEl.rows = c.rows; t.setValue(str(v0)); t.onChange(commit); }); break;
+        case "number":
+          s.addText(t => {
+            t.inputEl.type = "number";
+            if (c.min != null) t.inputEl.min = c.min; if (c.max != null) t.inputEl.max = c.max; if (c.step != null) t.inputEl.step = c.step;
+            if (c.placeholder) t.setPlaceholder(c.placeholder);
+            t.setValue(typeof v0 === "number" && Number.isFinite(v0) ? String(v0) : "");
+            t.onChange(x => { const n = x === "" ? NaN : Number(x); if (Number.isFinite(n)) commit(n); });
+          });
+          break;
+        case "slider": {
+          const lab = s.controlEl.createSpan({ cls: "setting-slider-value" });
+          s.addSlider(x => {
+            x.setLimits(c.min, c.max, c.step);
+            if (typeof v0 === "number") x.setValue(v0);
+            if (c.displayFormat) x.setDisplayFormat(c.displayFormat);
+            const show = () => { const p = x.getValuePretty(); lab.textContent = p; lab.hidden = p === ""; };
+            show(); x.onChange(v => { show(); commit(v); });
+          });
+          break;
+        }
+        case "color": s.addColorPicker(x => { if (typeof v0 === "string" && v0) x.setValue(v0); x.onChange(commit); }); break;
+        case "secret": s.setErrorMessage("unsupported in opensidian: secret storage is not available"); s.setDisabled(true); return;
+        default: s.setErrorMessage("unsupported setting control type: " + String(c.type)); return;
+      }
+      if (typeof c.validate === "function" && v0 !== undefined)
+        Promise.resolve().then(() => c.validate(v0)).then(m => { if (m && tab._dom === d) s.setErrorMessage(m); }, e => console.error("[plugin] validate:", e));
+    }
+    function sdDef(d, g, def, idx, list) {
+      if (!def || typeof def !== "object") return null;
+      const s = new Setting(g.listEl);
+      if (def.name != null) s.setName(def.name);
+      if (def.desc != null) s.setDesc(def.desc);
+      const node = { el: s.settingEl, setting: s, def, visible: def.visible, disabled: def.control ? def.control.disabled : def.disabled };
+      d.nodes.push(node);
+      if (def.type === "page") {
+        const dv = valOf(def.displayValue), st = valOf(def.status);
+        if ((dv != null && dv !== "") || st === "warning") s.addDisplayValue(x => { x.setValue(dv == null ? "" : String(dv)); x.setStatus(st === "warning" ? "warning" : null); });
+        setIcon(s.controlEl.createSpan({ cls: "setting-page-chevron" }), "chevron-right");
+        s.settingEl.addClass("mod-clickable");
+        onActivate(s.settingEl, () => sdOpenPage(d.tab, def));
+      } else if (def.control && typeof def.control === "object") sdControl(d, s, def.control);
+      else if (typeof def.render === "function") {
+        try { const c = def.render(s, g); if (typeof c === "function") d.cleanups.push(c); } catch (e) { console.error("[plugin] setting render:", e); }
+      } else if (typeof def.action === "function") {
+        s.settingEl.addClass("mod-clickable");
+        onActivate(s.settingEl, () => { if (!node.isDisabled) try { def.action(s.settingEl, idx); } catch (e) { console.error("[plugin] setting action:", e); } });
+      }
+      if (list) {
+        if (typeof list.onDelete === "function") {
+          s.addExtraButton(b => b.setIcon("trash").setTooltip("Delete").onClick(() => list.onDelete(idx)));
+          s.settingEl.tabIndex = 0;
+          s.settingEl.addEventListener("keydown", e => { if ((e.key === "Delete" || e.key === "Backspace") && e.target === s.settingEl) { e.preventDefault(); list.onDelete(idx); } });
+        }
+        if (typeof list.onReorder === "function") {
+          const h = s.settingEl.createDiv({ cls: "setting-drag-handle" }); s.settingEl.prepend(h); setIcon(h, "grip-vertical");
+          s.settingEl.draggable = true;
+          s.settingEl.addEventListener("dragstart", e => { d.drag = idx; if (e.dataTransfer) e.dataTransfer.effectAllowed = "move"; });
+          s.settingEl.addEventListener("dragover", e => { if (d.drag != null) e.preventDefault(); });
+          s.settingEl.addEventListener("drop", e => { e.preventDefault(); const from = d.drag; d.drag = null; if (from != null && from !== idx) list.onReorder(from, idx); });
+        }
+      }
+      return node;
+    }
+    function sdGroup(d, el, def, path) {
+      const g = new SettingGroup(el);
+      if (def.heading) g.setHeading(def.heading);
+      if (def.cls) for (const c of String(def.cls).split(/\s+/)) if (c) g.addClass(c);
+      for (const f of def.extraButtons || []) if (typeof f === "function") g.addExtraButton(f);
+      const isList = def.type === "list", items = Array.isArray(def.items) ? def.items : [];
+      d.nodes.push({ el: g.groupEl, visible: def.visible });
+      if (isList) g.groupEl.addClass("mod-list");
+      if (isList && def.addItem && typeof def.addItem.action === "function")
+        g.addExtraButton(b => b.setIcon("plus").setTooltip(String(def.addItem.name || "")).onClick(() => def.addItem.action(b.extraSettingsEl)));
+      const kids = items.map((it, i) => sdDef(d, g, it, i, isList ? def : null));
+      if (isList && !items.length && def.emptyState != null) {
+        const e = g.listEl.createDiv({ cls: "setting-list-empty" });
+        if (def.emptyState instanceof Node) e.appendChild(def.emptyState); else e.textContent = String(def.emptyState);
+      }
+      if (def.search && typeof def.search.match === "function") {
+        const qs = d.tab._queries || (d.tab._queries = Object.create(null));
+        const filter = q => {
+          kids.forEach((n, i) => {
+            if (!n) return; const it = items[i];
+            let hide = false;
+            if (q && !(it && it.searchable === false)) { try { hide = !def.search.match(it, q); } catch (e) { console.error("[plugin] group search:", e); } }
+            n.searchHidden = hide;
+          });
+          sdApply(d);
+        };
+        g.addSearch(sc => {
+          if (def.search.placeholder) sc.setPlaceholder(def.search.placeholder);
+          sc.setValue(qs[path] || "");
+          sc.onChange(q => { qs[path] = q; filter(q); });
+        });
+        if (qs[path]) d.after.push(() => filter(qs[path]));
+      }
+      return g;
+    }
+    function sdItems(d, el, items, path) {
+      let loose = null;
+      (Array.isArray(items) ? items : []).forEach((it, i) => {
+        if (!it || typeof it !== "object") return;
+        if (it.type === "group" || it.type === "list") { loose = null; sdGroup(d, el, it, path + "/" + i); return; }
+        if (!loose) loose = new SettingGroup(el);
+        sdDef(d, loose, it, i, null);
+      });
+    }
+    function sdRender(tab) {
+      sdTeardown(tab);
+      tab.containerEl.empty();
+      const d = tab._dom = { tab, nodes: [], cleanups: [], after: [], page: null, drag: null };
+      const stack = tab._pages || [];
+      const top = stack[stack.length - 1];
+      if (!top) sdItems(d, tab.containerEl, tab.settingItems, "");
+      else {
+        let p = null;
+        if (typeof top.page === "function") { try { p = top.page(); } catch (e) { console.error("[plugin] SettingPage factory:", e); } }
+        if (!(p instanceof SettingPage)) {
+          p = new SettingPage();
+          const items = top.items;
+          p.display = function () { this.containerEl.empty(); sdItems(d, this.containerEl, items, "p" + stack.length); };
+        }
+        if (!p.title) p.title = top.name == null ? "" : String(top.name);
+        const back = new ExtraButtonComponent(p.titlebarEl);
+        back.setIcon("arrow-left").setTooltip("Back").onClick(() => { stack.pop(); sdRender(tab); });
+        p.titlebarEl.prepend(back.extraSettingsEl);
+        d.page = p;
+        tab.containerEl.appendChild(p.rootEl);
+        try { p.display(); } catch (e) { console.error("[plugin] SettingPage.display:", e); }
+      }
+      sdApply(d);
+      for (const f of d.after.splice(0)) f();
+    }
+    function sdOpenPage(tab, def) { (tab._pages || (tab._pages = [])).push(def); sdRender(tab); }
+
     class SettingTab {
-      constructor() { installDom(); this.containerEl = mk("div", { cls: "vertical-tab-content" }); }
-      display() {}
-      hide() { this.containerEl.empty(); }
+      constructor() {
+        installDom();
+        this.containerEl = mk("div", { cls: "vertical-tab-content" });
+        this.icon = undefined;
+        this.settingItems = [];
+        this._dom = null; this._pages = [];
+      }
+      getSettingDefinitions() { return []; }
+      update() {
+        let defs;
+        try { defs = this.getSettingDefinitions(); } catch (e) { console.error("[plugin] getSettingDefinitions:", e); defs = []; }
+        this.settingItems = Array.isArray(defs) ? defs : [];
+        const d = this._dom;   // a tab whose rendering is on screen re-renders
+        if (d && this.containerEl.isConnected && (d.page ? this.containerEl.contains(d.page.rootEl) : d.nodes.some(n => this.containerEl.contains(n.el)))) { this._pages = []; this.display(); }
+      }
+      getControlValue(key) { const v = this.app && this.app.vault; return v && typeof v.getConfig === "function" ? v.getConfig(key) : undefined; }
+      setControlValue(key, value) {
+        const v = this.app && this.app.vault;
+        if (v && typeof v.setConfig === "function") return v.setConfig(key, value);
+        throw new Error("unsupported in opensidian: app config is read-only to plugins");
+      }
+      refreshDomState() { if (this._dom) sdApply(this._dom); }
+      display() { if (this.settingItems && this.settingItems.length) sdRender(this); }
+      hide() { sdTeardown(this); this._pages = []; this.containerEl.empty(); }
     }
     class PluginSettingTab extends SettingTab {
       constructor(app, plugin) { super(); this.app = app; this.plugin = plugin; }
+      getSettingDefinitions() { return []; }
+      /* conventional plugin storage: this.plugin.settings, persisted with saveData */
+      getControlValue(key) { const s = this.plugin && this.plugin.settings; return s != null && typeof s === "object" ? s[key] : undefined; }
+      setControlValue(key, value) {
+        const p = this.plugin; if (!p) return;
+        if (p.settings == null || typeof p.settings !== "object") p.settings = {};
+        p.settings[key] = value;
+        return typeof p.saveData === "function" ? p.saveData(p.settings) : undefined;
+      }
     }
-    /* td-census-fix: Templater 2.25.0 (minAppVersion 1.13.0) subclasses these at
-       module scope, so without them it cannot even load. Bounded shapes: enough
-       for a settings page / confirmation dialog to render and answer, not the
-       whole declarative settings model.
-         SettingGroup(containerEl): a .setting-group with an optional heading;
-           addSetting(cb) appends a Setting to its items.
-         SettingPage: a sub-page of a settings tab (containerEl, display/update/hide).
-         ConfirmationModal(app): a Modal with a button row — addButton(cb),
-           addCheckbox(label, cb(checked)), addCancelButton(). */
+    /* SettingGroup(containerEl): a .setting-group with an optional heading (+ header
+       extra buttons), an optional search row before the items, and addSetting(cb). */
     class SettingGroup {
       constructor(containerEl) {
         installDom();
         this.groupEl = containerEl.createDiv({ cls: "setting-group" });
         this.headerEl = this.groupEl.createDiv({ cls: "setting-group-heading setting-item-heading" }); this.headerEl.hidden = true;
+        this._headText = this.headerEl.createDiv({ cls: "setting-group-heading-text" });
+        this._headCtl = null; this._searchEl = null;
         this.listEl = this.groupEl.createDiv({ cls: "setting-items" });
       }
-      setHeading(t) { this.headerEl.hidden = false; this.headerEl.textContent = ""; if (t instanceof Node) this.headerEl.appendChild(t); else this.headerEl.textContent = String(t); return this; }
-      addClass(c) { this.groupEl.addClass(c); return this; }
+      setHeading(t) { this.headerEl.hidden = false; this._headText.textContent = ""; if (t instanceof Node) this._headText.appendChild(t); else this._headText.textContent = String(t); return this; }
+      addClass(...c) { for (const x of c) if (x) this.groupEl.addClass(x); return this; }
       addSetting(cb) { const s = new Setting(this.listEl); if (cb) cb(s); return this; }
+      addSearch(cb) {
+        if (!this._searchEl) { this._searchEl = mk("div", { cls: "setting-group-search" }); this.groupEl.insertBefore(this._searchEl, this.listEl); }
+        const c = new SearchComponent(this._searchEl); if (cb) cb(c); return this;
+      }
+      addExtraButton(cb) {
+        if (!this._headCtl) this._headCtl = this.headerEl.createDiv({ cls: "setting-group-controls" });
+        this.headerEl.hidden = false;
+        const b = new ExtraButtonComponent(this._headCtl); if (cb) cb(b); return this;
+      }
     }
+    /* SettingPage: a settings sub-page — rootEl holds titlebarEl (the title) and containerEl
+       (the content display() renders). The fields are prototype accessors so a subclass sees
+       them before its own constructor body runs; assigning title updates the titlebar. */
     class SettingPage {
-      constructor() { installDom(); this.app = K.app; this.containerEl = mk("div", { cls: "setting-page" }); this.icon = ""; }
+      constructor() {
+        installDom();
+        this.app = K.app; this.icon = "";
+        const rootEl = mk("div", { cls: "setting-page" });
+        const titlebarEl = rootEl.createDiv({ cls: "setting-page-titlebar" });
+        const titleEl = titlebarEl.createDiv({ cls: "setting-page-title" });
+        const containerEl = rootEl.createDiv({ cls: "setting-page-content" });
+        Object.defineProperty(this, "_sp", { value: { rootEl, titlebarEl, titleEl, containerEl, title: "" }, enumerable: false });
+      }
       display() {}
       update() { this.containerEl.empty(); this.display(); }
       hide() { this.containerEl.empty(); }
     }
+    for (const k of ["rootEl", "titlebarEl", "containerEl", "title"]) {
+      Object.defineProperty(SettingPage.prototype, k, {
+        configurable: true, enumerable: false,
+        get() { return this._sp ? this._sp[k] : undefined; },
+        set(v) {
+          if (!this._sp) { Object.defineProperty(this, k, { value: v, writable: true, configurable: true, enumerable: true }); return; }
+          if (k === "title") { this._sp.title = v == null ? "" : String(v); this._sp.titleEl.textContent = this._sp.title; }
+          else this._sp[k] = v;
+        },
+      });
+    }
     class ConfirmationModal extends Modal {
-      constructor(app_) { super(app_); this.buttonContainerEl = this.modalEl.createDiv({ cls: "modal-button-container" }); }
-      addButton(cb) { const b = new ButtonComponent(this.buttonContainerEl); if (cb) cb(b); return this; }
+      constructor(app_) { super(app_); this.buttonContainerEl = this.modalEl.createDiv({ cls: "modal-button-container" }); this._initialFocus = null; }
+      addClass(c) { if (c) this.modalEl.addClass(c); return this; }
+      addButton(cb) { const b = new ConfirmationButton(this.buttonContainerEl, this); if (cb) cb(b); return this; }
       addCheckbox(label, cb) {
         const l = this.buttonContainerEl.createEl("label", { cls: "mod-checkbox" });
         const i = l.createEl("input", { attr: { type: "checkbox" } }); l.appendText(" " + String(label));
         i.addEventListener("change", () => { if (cb) cb(i.checked); });
         return this;
       }
-      addCancelButton(cb) { return this.addButton(b => { b.setButtonText("Cancel").onClick(() => { this.close(); if (cb) cb(); }); }); }
+      /* a dismissal button; text defaults to "Cancel" (a function argument is called on click) */
+      addCancelButton(arg) {
+        const text = typeof arg === "string" && arg ? arg : "Cancel", cb = typeof arg === "function" ? arg : null;
+        return this.addButton(b => { b.setButtonText(text).setCancel().onClick(() => { if (cb) cb(); }); });
+      }
+      open() { super.open(); const f = this._initialFocus; if (f && this._open) try { f.buttonEl.focus(); } catch (_) {} }
     }
 
     /* -------------------------------------------------------------- Menu
        Shown through main.js's own context-menu machine (placeMenu/closeMenu),
        so a plugin menu looks like ours and publishes the same [menu:] census. */
+    /* api-settings: the separator entry addSeparator() adds (rendered as a divider) */
+    class MenuSeparator {
+      constructor(menu) { this.menu = menu || null; this.dom = document.createElement("div"); this.dom.className = "sep"; }
+    }
     class MenuItem {
       constructor(menu) {
         this.menu = menu;
@@ -321,11 +682,15 @@
       setSubmenu() { return new Menu(); }
     }
     class Menu extends Component {
-      constructor() { super(); this.items = []; this._hide = []; this.dom = null; }
+      constructor() { super(); this.items = []; this._hide = []; this.dom = null; this.parentEl = null; }
+      /* the element the menu belongs to; it carries has-active-menu while the menu is shown */
+      setParentElement(el) { this.parentEl = el instanceof Element ? el : null; return this; }
+      /* a history "back" dismisses the menu */
+      onHistoryBack() { this.hide(); }
       setNoIcon() { return this; }
       setUseNativeMenu() { return this; }
       addItem(cb) { const it = new MenuItem(this); this.items.push(it); cb(it); return this; }
-      addSeparator() { this.items.push(null); return this; }
+      addSeparator() { this.items.push(new MenuSeparator(this)); return this; }
       showAtMouseEvent(e) { return this.showAtPosition({ x: e.clientX, y: e.clientY }); }
       showAtPosition(p) {
         installDom();
@@ -334,25 +699,37 @@
         m.className = "ctxmenu menu os-plugin-menu";
         for (const it of this.items) {
           if (it === null) { const s = document.createElement("div"); s.className = "sep"; m.appendChild(s); }
+          else if (it instanceof MenuSeparator) m.appendChild(it.dom);
           else m.appendChild(it.dom);
         }
         this.dom = m;
         if (typeof placeMenu === "function") placeMenu(m, p.x, p.y);
         else { m.style.left = p.x + "px"; m.style.top = p.y + "px"; document.body.appendChild(m); }
+        if (this.parentEl) this.parentEl.addClass("has-active-menu");
         this.load();
         // main.js closes menus from its document mousedown / Escape; notice that
         const watch = () => { if (this.dom && !this.dom.isConnected) this._closed(); };
         this._mo = new MutationObserver(watch); this._mo.observe(document.body, { childList: true });
         return this;
       }
-      _closed() { if (this._mo) this._mo.disconnect(); this._mo = null; const d = this.dom; this.dom = null; if (!d) return; this.unload(); for (const f of this._hide.splice(0)) try { f(); } catch (e) { console.error(e); } }
+      _closed() { if (this._mo) this._mo.disconnect(); this._mo = null; const d = this.dom; this.dom = null; if (!d) return; if (this.parentEl) this.parentEl.removeClass("has-active-menu"); this.unload(); for (const f of this._hide.splice(0)) try { f(); } catch (e) { console.error(e); } }
       hide() { if (this.dom && typeof closeMenu === "function" && typeof menuEl !== "undefined" && menuEl === this.dom) closeMenu(); else if (this.dom) this.dom.remove(); this._closed(); }
       close() { this.hide(); }
       onHide(cb) { this._hide.push(cb); }
       static forEvent(e) { const m = new Menu(); m._evt = e; return m; }
     }
 
-    Object.assign(K, { AbstractTextComponent, BaseComponent, ButtonComponent, ColorComponent, ConfirmationModal, DropdownComponent, ExtraButtonComponent, FuzzySuggestModal, Menu, MenuItem, Modal, MomentFormatComponent, PluginSettingTab, SearchComponent, Setting, SettingGroup, SettingPage, SettingTab, SliderComponent, SuggestModal, TextAreaComponent, TextComponent, ToggleComponent, ValueComponent, openModals });
+    /* SecretComponent — design-gated (coordinator ruling: secretStorage / SecretComponent need an OS
+       keyring with a per-plugin namespace, or honest unsupported). Exported so plugins load; using it
+       throws instead of pretending to store a secret. */
+    const SECRET_MSG = "unsupported in opensidian: secret storage (OS keyring) is not available";
+    class SecretComponent extends BaseComponent {
+      constructor() { super(); throw new Error(SECRET_MSG); }
+      setValue() { throw new Error(SECRET_MSG); }
+      onChange() { throw new Error(SECRET_MSG); }
+    }
+    Object.assign(K.exportClasses, { ConfirmationButton, DisplayValueComponent, MenuSeparator, ProgressBarComponent, SecretComponent });
+    Object.assign(K, { AbstractTextComponent, BaseComponent, ButtonComponent, ColorComponent, ConfirmationButton, ConfirmationModal, DisplayValueComponent, DropdownComponent, ExtraButtonComponent, FuzzySuggestModal, Menu, MenuItem, MenuSeparator, Modal, MomentFormatComponent, PluginSettingTab, ProgressBarComponent, SearchComponent, SecretComponent, Setting, SettingGroup, SettingPage, SettingTab, SliderComponent, SuggestModal, TextAreaComponent, TextComponent, ToggleComponent, ValueComponent, openModals });
   });
   reg("ui:setting", function (K) {
     const { host, be } = K;
@@ -363,7 +740,7 @@
       close() { if (typeof closeSettings === "function") closeSettings(); },
       openTabById(id) { if (typeof openPluginSettingTab === "function") return openPluginSettingTab(id); setting.open(); },
       closeActiveTab() { if (setting.activeTab) { try { setting.activeTab.hide(); } catch (_) {} setting.activeTab = null; } },
-      addSettingTab(t) { setting.pluginTabs.push(t); tabsChanged(); },
+      addSettingTab(t) { if (t && typeof t.update === "function") { try { t.update(); } catch (e) { console.error("[plugin] SettingTab.update:", e); } } setting.pluginTabs.push(t); tabsChanged(); },
       removeSettingTab(t) { const i = setting.pluginTabs.indexOf(t); if (i >= 0) { setting.pluginTabs.splice(i, 1); tabsChanged(); } },
     };
     Object.assign(K, { setting });
@@ -427,6 +804,7 @@
       }
       close() { super.close(); this.suggestEl.hidden = true; this.suggestEl.textContent = ""; this._items = []; }
     }
+    AbstractInputSuggest.prototype.limit = 100;   // the default cap, also visible before construction
     Object.assign(K, { AbstractInputSuggest });
   });
 })();
