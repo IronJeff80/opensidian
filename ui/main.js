@@ -2195,6 +2195,9 @@ let dragTok = "", mvTok = "";
    is not mechanically reproducible at 250ms — OPENSIDIAN_SAVE_MS widens it for
    the smoke (backend save_debounce_ms; default 250 in every normal run). */
 let SAVE_MS = 250;
+/* save-maxwait: the longest an edit waits in RAM while typing never pauses for
+   SAVE_MS — a continuous burst reaches disk at least this often (scheduleSave). */
+const SAVE_MAX_MS = 2000;
 const errStr = e => String((e && e.message) || e);
 function saveFailed(name, e) {
   saveErr = String(name).replace(/[\[\]|]/g, "").slice(0, 60);
@@ -6398,9 +6401,18 @@ function scheduleSave(g) {
   // rows it was painted on were just rebuilt, so it is repainted here, at the
   // same choke point, from offsets Ed.replace already mapped through the edit.
   if (scHits(g).length) scMarks(g);
+  // save-maxwait: a pure trailing debounce never fires while keys keep arriving
+  // < SAVE_MS apart, so a long burst sat in RAM until it ended (a crash mid-burst
+  // lost all of it). The FIRST edit after a save arms a deadline; every later
+  // edit still pushes the debounce, but never past that deadline. Idle (one edit)
+  // is unchanged: deadline - now >= SAVE_MS, so the delay is SAVE_MS. Never
+  // shorter than SAVE_MS, so a widened test debounce (F2) is not cut short.
+  // The flush is the same saveBuf (queued, R11.3 merge, bytes = model now).
+  const now = Date.now();
+  if (!g.saveT || g.saveDl == null) g.saveDl = now + Math.max(SAVE_MAX_MS, SAVE_MS);
   clearTimeout(g.saveT);
   g.saveT = setTimeout(async () => {
-    g.saveT = null;
+    g.saveT = null; g.saveDl = null;
     await saveBuf(g);                       // R11.3: merge an external append instead of clobbering it
     // R18: only the READING pane needs the Rust renderer. This used to call
     // preview() on every debounced save, i.e. one full-note render IPC per
@@ -6409,7 +6421,7 @@ function scheduleSave(g) {
     // so the hidden refresh bought nothing and put Rust on the typing path.
     if (isReading(g)) preview(g);
     updateStatus(g);
-  }, SAVE_MS);
+  }, Math.max(0, Math.min(SAVE_MS, g.saveDl - now)));
 }
 
 /* ---------- status bar (R2.7, per group) ---------- */
