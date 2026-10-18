@@ -708,6 +708,7 @@
       addSeparator() { this.items.push(new MenuSeparator(this)); return this; }
       showAtMouseEvent(e) { return this.showAtPosition({ x: e.clientX, y: e.clientY }); }
       showAtPosition(p) {
+        this._settled = true;
         installDom();
         if (typeof closeMenu === "function") closeMenu();
         const m = document.createElement("div");
@@ -728,10 +729,21 @@
         return this;
       }
       _closed() { if (this._mo) this._mo.disconnect(); this._mo = null; const d = this.dom; this.dom = null; if (!d) return; if (this.parentEl) this.parentEl.removeClass("has-active-menu"); this.unload(); for (const f of this._hide.splice(0)) try { f(); } catch (e) { console.error(e); } }
-      hide() { if (this.dom && typeof closeMenu === "function" && typeof menuEl !== "undefined" && menuEl === this.dom) closeMenu(); else if (this.dom) this.dom.remove(); this._closed(); }
+      hide() { this._settled = true; if (this.dom && typeof closeMenu === "function" && typeof menuEl !== "undefined" && menuEl === this.dom) closeMenu(); else if (this.dom) this.dom.remove(); this._closed(); }
       close() { this.hide(); }
       onHide(cb) { this._hide.push(cb); }
-      static forEvent(e) { const m = new Menu(); m._evt = e; return m; }
+      /* a menu for an event: shown at the event's position once the event's dispatch is over (a task,
+         not a microtask — microtasks run between the listeners of a user event), so every listener
+         can still add items; a plugin that already showed or hid it keeps its choice */
+      static forEvent(e) {
+        const m = new Menu(); m._evt = e;
+        setTimeout(() => {
+          if (m._settled) return;
+          const x = e && typeof e.clientX === "number" ? e.clientX : 0, y = e && typeof e.clientY === "number" ? e.clientY : 0;
+          try { m.showAtPosition({ x, y }); } catch (err) { console.error(err); }
+        }, 0);
+        return m;
+      }
     }
 
     /* SecretComponent — design-gated (coordinator ruling: secretStorage / SecretComponent need an OS

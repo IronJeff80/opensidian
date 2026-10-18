@@ -475,8 +475,10 @@ pub fn load_theme(root: &Path, name: &str) -> Result<(String, Option<String>), S
 // body's current class, the var() resolves to html's resolved value and the
 // pixels simply stay the palette's (fail-safe in the benign direction).
 //
-// The scan runs on SANITIZED css (comments are already one space, so a
-// commented-out declaration cannot match). A declaration inside a string
+// The scan runs on SANITIZED css with its comments blanked (comment_free:
+// the sanitizer keeps style-settings `/* @settings */` blocks verbatim, and
+// their YAML must not read as a declaration), so a commented-out declaration
+// cannot match. A declaration inside a string
 // ("--text-normal:" as content) can false-positive — same benign direction:
 // the alias row resolves to the inherited palette value, no pixel moves.
 // Custom property names are CASE-SENSITIVE (CSS Variables 1 §2), so the
@@ -505,11 +507,60 @@ pub const BRIDGE_ALIASES: &[(&str, &[&str])] = &[
     ("--titlebar-background-focused", &["--titlebar-bg"]),
 ];
 
+/// `css` with every comment replaced by one space; strings are copied through
+/// opaque (`content: "/*"` opens nothing). An unterminated comment blanks the
+/// rest — sanitized input never has one, and blanking can only make `declares`
+/// say no (the benign direction). Cut only at ASCII bytes: valid UTF-8 out.
+fn comment_free(css: &str) -> String {
+    let b = css.as_bytes();
+    let n = b.len();
+    let mut out: Vec<u8> = Vec::with_capacity(n);
+    let mut i = 0;
+    while i < n {
+        let c = b[i];
+        if c == b'/' && i + 1 < n && b[i + 1] == b'*' {
+            let mut j = i + 2;
+            while j + 1 < n && !(b[j] == b'*' && b[j + 1] == b'/') {
+                j += 1;
+            }
+            out.push(b' ');
+            i = if j + 1 < n { j + 2 } else { n };
+        } else if c == b'"' || c == b'\'' {
+            out.push(c);
+            let mut j = i + 1;
+            while j < n {
+                let d = b[j];
+                if d == b'\\' && j + 1 < n {
+                    out.push(d);
+                    out.push(b[j + 1]);
+                    j += 2;
+                    continue;
+                }
+                out.push(d);
+                j += 1;
+                if d == c || d == b'\n' {
+                    break;
+                }
+            }
+            i = j;
+        } else if c == b'\\' && i + 1 < n {
+            out.push(c);
+            out.push(b[i + 1]);
+            i += 2;
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).unwrap_or_default()
+}
+
 /// Does `css` DECLARE custom property `name` (exact case)? A declaration is
 /// the name at an identifier boundary followed by optional whitespace and
 /// `:` — `var(--x)` (no colon) and `--x-alt:` (longer identifier) do not
 /// match. Textual on purpose: both failure directions are benign (see above).
 fn declares(css: &str, name: &str) -> bool {
+    let css = &comment_free(css);
     let b = css.as_bytes();
     let ident = |c: u8| c == b'-' || c == b'_' || c == b'\\' || c.is_ascii_alphanumeric();
     let mut from = 0;
@@ -621,6 +672,13 @@ pub fn derived_defaults_css(sanitized: &str) -> String {
 // - comments become ONE SPACE (spec: a comment is a token boundary), so
 //   `/*x*/mask-image` is still caught while `ma/**/sk-image` becomes the
 //   invalid `ma sk-image` — which no browser applies either.
+// - ONE exception: a style-settings block (`/*` + optional whitespace +
+//   `@settings`) is kept VERBATIM when nothing but whitespace is pending in
+//   the current segment, because obsidian-style-settings reads it back from
+//   the injected sheet's text. It is cut where a browser ends it (the first
+//   `*/`), so whatever follows a `*/` in its YAML is scanned as CSS like any
+//   other byte; it never joins a declaration, so the deny predicate sees what
+//   it saw before. Everywhere else a settings comment is a space, as above.
 // - `;` inside parentheses does NOT end a declaration (unquoted
 //   `url(data:image/svg+xml;base64,...)` is legal); a brace inside
 //   parentheses is refused.
@@ -712,6 +770,17 @@ fn segment_prop(seg: &[u8]) -> Result<Option<String>, String> {
     Ok(Some(decoded.to_ascii_lowercase()))
 }
 
+/// Is a comment body (between `/*` and `*/`) a style-settings block —
+/// optional whitespace, `@settings`, then whitespace or the end?
+fn is_settings_comment(body: &[u8]) -> bool {
+    let mut k = 0;
+    while k < body.len() && body[k].is_ascii_whitespace() {
+        k += 1;
+    }
+    let tag = b"@settings";
+    body[k..].starts_with(tag) && body.get(k + tag.len()).map_or(true, |c| c.is_ascii_whitespace())
+}
+
 /// Sanitize one CSS file (theme.css or a snippet). Ok = the bytes to inject
 /// plus the strip count (caller raises the loud message when > 0);
 /// Err = REFUSE the whole file, loudly, reason inside (DESIGN §6 fail-closed).
@@ -760,7 +829,16 @@ pub fn sanitize_css(src: &str) -> Result<Sanitized, String> {
                 if !closed {
                     return Err(refuse("unclosed comment"));
                 }
-                seg.push(b' '); // a comment is a token boundary
+                if is_settings_comment(&b[i + 2..j]) && seg.iter().all(|c| c.is_ascii_whitespace()) {
+                    // a style-settings block between tokens: emitted verbatim. It
+                    // ends at the FIRST `*/`, exactly where a browser ends it, and
+                    // the pending segment holds only whitespace, so no declaration
+                    // the deny predicate must see is split around it.
+                    out.append(&mut seg);
+                    out.extend_from_slice(&b[i..j + 2]);
+                } else {
+                    seg.push(b' '); // a comment is a token boundary
+                }
                 i = j + 2;
             }
             b'"' | b'\'' => {
@@ -1280,6 +1358,87 @@ mod tests {
         for s in [".a { /* x", "} x", ".a { color: red;"] {
             assert!(err(s).starts_with("cannot parse safely: "), "prefix on {s:?}");
         }
+    }
+
+    // ---- style-settings blocks (goal cp-menu-css) -------------------------
+
+    const SETTINGS: &str = "/* @settings\nname: Demo\nid: demo\nsettings:\n  - id: demo-x\n    title: Demo x\n    type: variable-number\n    default: 1\n*/";
+
+    #[test]
+    fn themefs_sanitize_settings_comment_survives_verbatim() {
+        let src = format!("{SETTINGS}\nbody {{ --demo-x: 1; }}\n");
+        let s = ok(&src);
+        assert_eq!(s.stripped, 0);
+        assert_eq!(s.css, src, "a top-level @settings block is kept byte for byte");
+        // inside a rule, between declarations, and with leading whitespace
+        let src = format!(".a {{ color: red; {SETTINGS} color: blue }}\n/*   @settings\nname: b\n*/\n");
+        assert_eq!(ok(&src).css, src);
+        // idempotent: a second pass changes nothing
+        assert_eq!(ok(&ok(&src).css).css, src);
+        // only `@settings` + whitespace/end is a settings block; other comments still vanish
+        let s = ok("/* @settingsx */.a { color: red }/* note */");
+        assert_eq!(s.css, " .a { color: red } ");
+        assert_eq!(ok("/*@settings*/.a{}").css, "/*@settings*/.a{}");
+    }
+
+    #[test]
+    fn themefs_sanitize_settings_comment_cannot_hide_a_forbidden_construct() {
+        // a declaration right after a kept block is still seen and stripped
+        let s = ok(".a { /* @settings\nx: 1\n*/mask-image: url(x); color: red }");
+        assert_eq!(s.stripped, 1);
+        assert_eq!(s.css, ".a { /* @settings\nx: 1\n*/ color: red }");
+        // a block that splits a name is a space, not kept: `ma sk-image`, as before
+        let s = ok(".a { ma/* @settings */sk-image: url(x); color: red }");
+        assert_eq!(s.css, ".a { ma sk-image: url(x); color: red }");
+        // a block between a mask name and its colon is not kept, and the decl is stripped
+        let s = ok(".a { -webkit-mask-box-image /* @settings\nx: 1 */ : url(x); color: red }");
+        assert_eq!(s.stripped, 1);
+        assert!(!s.css.contains("@settings") && !s.css.contains("mask"), "{}", s.css);
+        // a block before the name (a token boundary in browsers) still strips
+        let s = ok(".a { /* @settings */ mask: url(x) }");
+        assert_eq!((s.stripped, s.css.as_str()), (1, ".a { /* @settings */}"));
+        // an ordinary comment still neutralises what it hides: the text is gone
+        let s = ok(".a { color: red; /* mask-image: url(x); */ }");
+        assert_eq!((s.stripped, s.css.as_str()), (0, ".a { color: red;   }"));
+        // a mask-shaped prelude after a kept block is still refused
+        assert!(err("/* @settings */ mask: { }").contains("ambiguous 'mask' before '{'"));
+        // and settings YAML that looks like a declaration never feeds the bridge
+        let s = ok("/* @settings\n--background-primary: red\n--modal-background: x\n*/\n.x { color: red }");
+        assert!(s.css.contains("--background-primary: red"));
+        assert_eq!(bridge_css(&s.css), "", "a commented name is not a declaration");
+        assert_eq!(derived_defaults_css(&s.css), "");
+        // ...while a real declaration next to it still does, and a commented
+        // target does not suppress the derived default
+        let s = ok("/* @settings\n--modal-background: x\n*/\n.theme-dark { --background-primary: #000 }");
+        assert!(bridge_css(&s.css).contains("--bg-base: var(--background-primary)"));
+        assert!(derived_defaults_css(&s.css).contains("--modal-background: var(--background-primary)"));
+        // a string holding "/*" does not blank the rest for the re-parsers
+        let s = ok(".a { content: \"/*\" } .theme-dark { --background-primary: #000 }");
+        assert!(bridge_css(&s.css).contains("--bg-base"));
+    }
+
+    #[test]
+    fn themefs_sanitize_settings_comment_unterminated_is_refused() {
+        assert!(err("/* @settings\nname: x\nid: x\n").contains("unclosed comment"));
+        assert!(err(".a { color: red } /* @settings\nname: x */ .b { } /* @settings").contains("unclosed comment"));
+        assert!(err("/* @settings */ .a { /*").starts_with("cannot parse safely: "));
+    }
+
+    #[test]
+    fn themefs_sanitize_settings_yaml_close_marker_ends_the_block_as_browsers_do() {
+        // `*/` inside the YAML ends the comment there (as in a browser); what
+        // follows is CSS and is scanned — the mask after it is stripped
+        let s = ok("/* @settings\ndescription: a */ .x { mask-image: url(x); color: red }\n");
+        assert_eq!(s.stripped, 1);
+        assert_eq!(s.css, "/* @settings\ndescription: a */ .x { color: red }\n");
+        // a trailing `*/` left over is plain bytes at depth 0, emitted as-is
+        let s = ok("/* @settings\nd: a */ .x { color: red }\n*/\n");
+        assert_eq!(s.css, "/* @settings\nd: a */ .x { color: red }\n*/\n");
+        // YAML text after an early `*/` that opens a brace without closing it is refused
+        assert!(err("/* @settings\nd: a */ { x: 1\n*/").contains("unbalanced braces at EOF"));
+        // a `/*` inside the YAML does not nest: the first `*/` still ends it
+        let s = ok("/* @settings\nd: /* x */ .y { -webkit-mask: none }");
+        assert_eq!((s.stripped, s.css.as_str()), (1, "/* @settings\nd: /* x */ .y {}"));
     }
 
     #[test]

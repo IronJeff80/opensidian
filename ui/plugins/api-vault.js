@@ -603,6 +603,8 @@
       constructor() { super(); this.resolved = false; }
       getFileCache(f) { if (!f || !mine(this)) return null; const c = caches.get(f.path); if (!c) indexFile(f); return c || null; }
       getCache(p) { const f = vault.getFileByPath(p); return f ? this.getFileCache(f) : null; }
+      /* the vault paths that have a cache entry, as a fresh array */
+      getCachedFiles() { return mine(this) ? [...caches.keys()] : []; }
       getFirstLinkpathDest(lp, src) { return mine(this) ? resolveLink(lp, src) : null; }
       getLinkpathDest(lp, src) { const f = this.getFirstLinkpathDest(lp, src); return f ? [f] : []; }
       fileToLinktext(f, src, omitMd = true) {
