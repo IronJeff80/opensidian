@@ -88,7 +88,7 @@ Off by default. Each vault starts in restricted mode: no community plugin code r
 
 **Turning it on.** Open **Settings ▸ Community plugins** and switch **Restricted mode** off. The
 choice is per vault and is saved in `~/.opensidian.json`, outside the vault, so a vault you open
-cannot switch it off for itself.
+cannot turn its own plugins on.
 
 **What that means.** With restricted mode off, the plugins you enable run code from the internet
 with your user's rights, the same as in Obsidian. They can run programs, open network connections
