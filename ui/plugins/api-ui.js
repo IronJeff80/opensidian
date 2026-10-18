@@ -580,7 +580,9 @@
       }
       refreshDomState() { if (this._dom) sdApply(this._dom); }
       display() { if (this.settingItems && this.settingItems.length) sdRender(this); }
-      hide() { sdTeardown(this); this._pages = []; this.containerEl.empty(); }
+      // stock: hide() leaves containerEl's children alone (a ctor-built header/content survives a switch or close);
+      // only a declarative rendering (settingItems, owned by this class) is taken down
+      hide() { const d = this._dom; sdTeardown(this); this._pages = []; if (d) this.containerEl.empty(); }
     }
     class PluginSettingTab extends SettingTab {
       // stock: id / name are the plugin manifest's, set here (a subclass ctor reads them); no manifest is a TypeError

@@ -122,12 +122,13 @@
   }
   /* app.setting.open(): the pane the modal opens on */
   function pane(t) { sPane = paneOf(t); }
-  /* app.setting.openTab(t), before t.display(): a plugin tab goes on the page when the modal is open */
+  /* app.setting.openTab(t), before t.display(): a plugin tab goes on the page when the modal is open.
+     Its containerEl goes on as is: stock never empties it around open/display/hide, so children the
+     tab's constructor built there (a header + content pair display() fills) stay; display() clears itself */
   function mount(t) {
     pane(t);
     if (t._pane !== undefined || typeof settingsOpen === "undefined" || !settingsOpen) return;
     const pg = clearPage(sPane, "rows os-plugin-tab");
-    t.containerEl.empty ? t.containerEl.empty() : (t.containerEl.innerHTML = "");
     pg.appendChild(t.containerEl);
     // api-settings: a declarative tab (getSettingDefinitions) refreshes its settingItems on every open
     try { if (typeof t.update === "function") t.update(); } catch (e) { console.error("[plugin] " + t.id + " settings update:", e); }
