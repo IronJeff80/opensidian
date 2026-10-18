@@ -226,7 +226,7 @@
   });
   function renderDetail(pg) {
     const bar = el("div", "cpb-bar");
-    const back = btn("← All plugins", "cpb-back", () => { sel = null; det = null; gen++; view = rows ? "L" : "W"; if (rows) render(); else loadList(false); });
+    const back = btn("← All plugins", "cpb-back", () => { sel = null; det = null; ok = ""; err = ""; note = ""; gen++; view = rows ? "L" : "W"; if (rows) render(); else loadList(false); });
     back.id = "cpbback";
     bar.appendChild(back);
     pg.appendChild(bar);
