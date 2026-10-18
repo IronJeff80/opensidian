@@ -121,6 +121,19 @@
     if ("__TAURI__" in window) { try { Object.defineProperty(window, "__TAURI__", { value: undefined, writable: false, configurable: false }); } catch (_) {} }
     const facade = Object.freeze({ censusTok: () => (host.censusTok ? host.censusTok() : "") + sealTok() });
     try { Object.defineProperty(window, "__osPluginHost", { value: facade, configurable: false, writable: false, enumerable: false }); } catch (e) { console.error("[plugin] seal host:", e); }
+    /* cp-unrestricted (stock parity): the seal runs only before the first plugin script,
+       and plugin scripts are served only for a trusted vault. Stock's page has Node
+       integration, so bundles reach builtins through window.require (obsidian-importer:
+       window.require("node:crypto")) and the electron module through window.electron
+       (pdf-plus: window.electron.remote). Both resolve through the page's own view of
+       node-desktop.js, the same surface a plugin's require gets. */
+    if (host.desktopNode) {
+      try {
+        const pageReq = makeRequire("window");
+        Object.defineProperty(window, "require", { value: pageReq, configurable: true, writable: true, enumerable: false });
+        Object.defineProperty(window, "electron", { get: () => pageReq("electron"), configurable: true, enumerable: false });
+      } catch (e) { console.error("[plugin] page require:", e); }
+    }
   }
   // [pseal:<__TAURI__ still visible 0|1>,<public host keys>] — after the seal only
   const sealTok = () => " [pseal:" + (window.__TAURI__ ? 1 : 0) + "," + Object.keys(window.__osPluginHost || {}).length + "]";
