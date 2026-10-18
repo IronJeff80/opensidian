@@ -2217,9 +2217,18 @@ function saveCleared() {
   if (!saveErr) return;
   saveErr = ""; $("saveerr").hidden = true; updateTitle();
 }
+// typing-j: [svq:n,bytes] = the count and UTF-8 size of the last save whose
+// bytes are on disk. Set only AFTER the write resolved, so any census title that
+// shows it was BUILT after that flush: its [buf:] is a model read ordered with
+// the flush, which is what typing J compares a disk sample against (the native
+// title is an async IPC behind the save, so a bare [buf:] can predate it).
+let svqN = 0, svqB = 0;
+function svqTok() { return " [svq:" + svqN + "," + svqB + "]"; }
 async function saveNote(name, content) {    // true == the bytes are on disk
   try { await writeNote(name, content); }
   catch (e) { saveFailed(name, e); return false; }
+  svqN++; svqB = new TextEncoder().encode(content).length;
+  requestAnimationFrame(updateTitle);         // publish [svq:] (one coalesced title per frame)
   saveCleared();
   return true;
 }
