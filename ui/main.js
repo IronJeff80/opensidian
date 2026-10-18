@@ -8,6 +8,9 @@
    `otel` arg, so backend spans nest under it (commands without the param
    ignore it). ui/otel.js owns ids, buffering and the 250ms batched IPC. */
 const TAURI = window.__TAURI__;   // plugin-loader item 7: captured at load; ui/plugins/loader.js deletes window.__TAURI__ before any plugin runs (security.md)
+// cp-hover-editor: the plugin host's app + "obsidian" module, captured at load like TAURI (the seal narrows the
+// host before any plugin runs); main.js fills the core-plugin hooks plugins read (see QuickSwitcherModal)
+const PLG = window.__osPluginHost && __osPluginHost.app && __osPluginHost.api ? { app: __osPluginHost.app, X: __osPluginHost.api } : null;
 const inv = (c, a) => { const x = otel.ctx(); return TAURI.core.invoke(c, x ? Object.assign({ otel: x }, a) : a); };
 /* perf-spans shim over otel: mark(name, t0, extra) = a span that started at
    t0 and ends now; push(name, ms, extra) = an already-measured span (graph
@@ -6633,7 +6636,7 @@ async function cmdJumpTab(n) {     // R5.3 ctrl+1..9 — tab n; 9 = last
 /* ---------- m5: shared fuzzy modal — quick switcher (Ctrl+O) + command
    palette (Ctrl+P). One component; item source decides the kind.
    census [modal:qs|cp] while open. ---------- */
-let modalKind = null, mdItems = [], mdSel = 0, mdSrc = null;
+let modalKind = null, mdItems = [], mdSel = 0, mdSrc = null, qsModal = null;   // qsModal: the switcher's QuickSwitcherModal
 let mruList = [];                    // per-session note-use order, newest first
 function mruTouch(name) {
   const i = mruList.indexOf(name);
@@ -6696,6 +6699,7 @@ function closeModal() {
   if (!modalKind) return;
   modalKind = null;
   mdNew = "";
+  if (PLG && qsModal) PLG.app.keymap.popScope(qsModal.scope);
   $("modal").hidden = true;
   updateTitle();
 }
@@ -6762,18 +6766,13 @@ async function qsCreateNote(name, how = "cur") {
   if (r === "err") return;              // no tab for a note that is not on disk
   await qsOpenHow(target, how);         // "exists" (racing writer) -> open it, untouched
 }
-const QS_FOOT = [["↑↓", " to navigate"], ["↵", " to open"], ["ctrl ↵", " to open in new tab"],
-  ["ctrl alt ↵", " to open to the right"], ["shift ↵", " to create"], ["esc", " to dismiss"]];
+const QS_FOOT = [["↑↓", "to navigate"], ["↵", "to open"], ["ctrl ↵", "to open in new tab"],
+  ["ctrl alt ↵", "to open to the right"], ["shift ↵", "to create"], ["esc", "to dismiss"]].map(([command, purpose]) => ({ command, purpose }));
 function qsFoot(on) {                   // stock's static instructions row (r1 c00..c02), switcher only
   const f = $("mfoot");
   if (!f) return;
   f.hidden = !on || qsCreateOff;
-  if (f.hidden || f.childElementCount) return;
-  for (const [k, t] of QS_FOOT) {
-    const s = document.createElement("span"); s.className = "mfi";
-    const b = document.createElement("b"); b.textContent = k;
-    s.append(b, t); f.appendChild(s);
-  }
+  if (!f.hidden) qsModal.setInstructions(QS_FOOT);   // every open: a plugin's addition lasts one open, as stock
 }
 /* audit #10 (measured on the 20k-embed note): one title publish costs ~170 ms
    when the note in live preview is huge (the census reads layout across the
@@ -6855,8 +6854,79 @@ $("minput").onkeydown = async e => {
 };
 $("modal").onmousedown = e => { if (e.target === $("modal")) closeModal(); };
 function cmdQuickSwitch() {
-  modalKind === "qs" ? closeModal()
-    : pspan("qs_open", { notes: notesCache.length }, () => openModal("qs", qsItems));   // perfhunt: Ctrl+O -> list painted
+  modalKind === "qs" ? closeModal() : qsModal.open();   // through the prototype: a plugin may wrap open
+}
+/* cp-hover-editor: the core-plugin hooks plugins read through app.internalPlugins.plugins, shapes recorded
+   black-box from stock 1.13.7 (harness api-probes.d/hover.js, part hover).
+   switcher: the Ctrl+O switcher IS a QuickSwitcherModal; inputEl / instructionsEl are its DOM, its scope is
+   pushed while it is open (a key a plugin registers there runs first), chooser.values[selectedItem].file is
+   the TFile of the row under the selection. */
+class QuickSwitcherModal {
+  constructor(app) {
+    this.app = app; this.inputEl = $("minput"); this.instructionsEl = $("mfoot");
+    this.scope = PLG ? new PLG.X.Scope() : null;
+    const tfile = n => { const f = PLG && PLG.app.vault.getAbstractFileByPath(wsPathOut(n)); return PLG && f instanceof PLG.X.TFile ? f : null; };
+    this.chooser = {
+      get values() { return mdSrc === qsItems ? mdItems.map(it => ({ type: "file", file: tfile(it.label) })) : null; },
+      get selectedItem() { return mdSel; },
+    };
+  }
+  open() {
+    pspan("qs_open", { notes: notesCache.length }, () => openModal("qs", qsItems));   // perfhunt: Ctrl+O -> list painted
+    if (PLG) PLG.app.keymap.pushScope(this.scope);
+  }
+  close() { if (modalKind === "qs") closeModal(); }
+  setInstructions(list) {
+    const el = this.instructionsEl;
+    typeof el.empty === "function" ? el.empty() : el.replaceChildren();
+    for (const { command, purpose } of list || []) {
+      const s = document.createElement("span"); s.className = "mfi";
+      const b = document.createElement("b"); b.textContent = command;
+      s.append(b, " " + purpose); el.appendChild(s);
+    }
+  }
+}
+qsModal = new QuickSwitcherModal(PLG && PLG.app);
+/* graph: views.graph / views.localgraph(leaf) build a View whose engine is a GraphEngine; startGraph tells
+   its canvas's engine whenever the hovered node changes (gHover). Our sim runs on the main thread, so the
+   view's renderer.worker has no thread behind it: terminate() only marks the handle. */
+const NODE_TYPE = ["resolved", "unresolved", "tag", "attachment"];   // graphctx node kind -> engine node type
+class GraphEngine {
+  constructor(app) { this.app = app; this.hoverPopover = null; this.hoveredNode = null; this.lastHoverLink = null; }
+  // a note / attachment node under the pointer is a link hover (source "graph"); a tag or ghost has no file
+  onNodeHover(evt, id, type) {
+    this.hoveredNode = { id, type };
+    if (type === "tag" || type === "unresolved" || !(evt instanceof MouseEvent)) return;
+    this.lastHoverLink = id;
+    this.app.workspace.trigger("hover-link", { event: evt, source: "graph", hoverParent: this, targetEl: null, linktext: id });
+  }
+  onNodeUnhover() { this.hoveredNode = null; }
+}
+function gHover(g, e, p) {               // startGraph: the hovered node changed (p null = none); leaving one node unhovers it first
+  if (!PLG) return;
+  const en = g.gEngine || (g.gEngine = new GraphEngine(PLG.app));
+  try {
+    if (g.gHovOn) { g.gHovOn = false; en.onNodeUnhover(); }
+    if (p) { g.gHovOn = true; en.onNodeHover(e, p.n, NODE_TYPE[p.kind] || "resolved"); }
+  } catch (err) { console.error("[plugin] graph hover:", err); }
+}
+if (PLG) {
+  class GraphView extends PLG.X.View {
+    constructor(leaf, type) {
+      super(leaf); this.gType = type; this.engine = new GraphEngine(PLG.app);
+      const worker = { terminated: false, terminate() { worker.terminated = true; } };
+      this.renderer = { worker };
+    }
+    getViewType() { return this.gType; }
+    getDisplayText() { return this.gType === "graph" ? "Graph view" : "Local graph"; }
+  }
+  // page-preview: there is no page preview here, so it is not enabled
+  Object.assign(PLG.app.internalPlugins.plugins, {
+    graph: { enabled: true, instance: { id: "graph" },
+             views: { graph: leaf => new GraphView(leaf, "graph"), localgraph: leaf => new GraphView(leaf, "localgraph") } },
+    switcher: { enabled: true, instance: { id: "switcher", QuickSwitcherModal } },
+    "page-preview": { enabled: false, instance: { id: "page-preview" } },
+  });
 }
 /* ---------- R14: command registry = the ONE source of truth for the palette
    (Ctrl+P), the keymap dispatcher and Settings ▸ Hotkeys. Chords are
@@ -9070,6 +9140,7 @@ async function startGraph(g, cfg) {
     N.length = 0; N.push(...N2);
     gr.edges = g2.edges; gr.col = g2.col;
     rebuild();
+    if (hov >= 0) gHover(g, null, null);
     hov = -1;
     // C5: a0 is the sim's REAL alpha before the restart — a graph can go quiet with alpha
     // still around 0.5 (kinetic calm wins the race against the alpha floor), and reheat only
@@ -9657,11 +9728,11 @@ async function startGraph(g, cfg) {
     }
     const [x, y] = toWorld(e.clientX - r.left, e.clientY - r.top);
     const h = hitTest(x, y);
-    if (h !== hov) { hov = h; redraw(); }
+    if (h !== hov) { hov = h; redraw(); gHover(g, e, N[h]); }   // cp-hover-editor: the engine hears every hover change
     cv.style.cursor = hov >= 0 ? "pointer" : "";
   };
   cv.onmouseup = () => { release(); };
-  cv.onmouseleave = () => { release(); if (hov >= 0) { hov = -1; redraw(); } cv.style.cursor = ""; };
+  cv.onmouseleave = () => { release(); if (hov >= 0) { hov = -1; redraw(); gHover(g, null, null); } cv.style.cursor = ""; };
   cv.oncontextmenu = e => {               // graphctx GC29-GC31: the file menu on a note / attachment node, nothing elsewhere
     e.preventDefault();
     const r = cv.getBoundingClientRect();
