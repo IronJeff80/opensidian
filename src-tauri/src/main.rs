@@ -3172,8 +3172,76 @@ fn set_snippet_enabled(v: State<Vault>, label: String, on: bool) -> Result<(), S
    there). Trust (restricted mode OFF) is ~/.opensidian.json "plugins_trusted"
    keyed by the CANONICAL vault path, so a vault cannot ship itself trusted. */
 
+/* cp-unrestricted (operator ruling 2026-10-18, stock parity): the page CSP
+   follows the vault's trust state, per window. One vault per process, so the
+   window's pages are this process's vault's pages.
+     restricted (default, or no vault yet): the config CSP, byte for byte — no
+       'unsafe-eval', no blob: (the negative control; pinned by
+       csp_is_exactly_this_string_and_no_remote_image_origin).
+     trusted: script-src gains 'unsafe-eval' blob:, and worker-src 'self' blob:
+       is added — community plugins eval, new Function and spawn blob workers,
+       as in stock. Never set in the config: a global unsafe-eval is refused.
+   Tauri builds the header per page response; page_csp rewrites it after, from
+   the trust flag in ~/.opensidian.json (outside the vault). A page already
+   loaded keeps its header, so PAGE_EVAL says which one it got and the loader
+   reloads once when the flag and the page disagree. */
+static PAGE_EVAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn csp_by_trust(header: &str, trusted: bool) -> String {
+    if !trusted {
+        return header.to_string();
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut worker = false;
+    for d in header.split(';').map(str::trim).filter(|d| !d.is_empty()) {
+        match d.split_whitespace().next().unwrap_or("") {
+            "script-src" => out.push(format!("{d} 'unsafe-eval' blob:")),
+            "worker-src" => {
+                worker = true;
+                out.push(format!("{d} blob:"));
+            }
+            _ => out.push(d.to_string()),
+        }
+    }
+    if !worker {
+        out.push("worker-src 'self' blob:".into());
+    }
+    out.join("; ")
+}
+
+/// the response hook of the page window: an HTML page (the only responses
+/// Tauri gives a CSP header) gets the header of the vault's trust state
+fn page_csp(h: &tauri::AppHandle, res: &mut tauri::http::Response<std::borrow::Cow<'static, [u8]>>) {
+    use tauri::Manager;
+    let Some(base) = res.headers().get("Content-Security-Policy").and_then(|v| v.to_str().ok()).map(str::to_owned) else {
+        return;
+    };
+    let trusted = cur_vault(&h.state::<Vault>()).is_some_and(|r| plugins::is_trusted(&cfg_value(), &r));
+    let csp = csp_by_trust(&base, trusted);
+    match tauri::http::HeaderValue::from_str(&csp) {
+        Ok(v) => {
+            res.headers_mut().insert("Content-Security-Policy", v);
+            PAGE_EVAL.store(trusted, std::sync::atomic::Ordering::SeqCst);
+        }
+        // keep Tauri's (restricted) header: never widen on a failure
+        Err(_) => PAGE_EVAL.store(false, std::sync::atomic::Ordering::SeqCst),
+    }
+    eprintln!("[csp] page trusted={trusted} Content-Security-Policy: {}", res.headers()["Content-Security-Policy"].to_str().unwrap_or("?"));
+}
+
+/// the app window, from the config entry, with page_csp on its responses
+fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) -> tauri::Result<()> {
+    let h = app.clone();
+    tauri::WebviewWindowBuilder::from_config(app, wc)?
+        .on_web_resource_request(move |_req, res| page_csp(&h, res))
+        .build()?;
+    Ok(())
+}
+
 fn plugins_state_of(root: &Path) -> serde_json::Value {
     serde_json::json!({
+        // which CSP the loaded page got (page_csp): eval allowed or not
+        "pageEval": PAGE_EVAL.load(std::sync::atomic::Ordering::SeqCst),
         "trusted": plugins::is_trusted(&cfg_value(), root),
         "enabled": plugins::enabled_ids(root),
         "installed": plugins::installed(root),
@@ -5355,11 +5423,20 @@ fn main() {
             let _ = WIN_REC.set((rec, (wc.width, wc.height)));
         }
     }
+    // cp-unrestricted: the window is built in setup (page_window), not by Tauri
+    // from the config, so its pages pass through page_csp (CSP by trust state).
+    let page_conf = ctx.config_mut().app.windows.first_mut().map(|wc| {
+        wc.create = false;
+        wc.clone()
+    });
     tauri::Builder::default()
         .plugin(appid::plugin())
         .manage(vault)
         .manage(ZoomLevel(Mutex::new(read_zoom_cfg())))
-        .setup(|app| {
+        .setup(move |app| {
+            if let Some(wc) = &page_conf {
+                page_window(app.handle(), wc)?;
+            }
             spawn_watcher(app.handle().clone());
             // item 14: a switch-started window whose UI never calls switch_ready
             // is still shown (and frees the old window) after SWITCH_FALLBACK
@@ -8440,6 +8517,32 @@ mod tests {
             }
         }
         assert!(!script.contains("unsafe-inline") && !script.contains("data:") && !script.contains('*'), "{script}");
+    }
+
+    /// cp-unrestricted: restricted = the config CSP unchanged (no eval, no
+    /// blob:); trusted = eval + blob: scripts and workers, nothing else widened
+    #[test]
+    fn csp_by_trust_widens_only_a_trusted_vaults_scripts_and_workers() {
+        const CONF: &str = include_str!("../tauri.conf.json");
+        let base = serde_json::from_str::<serde_json::Value>(CONF).unwrap()["app"]["security"]["csp"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(csp_by_trust(&base, false), base);
+        assert!(!csp_by_trust(&base, false).split_whitespace().any(|t| t == "'unsafe-eval'" || t.starts_with("blob:")));
+        let t = csp_by_trust(&base, true);
+        assert_eq!(
+            t,
+            "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval' 'unsafe-eval' blob:; \
+             style-src 'self' 'unsafe-inline'; img-src 'self' data: opensidian-img:; font-src 'self'; \
+             connect-src ipc: http://ipc.localhost; worker-src 'self' blob:"
+        );
+        // every directive other than script-src is byte-identical
+        let other = |c: &str| c.split("; ").filter(|d| !d.starts_with("script-src") && !d.starts_with("worker-src")).map(str::to_owned).collect::<Vec<_>>();
+        assert_eq!(other(&t), other(&base));
+        // an existing worker-src is extended, not duplicated; Tauri's own hash tokens survive
+        let w = csp_by_trust("script-src 'self' 'sha256-abc'; worker-src 'self'", true);
+        assert_eq!(w, "script-src 'self' 'sha256-abc' 'unsafe-eval' blob:; worker-src 'self' blob:");
     }
 
     /// S4: picker commands refuse system trees and dot-components, keep the

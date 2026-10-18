@@ -152,6 +152,32 @@
     });
   }
 
+  /* cp-unrestricted: the page CSP is fixed when the page loads — Rust page_csp
+     gives a trusted vault's page 'unsafe-eval' + blob: workers, every other page
+     the restricted CSP — and plugins_state says which one this page got
+     (pageEval). When the trust flag and the page disagree (the flag was just
+     flipped, or the vault was bound after the page loaded), the page reloads
+     once, after the save debounce so a pending note write lands first. Two
+     reloads in a row that still disagree stop here with a console warning
+     instead of looping. */
+  let cspReload = false;
+  function cspCheck(s) {
+    if (!s || typeof s.pageEval !== "boolean") return s;
+    const KEY = "osCspReload";
+    let n = 0;
+    try {
+      if (!!s.trusted === s.pageEval) { sessionStorage.removeItem(KEY); return s; }
+      n = +sessionStorage.getItem(KEY) || 0;
+    } catch (_) { /* no storage: still reload, the in-page flag stops a second one */ }
+    if (cspReload) return s;
+    if (n >= 2) { console.warn("[plugins] page CSP still disagrees with the vault trust flag after 2 reloads"); return s; }
+    cspReload = true;
+    try { sessionStorage.setItem(KEY, String(n + 1)); } catch (_) {}
+    Promise.resolve(invoke ? invoke("save_debounce_ms") : 0).catch(() => 0)
+      .then(ms => setTimeout(() => location.reload(), (+ms || 0) + 300));
+    return s;
+  }
+
   const host = {
     api: null,
     status,
@@ -165,8 +191,8 @@
       if (granted) return false;
       granted = true;
       fn({
-        state: () => invoke("plugins_state"),
-        set: a => invoke("plugins_set", a),
+        state: () => invoke("plugins_state").then(cspCheck),
+        set: a => invoke("plugins_set", a).then(cspCheck),
         io: (id, op, data) => invoke("plugin_io", data === undefined ? { id, op } : { id, op, data }),
         invoke,   // api.js's own vault calls (read/modify/...) — never handed to a plugin
         listen,   // api.js subscribes to vault-changed (Vault create/modify/delete/rename events)
