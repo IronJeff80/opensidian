@@ -33,6 +33,7 @@ mod sandbox;
 mod settings;
 mod spawn;
 mod spawner;
+mod desk_http;
 mod desk_net;
 mod desk_proc;
 mod vaultlock;
@@ -3431,6 +3432,67 @@ fn desk_sock_destroy(id: u64) -> Result<(), String> {
     Ok(())
 }
 
+/* ---- cp-unrestricted: obsidian request / requestUrl for plugins (desk_http.rs).
+   Same gate as child_process and listeners: the vault's trust flip, checked on
+   every request. Stock requestUrl reaches any host without CORS; ours does that
+   for http://, https:// is refused until a TLS client is a pinned dependency. */
+#[tauri::command]
+async fn desk_http_request(v: State<'_, Vault>, req: desk_http::Req) -> Result<desk_http::Resp, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    if !plugins::is_trusted(&cfg_value(), &root) {
+        return Err("EPERM: restricted mode, plugins cannot make requests".into());
+    }
+    let what = format!("{} {}", req.method.as_deref().unwrap_or("GET"), req.url.split('?').next().unwrap_or(""));
+    let r = tauri::async_runtime::spawn_blocking(move || desk_http::request(&req)).await.map_err(|e| e.to_string())?;
+    match &r {
+        Ok(x) => eprintln!("[desk] http {what} -> {}", x.status),
+        Err(e) => eprintln!("[desk] http {what} -> {e}"),
+    }
+    r
+}
+
+/* ---- cp-unrestricted: electron shell for plugins (openExternal / openPath /
+   showItemInFolder), trust-gated like the rest. Stock hands these to the OS
+   opener with the user's rights; so does this (xdg-open, no shell). "/vault/x"
+   is the vault's real path (getBasePath), as for child_process cwd. */
+#[tauri::command]
+fn desk_shell(v: State<Vault>, op: String, target: String) -> Result<(), String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    if !plugins::is_trusted(&cfg_value(), &root) {
+        return Err("EPERM: restricted mode, plugins cannot use the shell".into());
+    }
+    let arg = match op.as_str() {
+        "external" => {
+            let scheme = target.split(':').next().unwrap_or("");
+            let ok = target.contains(':') && scheme.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+            if !ok {
+                return Err(format!("EINVAL: not a URL: {target}"));
+            }
+            std::ffi::OsString::from(&target)
+        }
+        "path" => desk_proc::map_cwd(&root, Some(&target)).into_os_string(),
+        "reveal" => {
+            let p = desk_proc::map_cwd(&root, Some(&target));
+            p.parent().map(|d| d.to_path_buf()).unwrap_or(p).into_os_string()
+        }
+        _ => return Err(format!("EINVAL: unknown shell op {op}")),
+    };
+    eprintln!("[desk] shell {op} {}", arg.to_string_lossy());
+    std::process::Command::new("xdg-open")
+        .arg(&arg)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|mut c| {
+            std::thread::spawn(move || {
+                let _ = c.wait();   // reap it, no zombie
+            });
+        })
+        .map_err(|e| format!("ENOENT: xdg-open: {e}"))
+}
+
 /* ---- themefs R5 (themes): the listing predicate is the oracle's, verbatim
    (the recon-themes probe §3 — themefs::themes_scan). themes_scan/theme_css
    are INSTRUMENTED (a directory walk that grows with the user's installed
@@ -5714,6 +5776,7 @@ fn main() {
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
             plugins_state, plugins_set, plugin_io, plugin_vfs, desk_proc_spawn, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
             desk_net_listen, desk_net_accept, desk_net_close, desk_sock_read, desk_sock_write, desk_sock_end, desk_sock_destroy,
+            desk_http_request, desk_shell,
             themes_scan, theme_css, get_css_theme, set_css_theme, theme_seed_report, vault_css_watch,
             get_quickfont, set_quickfont, get_fonts, set_font, font_families,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,

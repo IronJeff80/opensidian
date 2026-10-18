@@ -63,7 +63,7 @@
       if (name === "obsidian") {
         const a = host.api;
         if (!a) throw new Error(id + ': require("obsidian"): the plugin API is not available');
-        return a;
+        return dv && dv.api ? dv.api(a) : a;   // node-desktop.js lays stock request / requestUrl over it
       }
       if (name.startsWith("@codemirror/") || name.startsWith("@lezer/")) {
         const m = window.__osModules && Object.prototype.hasOwnProperty.call(window.__osModules, name) ? window.__osModules[name] : undefined;

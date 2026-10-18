@@ -1142,6 +1142,88 @@
     setInterval: (...a) => window.setInterval(...a), clearInterval: t => window.clearInterval(t),
     setImmediate: (f, ...a) => window.setTimeout(f, 0, ...a), clearImmediate: t => window.clearTimeout(t) });
 
+  /* ------------------------------------------- obsidian request / requestUrl (Rust desk_http.rs)
+     Stock gives plugins an HTTP client with no CORS: any host, redirects followed, the
+     response whatever its status (requestUrl throws on >= 400 unless throw: false).
+     A trusted vault's plugins get that here; the shared API's placeholder stays for the
+     rest. http:// only for now: https:// fails with ENOTSUP (no TLS client in the app).
+     Bodies cross as latin1 strings (one char per byte). */
+  const toBytes = b => {
+    if (b == null) return null;
+    if (typeof b === "string") return new TextEncoder().encode(b);
+    if (b instanceof ArrayBuffer) return new Uint8Array(b);
+    if (ArrayBuffer.isView(b)) return new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
+    return new TextEncoder().encode(String(b));
+  };
+  function httpSend(p) {
+    const o = typeof p === "string" ? { url: p } : (p && typeof p === "object" ? p : {});
+    const headers = [];
+    if (o.headers && typeof o.headers === "object") for (const k of Object.keys(o.headers)) if (o.headers[k] != null) headers.push([String(k), String(o.headers[k])]);
+    if (o.contentType && !headers.some(([k]) => k.toLowerCase() === "content-type")) headers.push(["Content-Type", String(o.contentType)]);
+    const bytes = toBytes(o.body);
+    const req = { url: String(o.url || ""), method: String(o.method || "GET").toUpperCase(), headers };
+    if (bytes) req.body = latin1Str(bytes, 0);
+    if (!desk) return Promise.reject(new Error("request: no desktop bridge"));
+    return desk("desk_http_request", { req }).then(r => {
+      const body = latin1Bytes(r.body || "");
+      const hs = {};
+      for (const [k, v] of r.headers || []) hs[k] = Object.prototype.hasOwnProperty.call(hs, k) ? hs[k] + ", " + v : v;
+      return { status: r.status, headers: hs, body };
+    }, e => { throw new Error("net::" + String(e && e.message || e)); });
+  }
+  const httpFail = r => Object.assign(new Error("Request failed, status " + r.status), { status: r.status, headers: r.headers });
+  function requestUrl(p) {
+    const thr = !(p && typeof p === "object" && p.throw === false);
+    const pr = httpSend(p).then(r => {
+      if (thr && r.status >= 400) throw httpFail(r);
+      let text = null, json;
+      const buf = r.body.buffer.slice(r.body.byteOffset, r.body.byteOffset + r.body.byteLength);
+      return {
+        status: r.status, headers: r.headers, arrayBuffer: buf,
+        get text() { if (text === null) text = new TextDecoder("utf-8").decode(r.body); return text; },
+        get json() { if (json === undefined) json = JSON.parse(this.text); return json; },
+      };
+    });
+    pr.arrayBuffer = pr.then(x => x.arrayBuffer);
+    pr.json = pr.then(x => x.json);
+    pr.text = pr.then(x => x.text);
+    return pr;
+  }
+  const request = p => httpSend(p).then(r => { if (r.status >= 400) throw httpFail(r); return new TextDecoder("utf-8").decode(r.body); });
+  // the plugin's "obsidian": the shared API with stock's request / requestUrl laid over
+  const apis = new WeakMap();
+  function obsidianApi(base) {
+    if (!base || typeof base !== "object" || !desk) return base;
+    let a = apis.get(base);
+    if (!a) {
+      const d = Object.getOwnPropertyDescriptors(base);
+      d.request = { value: request, enumerable: true, writable: false, configurable: false };
+      d.requestUrl = { value: requestUrl, enumerable: true, writable: false, configurable: false };
+      a = Object.defineProperties(Object.create(Object.getPrototypeOf(base)), d);
+      if (Object.isFrozen(base)) Object.freeze(a);
+      apis.set(base, a);
+    }
+    return a;
+  }
+
+  /* ------------------------------------------- electron (shell real, Rust desk_shell)
+     shell.openExternal / openPath / showItemInFolder go to the OS opener with the user's
+     rights, as stock's do. remote / ipcRenderer: just enough for bundles that look up the
+     focused window at load or show a window; there is no second BrowserWindow. */
+  const shellCall = (op, target) => desk ? desk("desk_shell", { op, target: String(target) }) : Promise.reject(new Error("shell: no desktop bridge"));
+  const shellOwn = Object.freeze({
+    openExternal: url => shellCall("external", url).then(() => undefined),
+    openPath: p => shellCall("path", p).then(() => "", e => String(e && e.message || e)),
+    showItemInFolder: p => { shellCall("reveal", p).catch(e => console.warn("[desktop] showItemInFolder: " + String(e && e.message || e))); },
+    beep() {},
+  });
+  const noWindow = Object.freeze({ show() {}, focus() {}, isFocused: () => document.hasFocus(), isDestroyed: () => false, webContents: Object.freeze({ id: 1 }) });
+  const electronOwn = {
+    shell: shellOwn,
+    remote: Object.freeze({ shell: shellOwn, BrowserWindow: Object.freeze({ getFocusedWindow: () => noWindow, getAllWindows: () => [noWindow] }), getCurrentWindow: () => noWindow }),
+    ipcRenderer: Object.freeze({ send() {}, on() { return this; }, once() { return this; }, removeListener() { return this; }, removeAllListeners() { return this; }, sendSync: () => undefined, invoke: () => Promise.resolve(undefined) }),
+  };
+
   const PLUGIN_DIR = id => "/vault/.obsidian/plugins/" + id;
   const views = new Map();   // id -> view (one per plugin id for the page's life)
   function view(id) {
@@ -1176,6 +1258,7 @@
       ["net", (deny, n) => mod(n, deny, netOwn)],
       ["http", (deny, n) => mod(n, deny, httpOwn)],
       ["https", (deny, n) => mod(n, deny, httpsOwn)],
+      ["electron", (deny, n) => mod(n, deny, electronOwn)],
     ]);
     /* the vault fs facade (node-modules.js) is one frozen object shared by every plugin;
        graceful-fs defines a queue symbol on require("fs") and reassigns close/closeSync at
@@ -1198,6 +1281,7 @@
       // a builtin this view answers; deny is the loader's message for the stub members
       resolve(name, deny) { const b = bare(name), f = mods.get(b); if (!f) return undefined; if (!made.has(b)) made.set(b, f(String(deny), b)); return made.get(b); },
       bindRequire(r) { if (typeof r === "function" && !boundReq) boundReq = r; },
+      api: obsidianApi,
       process: proc,
       global: ownGlobal(proc),
       Buffer,
