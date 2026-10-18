@@ -1730,7 +1730,7 @@ span.is-flashing { background: var(--highlight-yellow) }
 .cpb-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px }
 .cpb-btn.cpb-back { border: 0; background: none; padding: 0 4px; color: var(--text-chrome-muted) }
 .cpb-btn.cpb-back:hover { color: var(--text-chrome) }
-.cpb-count { color: var(--text-chrome-faint); font-size: 12px }
+.cpb-count { flex: 1; text-align: right; color: var(--text-chrome-faint); font-size: 12px }
 .cpb-tools { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap }
 .cpb-q { flex: 1 1 220px; min-width: 0; height: 30px; box-sizing: border-box; padding: 0 10px; border-radius: 4px;
          border: 1px solid var(--border); background: var(--bg-sidebar); color: var(--text-chrome); font: inherit; font-size: 13px }

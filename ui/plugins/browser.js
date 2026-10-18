@@ -15,9 +15,10 @@
    toggle (host.setEnabled), and the restricted-mode switch stays on the Community plugins page.
 
    Census (settings.js tok(), only while the browser is on screen):
-     [cpb:<W|L|D|E>,<rows shown>,<matches>,<total>,<sort>]   W loading, L list, D detail, E list failed
+     [cpb:<W|L|D|E>,<rows shown>,<matches>,<total>,<sort>,<list loads>]   W loading, L list, D detail, E failed
      [cpbq:<x>,<y>,<query length>]   the search box      [cpbs=<sort>:<x>,<y>,<1 selected|0>]
      [cpbr=<id>:<x>,<y>]             the first 12 rows    [cpbk:<x>,<y>]   the Back control
+     [cpbf:<x>,<y>]                  Refresh (list + releases fetched again)
      [cpbd=<id>:<installed|->,<latest|->,<update 0|1>,<enabled 0|1>,<loaded 0|1>,<readme chars>,<intact -|0|1>]
      [cpbdn:<name>|<author>]          [cpba=<install|update|uninstall|enable>:<x>,<y>]
      [cpbbusy:<action>]  [cpbok:<action>:<id>]  [cpberr:<message>]   the last action's outcome */
@@ -34,6 +35,7 @@
   let view = "W", rows = null, listErr = "", q = "", sort = "downloads", matches = 0, shown = 0;
   let sel = null, det = null, detErr = "", busy = "", ok = "", err = "", note = "";
   let gen = 0;                 // a late reply for a page the user already left is dropped
+  let loads = 0;               // list loads completed (census: a Refresh is seen to land)
 
   const el = (tag, cls, txt) => { const d = document.createElement(tag); if (cls) d.className = cls; if (txt != null) d.textContent = txt; return d; };
   const msg = e => String(e && e.message || e || "unknown error");
@@ -84,7 +86,7 @@
     try {
       const r = await invoke("store_list", { refresh: !!refresh });
       if (g !== gen) return;
-      rows = Array.isArray(r) ? r : []; view = "L";
+      rows = Array.isArray(r) ? r : []; view = "L"; loads++;
     } catch (e) {
       if (g !== gen) return;
       listErr = msg(e); view = "E";
@@ -135,6 +137,10 @@
     const back = btn("← Community plugins", "cpb-back", () => ctx.back()); back.id = "cpbback";
     bar.appendChild(back);
     bar.appendChild(el("div", "cpb-count"));
+    // the list and each repo's latest release are cached for a while (GitHub's anonymous rate limit);
+    // this fetches both again, so a release published since shows up as an update
+    const rf = btn("Refresh", "", () => loadList(true)); rf.id = "cpbrefresh"; rf.title = "Fetch the list and the latest releases again";
+    bar.appendChild(rf);
     pg.appendChild(bar);
     const tools = el("div", "cpb-tools");
     const inp = el("input", "cpb-q"); inp.id = "cpbq"; inp.type = "search"; inp.placeholder = "Search by name, author or description";
@@ -283,7 +289,7 @@
   /* settings.js: the Browse button (a fresh visit to the list), and a rebuild while it is on screen */
   function open(c, fresh) {
     ctx = c;
-    if (fresh) { sel = null; det = null; ok = ""; err = ""; note = ""; view = rows ? "L" : "W"; }
+    if (fresh) { sel = null; det = null; ok = ""; err = ""; note = ""; q = ""; view = rows ? "L" : "W"; }
     if (!rows && view !== "D") return loadList(false);
     render();
   }
@@ -293,10 +299,11 @@
   const ctr = d => { const b = d.getBoundingClientRect(); return Math.round(b.left + b.width / 2) + "," + Math.round(b.top + b.height / 2); };
   function tok() {
     const pg = page(); if (!pg) return "";
-    let t = " [cpb:" + view + "," + (view === "L" ? shown : 0) + "," + (view === "L" ? matches : 0) + "," + (rows ? rows.length : 0) + "," + sort + "]";
+    let t = " [cpb:" + view + "," + (view === "L" ? shown : 0) + "," + (view === "L" ? matches : 0) + "," + (rows ? rows.length : 0) + "," + sort + "," + loads + "]";
     const b = pg.querySelector("#cpbback"); if (b) t += " [cpbk:" + ctr(b) + "]";
     if (view === "L") {
       const i = pg.querySelector("#cpbq"); if (i) t += " [cpbq:" + ctr(i) + "," + i.value.length + "]";
+      const f = pg.querySelector("#cpbrefresh"); if (f) t += " [cpbf:" + ctr(f) + "]";
       for (const s of pg.querySelectorAll(".cpb-sortb")) t += " [cpbs=" + s.dataset.sort + ":" + ctr(s) + "," + (s.classList.contains("on") ? 1 : 0) + "]";
       let n = 0;
       for (const r of pg.querySelectorAll(".cpb-row")) { if (n++ >= 12) break; t += " [cpbr=" + r.dataset.store + ":" + ctr(r) + "]"; }
