@@ -1397,6 +1397,8 @@
         for (const k of Reflect.ownKeys(d)) { d[k].configurable = true; if ("value" in d[k]) d[k].writable = true; }
         // a trusted vault's fs has Node's *Sync calls (the facade's ENOSYS stubs are replaced)
         if (isFsFacade(m)) for (const k of Object.keys(fsSync)) d[k] = { value: fsSync[k], enumerable: true, writable: true, configurable: true };
+        // as in Node, require("fs").promises is the very object require("fs/promises") returns
+        if (isFsFacade(m)) d.promises.value = own(m.promises);
         c = Object.defineProperties(Object.create(Object.getPrototypeOf(m)), d);
         owned.set(m, c);
       }
