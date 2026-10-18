@@ -31,6 +31,14 @@ landlock = "=0.4.7"
 # pins it to that exact version, so the lock gains no package.
 libc = "=0.2.189"
 
+# cp-browser — the plugin store (plugin_store.rs). NO NEW CRATE: both are
+# ALREADY in Cargo.lock as tauri/webkit dependencies, `=` pins the locked version.
+#   url  2.5.8  (2026-01-05, MIT OR Apache-2.0)  allowlist / redirect parsing
+#   sha2 0.10.9 (2025-04-30, MIT OR Apache-2.0)  sha256 of every installed file
+#        (was dev-only for builtins.rs; now also shipped). soup3: linux block below
+sha2 = "=0.10.9"
+url = "=2.5.8"
+
 # R33.6b — the POSITIVE session test behind the two-path drag (win_move_proto).
 # Both crates are ALREADY in Cargo.lock as tauri's own transitive deps (tauri ->
 # tao -> gtk/gdk/gdkx11 0.18.2), so naming them here resolves to the versions the
@@ -40,6 +48,10 @@ libc = "=0.2.189"
 [target.'cfg(target_os = "linux")'.dependencies]
 gdk = "=0.18.2"
 gdkx11 = "=0.18.2"
+# cp-browser: the plugin store's HTTPS client is libsoup 3 — the library webkit2gtk
+# already links (TLS = glib-networking, system CA store). soup3 0.5.0 (2023-08-01,
+# MIT) is webkit2gtk's own binding, ALREADY in Cargo.lock: no new crate, no new C lib.
+soup3 = "=0.5.0"
 
 # listtoggle A2 — the unit table runs ui/editor.js in JavaScriptCore, the engine
 # the webview runs it in. javascriptcore-rs 1.1.2 is ALREADY in Cargo.lock as
