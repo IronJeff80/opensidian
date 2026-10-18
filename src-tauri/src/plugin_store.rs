@@ -505,7 +505,7 @@ pub(crate) async fn store_install(v: tauri::State<'_, crate::Vault>, id: String)
 #[tauri::command]
 pub(crate) async fn store_uninstall(v: tauri::State<'_, crate::Vault>, id: String) -> Result<(), String> {
     let root = crate::cur_vault(&v).ok_or("no vault open")?;
-    blocking(move || uninstall(&root, &id)).await
+    crate::span_timed!("store_uninstall", blocking(move || uninstall(&root, &id)).await)
 }
 
 #[cfg(test)]

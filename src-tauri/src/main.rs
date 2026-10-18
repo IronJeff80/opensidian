@@ -3400,7 +3400,7 @@ fn desk_proc_spawn(
     let args: Vec<String> = args.unwrap_or_default().iter().map(|a| desk_proc::map_arg(&root, a)).collect();
     let sp = desk_proc::Spec { file, args, cwd: desk_proc::map_cwd(&root, cwd.as_deref()), env: env.unwrap_or_default().into_iter().collect() };
     eprintln!("[desk] spawn {} {:?} cwd={}", sp.file, sp.args, sp.cwd.display());
-    let run = desk_proc::start(sp)?;
+    let run = span_timed!("desk_proc_spawn", desk_proc::start(sp))?;
     let pid = run.pid();
     Ok(serde_json::json!({ "id": desk_proc::register(run), "pid": pid }))
 }
@@ -3418,19 +3418,19 @@ async fn desk_proc_read(id: u64, wait_ms: Option<u64>) -> Result<desk_proc::Chun
 
 #[tauri::command]
 fn desk_proc_write(id: u64, data: String) -> Result<(), String> {
-    desk_proc::get(id)?.write(&desk_proc::latin1_to_bytes(&data))
+    span_timed!("desk_proc_write", desk_proc::get(id)?.write(&desk_proc::latin1_to_bytes(&data)))
 }
 
 #[tauri::command]
 fn desk_proc_end(id: u64) -> Result<(), String> {
-    desk_proc::get(id)?.end();
+    span_timed!("desk_proc_end", desk_proc::get(id)?.end());
     Ok(())
 }
 
 #[tauri::command]
 fn desk_proc_kill(id: u64, signal: Option<String>) -> Result<bool, String> {
     let sig = desk_proc::sig_num(signal.as_deref().unwrap_or("SIGTERM")).ok_or("ERR_UNKNOWN_SIGNAL")?;
-    Ok(desk_proc::get(id)?.kill(sig))
+    Ok(span_timed!("desk_proc_kill", desk_proc::get(id)?.kill(sig)))
 }
 
 /* ---- cp-unrestricted: TCP listeners for plugins (desk_net.rs) — node net /
@@ -3443,7 +3443,7 @@ fn desk_net_listen(v: State<Vault>, host: Option<String>, port: u16) -> Result<s
     if !plugins::is_trusted(&cfg_value(), &root) {
         return Err("EPERM: restricted mode, plugins cannot open servers".into());
     }
-    let (id, s) = desk_net::listen(host.as_deref().unwrap_or(""), port)?;
+    let (id, s) = span_timed!("desk_net_listen", desk_net::listen(host.as_deref().unwrap_or(""), port))?;
     eprintln!("[desk] listen {}:{} id={id}", s.address, s.port);
     Ok(serde_json::json!({ "id": id, "port": s.port, "address": s.address }))
 }
@@ -3461,7 +3461,7 @@ async fn desk_net_accept(id: u64, wait_ms: Option<u64>) -> Result<desk_net::Batc
 
 #[tauri::command]
 fn desk_net_close(id: u64) -> Result<(), String> {
-    desk_net::close_srv(id);
+    span_timed!("desk_net_close", desk_net::close_srv(id));
     Ok(())
 }
 
@@ -3474,18 +3474,18 @@ async fn desk_sock_read(id: u64, wait_ms: Option<u64>) -> Result<desk_net::Data,
 
 #[tauri::command]
 fn desk_sock_write(id: u64, data: String) -> Result<(), String> {
-    desk_net::conn(id)?.write(&desk_proc::latin1_to_bytes(&data))
+    span_timed!("desk_sock_write", desk_net::conn(id)?.write(&desk_proc::latin1_to_bytes(&data)))
 }
 
 #[tauri::command]
 fn desk_sock_end(id: u64) -> Result<(), String> {
-    desk_net::conn(id)?.end();
+    span_timed!("desk_sock_end", desk_net::conn(id)?.end());
     Ok(())
 }
 
 #[tauri::command]
 fn desk_sock_destroy(id: u64) -> Result<(), String> {
-    desk_net::forget_conn(id);
+    span_timed!("desk_sock_destroy", desk_net::forget_conn(id));
     Ok(())
 }
 
