@@ -1001,16 +1001,66 @@
        on; app.renderContext is the app-wide one, no popover until something shows one. */
     class RenderContext { constructor() { this.hoverPopover = null; } }
     RenderContext.prototype.hoverPopover = null;
-    /* SecretStorage (typings 1.11.4) is design-gated: secrets belong in the OS keyring
-       with a per-plugin namespace, which needs a Rust backend this part does not own;
-       a plaintext/JSON store is ruled out. Exported, app.secretStorage is an instance,
-       and every method (and any other construction) throws. */
-    const SS_WHY = "secretStorage needs keyring backend", ssTok = {};
+    /* SecretStorage (typings 1.11.4) over the OS keyring — goal cp-secrets. The store is the
+       freedesktop Secret Service, reached only through the backend command secrets_op
+       (src-tauri/src/secrets.rs), which answers only a TRUSTED vault: nothing here or in Rust
+       writes a secret to the vault, to ~/.opensidian.json or to localStorage.
+       The typings API is synchronous and IPC is not, so the vault's ids and values are read
+       ONCE, when the plugin runtime starts (ensureModel, below — the same point moment and the
+       vault model are loaded, before any plugin's main.js runs), and kept in this closure,
+       never on the instance. setSecret updates that copy at once and writes through to the
+       keyring in call order; a write the keyring refuses restores the previous value and is
+       logged. No Secret Service (or no session bus) = the load fails, and every method throws
+       the unsupported error naming the cause: there is no fallback store. Ids are app-wide
+       strings (lowercase alphanumeric with single inner dashes), as stock; any plugin in the
+       vault can read any id, which is what SecretComponent's picker relies on. */
+    const ssTok = {}, SS_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+    let ssVals = null, ssWhy = "secret storage is not loaded (no plugin has started)", ssP = null, ssQ = Promise.resolve();
+    function ssLoad() {
+      if (ssP) return ssP;   // loaded, or loading; a failed load is retried by the next start
+      ssP = be.invoke("secrets_op", { op: "load" }).then(r => {
+        ssVals = new Map(Object.entries((r && r.secrets) || {}).filter(([, v]) => typeof v === "string"));
+        ssWhy = null;
+      }, e => {
+        ssVals = null;
+        ssWhy = String((e && e.message) || e);
+        ssP = null;
+        console.warn("[plugin] secretStorage: " + ssWhy);
+      });
+      return ssP;
+    }
+    function ssOpen(what) {
+      if (!K.st.trusted) throw unsupported("secretStorage." + what + ": restricted mode is on");
+      if (ssVals) return ssVals;
+      const why = ssWhy || "secret storage is not loaded";
+      throw /^unsupported: /.test(why) ? unsupported(why.slice(13)) : new Error("secretStorage." + what + ": " + why);
+    }
+    function ssCheckId(id, what) {
+      if (typeof id !== "string" || !SS_ID.test(id)) throw new Error("secretStorage." + what + ": invalid secret id " + JSON.stringify(id) + " (lowercase letters, digits and inner dashes)");
+    }
     class SecretStorage extends Events {
-      constructor(tok) { super(); if (tok !== ssTok) throw unsupported(SS_WHY); }
-      setSecret() { throw unsupported(SS_WHY); }
-      getSecret() { throw unsupported(SS_WHY); }
-      listSecrets() { throw unsupported(SS_WHY); }
+      constructor(tok) { super(); if (tok !== ssTok) throw new TypeError("SecretStorage: use app.secretStorage"); }
+      setSecret(id, secret) {
+        ssCheckId(id, "setSecret");
+        const vals = ssOpen("setSecret"), v = String(secret), had = vals.has(id), prev = vals.get(id);
+        vals.set(id, v);
+        ssQ = ssQ.then(() => be.invoke("secrets_op", { op: "set", id, value: v })).catch(e => {
+          if (vals.get(id) === v) { if (had) vals.set(id, prev); else vals.delete(id); }
+          console.error("[plugin] secretStorage.setSecret(" + JSON.stringify(id) + "): the keyring refused the write: " + ((e && e.message) || e));
+        });
+      }
+      getSecret(id) {
+        const vals = ssOpen("getSecret");
+        const v = typeof id === "string" ? vals.get(id) : undefined;
+        return v === undefined ? null : v;
+      }
+      listSecrets() { return Array.from(ssOpen("listSecrets").keys()); }
+    }
+    {
+      // the load rides on the plugin runtime's start (core:manager, a later part, awaits
+      // K.ensureModel before evaluating a plugin); restricted mode never gets here
+      const ensureModel0 = K.ensureModel;
+      K.ensureModel = () => ensureModel0().then(() => ssLoad());
     }
     K.exportClasses.RenderContext = RenderContext;
     K.exportClasses.SecretStorage = SecretStorage;

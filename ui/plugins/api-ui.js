@@ -746,14 +746,59 @@
       }
     }
 
-    /* SecretComponent — design-gated (coordinator ruling: secretStorage / SecretComponent need an OS
-       keyring with a per-plugin namespace, or honest unsupported). Exported so plugins load; using it
-       throws instead of pretending to store a secret. */
-    const SECRET_MSG = "unsupported in opensidian: secret storage (OS keyring) is not available";
+    /* SecretComponent (typings 1.11.1, setValue/onChange 1.11.4) — goal cp-secrets. A picker over
+       app.secretStorage (the OS keyring, see api-vault.js): the value is a secret ID, never the
+       secret itself; onChange gets the chosen id, or null for none. "New secret…" opens an inline
+       id + password form that stores through app.secretStorage.setSecret and selects the new id;
+       the typed value is never echoed, kept or put in the DOM after the save. With no keyring
+       (or restricted mode) the picker is disabled and shows secretStorage's unsupported error —
+       it never pretends a secret was stored. */
+    const SC_NEW = "+new";   // not a valid secret id, so it can never collide with one
     class SecretComponent extends BaseComponent {
-      constructor() { super(); throw new Error(SECRET_MSG); }
-      setValue() { throw new Error(SECRET_MSG); }
-      onChange() { throw new Error(SECRET_MSG); }
+      constructor(app, containerEl) {
+        super(); installDom();
+        this.app = app; this.containerEl = containerEl; this._cb = null; this._value = null; this._form = null;
+        this.selectEl = containerEl.createEl("select", { cls: "dropdown os-secret-select" });
+        this.errorEl = containerEl.createDiv({ cls: "os-secret-error" }); this.errorEl.hidden = true;
+        this.selectEl.addEventListener("change", () => {
+          const v = this.selectEl.value;
+          if (v === SC_NEW) { this.selectEl.value = this._value == null ? "" : this._value; this._openForm(); return; }
+          this._pick(v === "" ? null : v);
+        });
+        this._fill();
+      }
+      _store() { return this.app && this.app.secretStorage; }
+      _fill() {
+        const sel = this.selectEl; sel.empty();
+        let ids = [];
+        try { const s = this._store(); if (!s) throw new Error("secretStorage: no app"); ids = s.listSecrets(); this.errorEl.hidden = true; }
+        catch (e) { this.errorEl.setText(String((e && e.message) || e)); this.errorEl.hidden = false; sel.disabled = true; sel.createEl("option", { value: "", text: "Secret storage unavailable" }); return; }
+        sel.disabled = !!this.disabled;
+        sel.createEl("option", { value: "", text: "No secret" });
+        for (const id of ids.slice().sort()) sel.createEl("option", { value: id, text: id });
+        if (this._value != null && !ids.includes(this._value)) sel.createEl("option", { value: this._value, text: this._value + " (missing)" });
+        sel.createEl("option", { value: SC_NEW, text: "New secret…" });
+        sel.value = this._value == null ? "" : this._value;
+      }
+      _pick(id) { this._value = id; this._fill(); if (this._cb) this._cb(id); }
+      _openForm() {
+        if (this._form) return;
+        const f = this._form = this.containerEl.createDiv({ cls: "os-secret-new" });
+        const idEl = f.createEl("input", { attr: { type: "text", placeholder: "id (e.g. my-api-key)", spellcheck: "false", autocomplete: "off" } });
+        const valEl = f.createEl("input", { attr: { type: "password", placeholder: "secret", autocomplete: "new-password" } });
+        const msg = f.createDiv({ cls: "os-secret-error" }); msg.hidden = true;
+        const close = () => { valEl.value = ""; f.remove(); this._form = null; };
+        f.createEl("button", { text: "Save", cls: "mod-cta" }).addEventListener("click", () => {
+          const id = idEl.value.trim();
+          try { this._store().setSecret(id, valEl.value); } catch (e) { msg.setText(String((e && e.message) || e)); msg.hidden = false; return; }
+          close(); this._pick(id);
+        });
+        f.createEl("button", { text: "Cancel" }).addEventListener("click", close);
+        idEl.focus();
+      }
+      setDisabled(d) { super.setDisabled(d); this._fill(); return this; }
+      setValue(value) { this._value = value == null || value === "" ? null : String(value); this._fill(); return this; }
+      onChange(cb) { this._cb = cb; return this; }
     }
     Object.assign(K.exportClasses, { ConfirmationButton, DisplayValueComponent, MenuSeparator, ProgressBarComponent, SecretComponent });
     Object.assign(K, { AbstractTextComponent, BaseComponent, ButtonComponent, ColorComponent, ConfirmationButton, ConfirmationModal, DisplayValueComponent, DropdownComponent, ExtraButtonComponent, FuzzySuggestModal, Menu, MenuItem, MenuSeparator, Modal, MomentFormatComponent, PluginSettingTab, ProgressBarComponent, SearchComponent, SecretComponent, Setting, SettingGroup, SettingPage, SettingTab, SliderComponent, SuggestModal, TextAreaComponent, TextComponent, ToggleComponent, ValueComponent, openModals });

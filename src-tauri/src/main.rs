@@ -31,6 +31,8 @@ mod plugin_store;
 mod qscreate;
 mod perf;
 mod sandbox;
+// cp-secrets: app.secretStorage over the OS keyring (Secret Service)
+mod secrets;
 mod settings;
 mod spawn;
 mod spawner;
@@ -5839,6 +5841,8 @@ fn main() {
             win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close,
             tab_removed, insert_datetime,
             zoom, zoom_get, pdf_info,
+            // cp-secrets
+            secrets::secrets_op,
             settings::settings_model
         ])
         .run(ctx)
