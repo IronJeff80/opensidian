@@ -322,6 +322,18 @@
       setClass(c) { this.settingEl.addClass(c); return this; }
       setTooltip(t) { this.nameEl.title = t; return this; }
       setHeading() { this.settingEl.addClass("setting-item-heading"); return this; }
+      /* setNavigable(cb): the row reads as a link to somewhere else — a chevron is the first control and a
+         click anywhere on the row calls cb() with no arguments and this = the Setting; a second call
+         replaces cb (stock 1.13.7, scratch oracle goal cp-settings-tab) */
+      setNavigable(cb) {
+        this._navCb = cb;
+        if (!this._navEl) {
+          this.settingEl.addClass("mod-navigable"); this.settingEl.addClass("tappable");
+          this._navEl = this.controlEl.createDiv({ cls: "setting-item-chevron" }); setIcon(this._navEl, "chevron-right");
+          this.settingEl.addEventListener("click", () => { if (typeof this._navCb === "function") this._navCb.call(this); });
+        }
+        return this;
+      }
       setDisabled(d) { this.settingEl.toggleClass("is-disabled", !!d); for (const c of this.components) if (c && typeof c.setDisabled === "function") c.setDisabled(d); return this; }
       _add(C, cb) { const c = new C(this.controlEl); this.components.push(c); if (cb) cb(c); return this; }
       addButton(cb) { return this._add(ButtonComponent, cb); }
@@ -571,7 +583,8 @@
       hide() { sdTeardown(this); this._pages = []; this.containerEl.empty(); }
     }
     class PluginSettingTab extends SettingTab {
-      constructor(app, plugin) { super(); this.app = app; this.plugin = plugin; }
+      // stock: id / name are the plugin manifest's, set here (a subclass ctor reads them); no manifest is a TypeError
+      constructor(app, plugin) { super(); this.app = app; this.plugin = plugin; this.id = plugin.manifest.id; this.name = plugin.manifest.name; }
       getSettingDefinitions() { return []; }
       /* conventional plugin storage: this.plugin.settings, persisted with saveData */
       getControlValue(key) { const s = this.plugin && this.plugin.settings; return s != null && typeof s === "object" ? s[key] : undefined; }
