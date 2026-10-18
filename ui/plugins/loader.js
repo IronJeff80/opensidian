@@ -117,6 +117,7 @@
     const msg = (err && err.message) || String(err);
     status.set(id, { state: "failed", error: msg });
     console.error("[plugin] " + id + " failed: " + msg);
+    if (evalWanted && evalRefused(err)) cspReloadNow();   // trusted vault on a no-eval page (cspCheck)
     return { ok: false, id, error: msg };
   }
 
@@ -155,26 +156,44 @@
   /* cp-unrestricted: the page CSP is fixed when the page loads — Rust page_csp
      gives a trusted vault's page 'unsafe-eval' + blob: workers, every other page
      the restricted CSP — and plugins_state says which one this page got
-     (pageEval). When the trust flag and the page disagree (the flag was just
-     flipped, or the vault was bound after the page loaded), the page reloads
-     once, after the save debounce so a pending note write lands first. Two
-     reloads in a row that still disagree stop here with a console warning
+     (pageEval). When the trust flag and the page disagree:
+       - flag OFF, page has eval (restricted mode was just turned on): reload
+         now, so the negative control is the real header, not a leftover one;
+       - flag ON, page has no eval (restricted mode was just turned off, or the
+         vault was bound after the page loaded): plugins load without a reload
+         (most never eval); the FIRST time anything on the page is refused eval
+         or a blob: script/worker by the CSP (a securitypolicyviolation, or a
+         plugin that fails with an EvalError), the page reloads into the
+         trusted CSP and the plugin loads again there.
+     Every reload waits the save debounce so a pending note write lands first.
+     Two reloads in a row that still disagree stop with a console warning
      instead of looping. */
-  let cspReload = false;
-  function cspCheck(s) {
-    if (!s || typeof s.pageEval !== "boolean") return s;
+  let cspReload = false, evalWanted = false;
+  function cspReloadNow() {
     const KEY = "osCspReload";
     let n = 0;
-    try {
-      if (!!s.trusted === s.pageEval) { sessionStorage.removeItem(KEY); return s; }
-      n = +sessionStorage.getItem(KEY) || 0;
-    } catch (_) { /* no storage: still reload, the in-page flag stops a second one */ }
-    if (cspReload) return s;
-    if (n >= 2) { console.warn("[plugins] page CSP still disagrees with the vault trust flag after 2 reloads"); return s; }
+    try { n = +sessionStorage.getItem(KEY) || 0; } catch (_) { /* no storage: the in-page flag stops a second one */ }
+    if (cspReload) return;
+    if (n >= 2) { console.warn("[plugins] page CSP still disagrees with the vault trust flag after 2 reloads"); return; }
     cspReload = true;
     try { sessionStorage.setItem(KEY, String(n + 1)); } catch (_) {}
+    console.warn("[plugins] reloading the page into the CSP of the vault's trust state");
     Promise.resolve(invoke ? invoke("save_debounce_ms") : 0).catch(() => 0)
       .then(ms => setTimeout(() => location.reload(), (+ms || 0) + 300));
+  }
+  const evalRefused = e => e instanceof EvalError
+    || /unsafe-eval|Content Security Policy|Refused to evaluate/i.test(String(e && e.message));
+  window.addEventListener("securitypolicyviolation", e => {
+    if (!evalWanted) return;
+    const d = String(e.effectiveDirective || e.violatedDirective || ""), u = String(e.blockedURI || "");
+    if ((/^(script-src|worker-src)/.test(d) && (u === "eval" || u.startsWith("blob"))) || /^worker-src/.test(d)) cspReloadNow();
+  });
+  function cspCheck(s) {
+    if (!s || typeof s.pageEval !== "boolean") return s;
+    const trusted = !!s.trusted;
+    evalWanted = trusted && !s.pageEval;
+    if (trusted === s.pageEval) { try { sessionStorage.removeItem("osCspReload"); } catch (_) {} return s; }
+    if (!trusted) cspReloadNow();
     return s;
   }
 
