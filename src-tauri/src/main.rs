@@ -33,6 +33,7 @@ mod sandbox;
 mod settings;
 mod spawn;
 mod spawner;
+mod desk_net;
 mod desk_proc;
 mod vaultlock;
 mod srcmode;
@@ -3272,6 +3273,7 @@ fn plugins_set(
             cfg_update(&[cfgstore::Op::SetIn(plugins::TRUST_KEY.into(), key, serde_json::json!(t))]);
             if !t {
                 desk_proc::kill_all();   // flip OFF: what plugins started stops with them
+                desk_net::close_all();
             }
         }
         if let (Some(id), Some(on)) = (id.as_deref(), on) {
@@ -3371,6 +3373,62 @@ fn desk_proc_end(id: u64) -> Result<(), String> {
 fn desk_proc_kill(id: u64, signal: Option<String>) -> Result<bool, String> {
     let sig = desk_proc::sig_num(signal.as_deref().unwrap_or("SIGTERM")).ok_or("ERR_UNKNOWN_SIGNAL")?;
     Ok(desk_proc::get(id)?.kill(sig))
+}
+
+/* ---- cp-unrestricted: TCP listeners for plugins (desk_net.rs) — node net /
+   http servers (slides preview, local-rest-api). Same gate as child_process:
+   the vault's trust flip, checked on every listen; socket ops act only on ids
+   a listener of this app handed out. */
+#[tauri::command]
+fn desk_net_listen(v: State<Vault>, host: Option<String>, port: u16) -> Result<serde_json::Value, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    if !plugins::is_trusted(&cfg_value(), &root) {
+        return Err("EPERM: restricted mode, plugins cannot open servers".into());
+    }
+    let (id, s) = desk_net::listen(host.as_deref().unwrap_or(""), port)?;
+    eprintln!("[desk] listen {}:{} id={id}", s.address, s.port);
+    Ok(serde_json::json!({ "id": id, "port": s.port, "address": s.address }))
+}
+
+#[tauri::command]
+async fn desk_net_accept(id: u64, wait_ms: Option<u64>) -> Result<desk_net::Batch, String> {
+    let s = desk_net::srv(id)?;
+    let wait = std::time::Duration::from_millis(wait_ms.unwrap_or(250).min(2000));
+    let b = tauri::async_runtime::spawn_blocking(move || s.accept(wait)).await.map_err(|e| e.to_string())?;
+    if b.closed {
+        desk_net::close_srv(id);
+    }
+    Ok(b)
+}
+
+#[tauri::command]
+fn desk_net_close(id: u64) -> Result<(), String> {
+    desk_net::close_srv(id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn desk_sock_read(id: u64, wait_ms: Option<u64>) -> Result<desk_net::Data, String> {
+    let c = desk_net::conn(id)?;
+    let wait = std::time::Duration::from_millis(wait_ms.unwrap_or(250).min(2000));
+    tauri::async_runtime::spawn_blocking(move || c.read(wait)).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn desk_sock_write(id: u64, data: String) -> Result<(), String> {
+    desk_net::conn(id)?.write(&desk_proc::latin1_to_bytes(&data))
+}
+
+#[tauri::command]
+fn desk_sock_end(id: u64) -> Result<(), String> {
+    desk_net::conn(id)?.end();
+    Ok(())
+}
+
+#[tauri::command]
+fn desk_sock_destroy(id: u64) -> Result<(), String> {
+    desk_net::forget_conn(id);
+    Ok(())
 }
 
 /* ---- themefs R5 (themes): the listing predicate is the oracle's, verbatim
@@ -5655,6 +5713,7 @@ fn main() {
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
             plugins_state, plugins_set, plugin_io, plugin_vfs, desk_proc_spawn, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
+            desk_net_listen, desk_net_accept, desk_net_close, desk_sock_read, desk_sock_write, desk_sock_end, desk_sock_destroy,
             themes_scan, theme_css, get_css_theme, set_css_theme, theme_seed_report, vault_css_watch,
             get_quickfont, set_quickfont, get_fonts, set_font, font_families,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,

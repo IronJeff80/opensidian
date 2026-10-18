@@ -801,6 +801,318 @@
   Object.defineProperty(execFile, PCUSTOM, { value: asPromise(execFile) });
   const cpOwn = { spawn: cpSpawn, exec, execFile, ChildProcess };
 
+  /* ------------------------------------------- net / http servers (real, Rust desk_net.rs)
+     net.createServer / http.createServer listen on a real TCP port with the user's rights,
+     as stock does once community plugins are on (advanced-slides serves its preview, the
+     local REST API its endpoints). Rust checks the vault's trust flip on every listen.
+     Rust is TCP only; HTTP/1.1 is parsed and written here. One request per connection:
+     every response says "Connection: close" and the socket ends after it. No TLS server
+     (https.createServer listens nowhere and reports ENOTSUP) and no client sockets yet. */
+  const netErr = (e, extra) => {
+    const m = String(e && e.message || e), x = new Error(m), c = /^([A-Z_]+):/.exec(m);
+    x.code = c ? c[1] : "EIO"; x.errno = -1;
+    return Object.assign(x, extra || {});
+  };
+  const toBuf = (c, enc) => (typeof c === "string" ? Buffer.from(c, enc || "utf8") : Buffer.from(c));
+  const argsCb = (c, enc, cb) => (typeof c === "function" ? [undefined, undefined, c] : typeof enc === "function" ? [c, undefined, enc] : [c, enc, cb]);
+  class NetSocket extends EmitterBase {
+    constructor(id, info) {
+      super();
+      this._id = id; this._q = Promise.resolve(); this._enc = null; this._dec = null;
+      this.remoteAddress = info && info.remoteAddress; this.remotePort = info && info.remotePort; this.remoteFamily = "IPv4";
+      this.readable = true; this.writable = true; this.destroyed = false; this.readableEnded = false; this.writableEnded = false;
+      this.bytesWritten = 0; this.bytesRead = 0; this.timeout = 0; this.allowHalfOpen = false; this.connecting = false;
+    }
+    _start() {
+      (async () => {
+        for (;;) {
+          if (this.destroyed) return;
+          let d;
+          try { d = await desk("desk_sock_read", { id: this._id, waitMs: 250 }); } catch (_) { d = { data: "", eof: true }; }
+          if (d.data) {
+            const b = Buffer.from(latin1Bytes(d.data)); this.bytesRead += b.length;
+            this.emit("data", !this._enc ? b : this._dec ? this._dec.decode(b, { stream: true }) : b.toString(this._enc));
+          }
+          if (d.eof) break;
+        }
+        if (this.destroyed) return;
+        this.readable = false; this.readableEnded = true; this.emit("end");
+        if (!this.allowHalfOpen) this.end();
+        this._maybeClose();
+      })();
+    }
+    setEncoding(e) { this._enc = String(e || "utf8").toLowerCase(); this._dec = /^utf-?8$/.test(this._enc) ? new TextDecoder("utf-8") : null; return this; }
+    write(c, enc, cb) {
+      [c, enc, cb] = argsCb(c, enc, cb);
+      if (this.writableEnded || this.destroyed) { const x = Object.assign(new Error("This socket has been ended by the other party"), { code: "EPIPE" }); if (cb) later(() => cb(x)); return false; }
+      const b = toBuf(c, enc); this.bytesWritten += b.length;
+      const s = latin1Str(b, 0);
+      this._q = this._q.then(() => desk("desk_sock_write", { id: this._id, data: s }))
+        .then(() => { if (cb) cb(null); }, e => { const x = netErr(e); if (cb) cb(x); else if (this.listenerCount("error")) this.emit("error", x); });
+      return true;
+    }
+    end(c, enc, cb) {
+      [c, enc, cb] = argsCb(c, enc, cb);
+      if (c != null) this.write(c, enc);
+      if (this.writableEnded) { if (cb) later(cb); return this; }
+      this.writableEnded = true; this.writable = false;
+      this._q = this._q.then(() => desk("desk_sock_end", { id: this._id })).catch(() => {})
+        .then(() => { if (cb) cb(); this.emit("finish"); this._maybeClose(); });
+      return this;
+    }
+    _maybeClose() { if (this.readableEnded && this.writableEnded) this._q.then(() => this._close(false)); }
+    _close(hadError) {
+      if (this._closed) return; this._closed = true;
+      this.destroyed = true; this.readable = false; this.writable = false;
+      desk("desk_sock_destroy", { id: this._id }).catch(() => {});
+      later(() => this.emit("close", !!hadError));
+    }
+    destroy(err) {
+      if (this.destroyed) return this;
+      this.writableEnded = true; this.destroyed = true;
+      if (err && this.listenerCount("error")) later(() => this.emit("error", errOf(err)));
+      this._q.then(() => { this._closed = false; this._close(!!err); });
+      return this;
+    }
+    destroySoon() { this.end(); return this; }
+    resetAndDestroy() { return this.destroy(); }
+    address() { return { address: "127.0.0.1", family: "IPv4", port: 0 }; }
+    setTimeout(ms, cb) { this.timeout = Number(ms) || 0; if (cb) this.once("timeout", cb); return this; }
+    setNoDelay() { return this; } setKeepAlive() { return this; }
+    pause() { return this; } resume() { return this; } ref() { return this; } unref() { return this; }
+    cork() {} uncork() {}
+    pipe(d) { this.on("data", c => d.write(c)); this.on("end", () => { if (d && typeof d.end === "function") d.end(); }); return d; }
+  }
+  class NetServer extends EmitterBase {
+    constructor(opts, onConn) {
+      super();
+      if (typeof opts === "function") { onConn = opts; opts = {}; }
+      if (onConn) this.on("connection", onConn);
+      this._id = null; this._addr = null; this._socks = new Set(); this._tls = false;
+      this.listening = false; this.maxConnections = undefined;
+      this.timeout = 0; this.keepAliveTimeout = 5000; this.headersTimeout = 60000; this.requestTimeout = 300000; this.maxHeadersCount = null;
+    }
+    listen(...a) {
+      const cb = typeof a[a.length - 1] === "function" ? a.pop() : null;
+      let port = 0, host;
+      if (a[0] && typeof a[0] === "object") { port = a[0].port; host = a[0].host; } else { port = a[0]; if (typeof a[1] === "string") host = a[1]; }
+      port = Number(port) || 0;
+      if (cb) this.once("listening", cb);
+      const fail = e => { const x = netErr(e, { syscall: "listen", address: host, port }); if (this.listenerCount("error")) this.emit("error", x); else console.error("[desktop] server listen " + (host || "") + ":" + port + ": " + x.message); };
+      if (this._tls) { later(() => fail(new Error("ENOTSUP: TLS servers are not available in opensidian (https.createServer)"))); return this; }
+      (desk ? desk("desk_net_listen", { host: host == null ? null : String(host), port }) : Promise.reject(new Error("EPERM: no desktop backend")))
+        .then(r => { this._id = r.id; this._addr = { address: r.address, family: "IPv4", port: r.port }; this.listening = true; this.emit("listening"); this._loop(); }, fail);
+      return this;
+    }
+    async _loop() {
+      const id = this._id;
+      while (this.listening && this._id === id) {
+        let b;
+        try { b = await desk("desk_net_accept", { id, waitMs: 1000 }); } catch (_) { b = { conns: [], closed: true }; }
+        for (const c of b.conns) {
+          if (!this.listening) { desk("desk_sock_destroy", { id: c.id }).catch(() => {}); continue; }
+          const s = new NetSocket(c.id, c); s.server = this;
+          this._socks.add(s); s.once("close", () => this._socks.delete(s));
+          this.emit("connection", s); s._start();
+        }
+        if (b.closed) break;
+      }
+    }
+    close(cb) {
+      const was = this.listening; this.listening = false;
+      if (this._id != null) desk("desk_net_close", { id: this._id }).catch(() => {});
+      this._id = null;
+      later(() => {
+        if (!was) { const x = Object.assign(new Error("Server is not running."), { code: "ERR_SERVER_NOT_RUNNING" }); if (cb) cb(x); return; }
+        if (cb) cb(); this.emit("close");
+      });
+      return this;
+    }
+    closeAllConnections() { for (const s of [...this._socks]) s.destroy(); }
+    closeIdleConnections() {}
+    address() { return this._addr; }
+    getConnections(cb) { later(() => cb(null, this._socks.size)); return this; }
+    setTimeout(ms, cb) { this.timeout = Number(ms) || 0; if (cb) this.on("timeout", cb); return this; }
+    ref() { return this; } unref() { return this; }
+  }
+  const isIPv4 = s => /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/.test(String(s));
+  const isIPv6 = s => { s = String(s); return s.includes(":") && /^[0-9a-fA-F:.]+$/.test(s) && (s.match(/::/g) || []).length <= 1; };
+  const netOwn = {
+    Server: NetServer, Socket: NetSocket,
+    createServer: (o, f) => new NetServer(o, f),
+    isIP: s => (isIPv4(s) ? 4 : isIPv6(s) ? 6 : 0), isIPv4, isIPv6,
+  };
+
+  // http: a request whose body is buffered until a reader shows up (on("data") / resume / pipe / read)
+  class IncomingMessage extends EmitterBase {
+    constructor(socket) {
+      super();
+      this.socket = socket; this.connection = socket;
+      this.headers = {}; this.rawHeaders = []; this.trailers = {}; this.rawTrailers = [];
+      this.method = null; this.url = ""; this.statusCode = null; this.statusMessage = null;
+      this.httpVersion = "1.1"; this.httpVersionMajor = 1; this.httpVersionMinor = 1;
+      this.complete = false; this.aborted = false; this.readable = true; this.readableEnded = false; this.destroyed = false;
+      this._chunks = []; this._ended = false; this._flowing = false; this._enc = null;
+    }
+    _push(b) { if (b && b.length) this._chunks.push(b); this._flush(); }
+    _end() { this._ended = true; this.complete = true; this._flush(); }
+    _flush() {
+      if (!this._flowing) { if (this._chunks.length && this.listenerCount("readable")) later(() => this.emit("readable")); return; }
+      later(() => {
+        while (this._flowing && this._chunks.length) { const b = this._chunks.shift(); this.emit("data", this._enc ? b.toString(this._enc) : b); }
+        if (this._ended && !this._chunks.length && !this.readableEnded) { this.readableEnded = true; this.readable = false; this.emit("end"); this.emit("close"); }
+      });
+    }
+    on(n, f) { super.on(n, f); if (n === "data") this.resume(); else if (n === "readable" || n === "end") this._flush(); return this; }
+    addListener(n, f) { return this.on(n, f); }
+    once(n, f) { super.once(n, f); if (n === "data") this.resume(); return this; }
+    read() { if (!this._chunks.length) { if (this._ended && !this.readableEnded) { this.readableEnded = true; later(() => { this.emit("end"); this.emit("close"); }); } return null; } const b = Buffer.concat(this._chunks); this._chunks = []; return this._enc ? b.toString(this._enc) : b; }
+    resume() { this._flowing = true; this._flush(); return this; }
+    pause() { this._flowing = false; return this; }
+    isPaused() { return !this._flowing; }
+    setEncoding(e) { this._enc = String(e || "utf8"); return this; }
+    pipe(d) { this.on("data", c => d.write(c)); this.on("end", () => { if (d && typeof d.end === "function") d.end(); }); return d; }
+    unpipe() { return this; }
+    unshift(b) { this._chunks.unshift(toBuf(b)); }
+    destroy(err) { this.destroyed = true; if (this.socket) this.socket.destroy(err); return this; }
+    setTimeout(ms, cb) { if (this.socket) this.socket.setTimeout(ms, cb); return this; }
+    [Symbol.asyncIterator]() {
+      const q = [], w = []; let done = false;
+      this.on("data", c => (w.length ? w.shift()({ value: c, done: false }) : q.push(c)));
+      this.on("end", () => { done = true; while (w.length) w.shift()({ value: undefined, done: true }); });
+      return { next: () => (q.length ? Promise.resolve({ value: q.shift(), done: false }) : done ? Promise.resolve({ value: undefined, done: true }) : new Promise(r => w.push(r))),
+        return: () => Promise.resolve({ value: undefined, done: true }), [Symbol.asyncIterator]() { return this; } };
+    }
+  }
+  const NOBODY = new Set([204, 304]);
+  class ServerResponse extends EmitterBase {
+    constructor(req) {
+      super();
+      this.req = req; this.socket = req.socket; this.connection = req.socket;
+      this.statusCode = 200; this.statusMessage = undefined; this.sendDate = true; this.strictContentLength = false;
+      this.headersSent = false; this.finished = false; this.writableEnded = false; this.writableFinished = false; this.writable = true; this.destroyed = false;
+      this._h = new Map();
+    }
+    _chk() { if (this.headersSent) throw Object.assign(new Error("Cannot set headers after they are sent to the client"), { code: "ERR_HTTP_HEADERS_SENT" }); }
+    setHeader(n, v) { this._chk(); this._h.set(String(n).toLowerCase(), [String(n), v]); return this; }
+    appendHeader(n, v) { const k = String(n).toLowerCase(), e = this._h.get(k); return this.setHeader(e ? e[0] : n, e ? [].concat(e[1], v) : v); }
+    getHeader(n) { const e = this._h.get(String(n).toLowerCase()); return e ? e[1] : undefined; }
+    getHeaders() { const o = Object.create(null); for (const [k, e] of this._h) o[k] = e[1]; return o; }
+    getHeaderNames() { return [...this._h.keys()]; }
+    getRawHeaderNames() { return [...this._h.values()].map(e => e[0]); }
+    hasHeader(n) { return this._h.has(String(n).toLowerCase()); }
+    removeHeader(n) { this._chk(); this._h.delete(String(n).toLowerCase()); }
+    writeHead(code, msg, hdrs) {
+      if (typeof msg !== "string") { hdrs = msg; msg = undefined; }
+      this.statusCode = Number(code); if (msg) this.statusMessage = msg;
+      if (Array.isArray(hdrs)) { for (let i = 0; i + 1 < hdrs.length; i += 2) this.setHeader(hdrs[i], hdrs[i + 1]); }
+      else if (hdrs) for (const k of Object.keys(hdrs)) this.setHeader(k, hdrs[k]);
+      this._head();
+      return this;
+    }
+    _head() {
+      if (this.headersSent) return;
+      if (this.sendDate && !this._h.has("date")) this._h.set("date", ["Date", new Date().toUTCString()]);
+      this._h.set("connection", ["Connection", "close"]);
+      const clean = v => String(v).replace(/[\r\n]+/g, " ");
+      let s = "HTTP/1.1 " + this.statusCode + " " + clean(this.statusMessage || HTTP_STATUS[this.statusCode] || "unknown") + "\r\n";
+      for (const [, [n, v]] of this._h) for (const x of [].concat(v)) s += clean(n) + ": " + clean(x) + "\r\n";
+      this.headersSent = true;
+      this.socket.write(s + "\r\n", "utf8");
+    }
+    flushHeaders() { this._head(); }
+    _body() { return this.req.method !== "HEAD" && !NOBODY.has(this.statusCode); }
+    write(c, enc, cb) {
+      [c, enc, cb] = argsCb(c, enc, cb);
+      if (this.writableEnded) { const x = Object.assign(new Error("write after end"), { code: "ERR_STREAM_WRITE_AFTER_END" }); if (cb) later(() => cb(x)); else later(() => this.emit("error", x)); return false; }
+      this._head();
+      if (c != null && this._body()) this.socket.write(toBuf(c, enc), undefined, cb); else if (cb) later(cb);
+      return true;
+    }
+    end(c, enc, cb) {
+      [c, enc, cb] = argsCb(c, enc, cb);
+      if (this.writableEnded) { if (cb) later(cb); return this; }
+      if (c != null && !this.headersSent && !this._h.has("content-length") && !this._h.has("transfer-encoding")) this.setHeader("Content-Length", toBuf(c, enc).length);
+      if (c != null) this.write(c, enc); else this._head();
+      this.writableEnded = true; this.finished = true; this.writable = false;
+      this.socket.end(() => { this.writableFinished = true; if (cb) cb(); this.emit("finish"); this.emit("close"); });
+      return this;
+    }
+    writeContinue() {} writeProcessing() {} writeEarlyHints() {}
+    addTrailers() {}
+    cork() {} uncork() {}
+    setTimeout(ms, cb) { this.socket.setTimeout(ms, cb); return this; }
+    destroy(err) { this.destroyed = true; this.socket.destroy(err); return this; }
+    assignSocket() {} detachSocket() {}
+  }
+  // the HTTP/1.1 request head + body (Content-Length or chunked) off one connection
+  function httpParse(server, sock) {
+    let buf = "", req = null, need = -1, chunked = false, body = "";
+    const bad = () => { sock.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"); };
+    const dechunk = () => {   // consume complete chunks of body; true once the last chunk arrived
+      for (;;) {
+        const i = body.indexOf("\r\n"); if (i < 0) return false;
+        const n = parseInt(body.slice(0, i), 16); if (!(n >= 0)) { bad(); return false; }
+        if (n === 0) return true;
+        if (body.length < i + 2 + n + 2) return false;
+        req._push(Buffer.from(latin1Bytes(body.slice(i + 2, i + 2 + n)))); body = body.slice(i + 2 + n + 2);
+      }
+    };
+    sock.on("data", b => {
+      if (req && req.complete) return;   // one request per connection
+      buf += latin1Str(b, 0);
+      if (!req) {
+        const h = buf.indexOf("\r\n\r\n");
+        if (h < 0) { if (buf.length > 65536) bad(); return; }
+        const lines = buf.slice(0, h).split("\r\n"), m = /^([A-Z]+) (\S+) HTTP\/(\d)\.(\d)$/.exec(lines[0]);
+        if (!m) return bad();
+        req = new server._Req(sock);
+        req.method = m[1]; req.url = m[2]; req.httpVersionMajor = +m[3]; req.httpVersionMinor = +m[4]; req.httpVersion = m[3] + "." + m[4];
+        for (const l of lines.slice(1)) {
+          const c = l.indexOf(":"); if (c <= 0) continue;
+          const n = l.slice(0, c).trim(), v = new TextDecoder("utf-8").decode(latin1Bytes(l.slice(c + 1).trim())), k = n.toLowerCase();
+          req.rawHeaders.push(n, v);
+          if (k === "set-cookie") (req.headers[k] = req.headers[k] || []).push(v);
+          else req.headers[k] = k in req.headers ? req.headers[k] + ", " + v : v;
+        }
+        chunked = /chunked/i.test(req.headers["transfer-encoding"] || "");
+        need = chunked ? -1 : Number(req.headers["content-length"] || 0) || 0;
+        buf = buf.slice(h + 4);
+        const res = new server._Res(req);
+        later(() => server.emit("request", req, res));
+      }
+      if (chunked) { body += buf; buf = ""; if (dechunk()) req._end(); return; }
+      if (buf) { const take = buf.slice(0, need); need -= take.length; buf = buf.slice(take.length); req._push(Buffer.from(latin1Bytes(take))); }
+      if (need <= 0) req._end();
+    });
+    sock.on("end", () => { if (req && !req.complete) { req.aborted = true; req._end(); } });
+  }
+  class HttpServer extends NetServer {
+    constructor(opts, onReq) {
+      super();
+      if (typeof opts === "function") { onReq = opts; opts = {}; }
+      opts = opts || {};
+      this._Req = typeof opts.IncomingMessage === "function" ? opts.IncomingMessage : IncomingMessage;
+      this._Res = typeof opts.ServerResponse === "function" ? opts.ServerResponse : ServerResponse;
+      if (onReq) this.on("request", onReq);
+      this.on("connection", s => httpParse(this, s));
+    }
+  }
+  class HttpsServer extends HttpServer {
+    constructor(opts, onReq) { super(opts, onReq); this._tls = true; }
+  }
+  const httpOwn = {
+    METHODS: HTTP_METHODS, STATUS_CODES: HTTP_STATUS,
+    Server: HttpServer, IncomingMessage, ServerResponse,
+    createServer: (o, f) => new HttpServer(o, f),
+    maxHeaderSize: 16384,
+  };
+  const httpsOwn = {
+    METHODS: HTTP_METHODS, STATUS_CODES: HTTP_STATUS,
+    Server: HttpsServer,
+    createServer: (o, f) => new HttpsServer(o, f),
+  };
+
   /* ------------------------------------------------------ the view */
   // a frozen module object whose named members are real; any other member is the inert
   // deny stub (node-modules.js stub(), same message as the loader's). Members are OWN keys:
@@ -861,8 +1173,9 @@
       ["crypto", (deny, n) => mod(n, deny, cryptoAll)],
       ["tty", (deny, n) => mod(n, deny, { isatty: () => false })],
       ["child_process", (deny, n) => mod(n, deny, cpOwn)],
-      ["http", (deny, n) => mod(n, deny, { METHODS: HTTP_METHODS, STATUS_CODES: HTTP_STATUS })],
-      ["https", (deny, n) => mod(n, deny, { METHODS: HTTP_METHODS, STATUS_CODES: HTTP_STATUS })],
+      ["net", (deny, n) => mod(n, deny, netOwn)],
+      ["http", (deny, n) => mod(n, deny, httpOwn)],
+      ["https", (deny, n) => mod(n, deny, httpsOwn)],
     ]);
     /* the vault fs facade (node-modules.js) is one frozen object shared by every plugin;
        graceful-fs defines a queue symbol on require("fs") and reassigns close/closeSync at
