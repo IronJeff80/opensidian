@@ -494,6 +494,13 @@
 
     const CLI = new Map();   // registerCliHandler: command id -> {command, description, flags, handler, plugin}
 
+    /* obsidian:// actions: workspace.protocolHandler.handlers is the action -> handler Map that
+       registerObsidianProtocolHandler fills (keys exactly as given; a held action throws; the owner's
+       unload deletes it). Registration only: nothing here opens or routes an OS-level URL. */
+    const PROTO = new Map(), PROTO_OWN = new Map();   // action -> handler / action -> owning registration
+    if (K.workspace && !K.workspace.protocolHandler)
+      Object.defineProperty(K.workspace, "protocolHandler", { value: { handlers: PROTO }, configurable: true, enumerable: false, writable: false });
+
     /* ------------------------------------------------------------ Plugin */
     class Plugin extends Component {
       constructor(app_, manifest) { super(); this.app = app_; this.manifest = manifest; }
@@ -577,7 +584,12 @@
         es.addSuggest(s);
         this.register(() => es.removeSuggest(s));
       }
-      registerObsidianProtocolHandler() {}
+      registerObsidianProtocolHandler(action, handler) {
+        if (PROTO.has(action)) throw new Error("registerObsidianProtocolHandler: action \"" + String(action) + "\" is already registered");
+        const own = { plugin: this.manifest && this.manifest.id };
+        PROTO.set(action, handler); PROTO_OWN.set(action, own);
+        this.register(() => { if (PROTO_OWN.get(action) === own) { PROTO_OWN.delete(action); PROTO.delete(action); } });
+      }
       /* opensidian has no Bases: the documented answer is false ("bases are not enabled") */
       registerBasesView(viewId, registration) { return false; }
       /* CLI handlers: ids are global; a second registration of one id throws. The
