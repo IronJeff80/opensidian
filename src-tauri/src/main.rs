@@ -3203,6 +3203,8 @@ fn csp_by_trust(header: &str, trusted: bool) -> String {
                 worker = true;
                 out.push(format!("{d} blob:"));
             }
+            // the synchronous fs route (vfs_sync) is same-origin
+            "connect-src" => out.push(format!("{d} 'self'")),
             _ => out.push(d.to_string()),
         }
     }
@@ -3232,11 +3234,63 @@ fn page_csp(h: &tauri::AppHandle, res: &mut tauri::http::Response<std::borrow::C
     eprintln!("[csp] page trusted={trusted} Content-Security-Policy: {}", res.headers()["Content-Security-Policy"].to_str().unwrap_or("?"));
 }
 
+/* ---- cp-unrestricted: synchronous fs for plugins (fs.existsSync, readFileSync, ...).
+   Stock plugins call Node's *Sync fs at load; an invoke is always async, so the page
+   reaches the SAME confined core as plugin_vfs (vaultfs::plugin_op) through a
+   same-origin synchronous XHR on the app's own scheme. The request never reaches the
+   asset resolver's answer: this hook replaces it. Gated on the vault's trust flip
+   exactly like plugin_vfs; connect-src 'self' is only in a trusted page's CSP. */
+const VFS_SYNC_PATH: &str = "/__os_vfs_sync";
+
+type PageResponse = tauri::http::Response<std::borrow::Cow<'static, [u8]>>;
+
+fn vfs_sync_answer(root: Option<&Path>, trusted: bool, post: bool, body: &[u8]) -> (u16, serde_json::Value) {
+    use serde_json::json;
+    let Some(root) = root else { return (403, json!({ "err": "EPERM: no vault open" })) };
+    if !trusted {
+        return (403, json!({ "err": "EPERM: restricted mode, plugin file access is off" }));
+    }
+    if !post {
+        return (405, json!({ "err": "EINVAL: POST only" }));
+    }
+    let Ok(a) = serde_json::from_slice::<serde_json::Value>(body) else { return (400, json!({ "err": "EINVAL: bad request" })) };
+    let s = |k: &str| a.get(k).and_then(|v| v.as_str());
+    let (Some(op), Some(path)) = (s("op"), s("path")) else { return (400, json!({ "err": "EINVAL: op and path are required" })) };
+    let recursive = a.get("recursive").and_then(|v| v.as_bool()).unwrap_or(false);
+    match vaultfs::plugin_op(root, op, path, s("to"), s("data"), recursive) {
+        Ok(v) => (200, json!({ "ok": v })),
+        Err(e) => (200, json!({ "err": e })),
+    }
+}
+
+fn vfs_sync(h: &tauri::AppHandle, req: &tauri::http::Request<Vec<u8>>) -> PageResponse {
+    use tauri::Manager;
+    let root = cur_vault(&h.state::<Vault>());
+    let trusted = root.as_deref().is_some_and(|r| plugins::is_trusted(&cfg_value(), r));
+    let (status, v) = vfs_sync_answer(root.as_deref(), trusted, req.method() == tauri::http::Method::POST, req.body());
+    if status == 403 {
+        eprintln!("[plugin] refused {VFS_SYNC_PATH}: restricted mode (403)");
+    }
+    tauri::http::Response::builder()
+        .status(status)
+        .header("Content-Type", "application/json")
+        .header("Cache-Control", "no-store")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(std::borrow::Cow::Owned(v.to_string().into_bytes()))
+        .expect("vfs sync response")
+}
+
 /// the app window, from the config entry, with page_csp on its responses
 fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) -> tauri::Result<()> {
     let h = app.clone();
     tauri::WebviewWindowBuilder::from_config(app, wc)?
-        .on_web_resource_request(move |_req, res| page_csp(&h, res))
+        .on_web_resource_request(move |req, res| {
+            if req.uri().path() == VFS_SYNC_PATH {
+                *res = vfs_sync(&h, &req);
+            } else {
+                page_csp(&h, res)
+            }
+        })
         .build()?;
     Ok(())
 }
@@ -5922,6 +5976,27 @@ mod tests {
         let links: Vec<Vec<String>> = d.iter().map(|(_, c)| links_in(c)).collect();
         let refs: Vec<&[String]> = links.iter().map(|l| l.as_slice()).collect();
         index::build_graph(&names, &refs)
+    }
+
+    /// cp-unrestricted: the synchronous fs route answers only a trusted vault, POST only,
+    /// through the same confined core as plugin_vfs (an escape stays refused)
+    #[test]
+    fn vfs_sync_route_is_trust_gated_and_confined() {
+        let root = tmp_vault("vfssync");
+        fs::write(root.join("a.md"), "hi").unwrap();
+        let q = |op: &str, p: &str| format!("{{\"op\":\"{op}\",\"path\":\"{p}\"}}").into_bytes();
+        assert_eq!(vfs_sync_answer(Some(&root), false, true, &q("exists", "a.md")).0, 403);
+        assert_eq!(vfs_sync_answer(None, true, true, &q("exists", "a.md")).0, 403);
+        assert_eq!(vfs_sync_answer(Some(&root), true, false, &q("exists", "a.md")).0, 405);
+        assert_eq!(vfs_sync_answer(Some(&root), true, true, b"nope").0, 400);
+        assert_eq!(vfs_sync_answer(Some(&root), true, true, &q("exists", "a.md")), (200, serde_json::json!({ "ok": true })));
+        assert_eq!(vfs_sync_answer(Some(&root), true, true, &q("exists", "zz.md")), (200, serde_json::json!({ "ok": false })));
+        let (s, v) = vfs_sync_answer(Some(&root), true, true, &q("read", "a.md"));
+        assert_eq!((s, v["ok"].as_str()), (200, Some("aGk=")));
+        let (s, v) = vfs_sync_answer(Some(&root), true, true, &q("read", "/etc/passwd"));
+        assert_eq!(s, 200);
+        assert!(v["err"].as_str().is_some_and(|e| e.starts_with("EPERM")), "{v}");
+        let _ = fs::remove_dir_all(&root);
     }
 
     fn tmp_vault(tag: &str) -> PathBuf {
@@ -8713,10 +8788,10 @@ mod tests {
             t,
             "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval' 'unsafe-eval' blob:; \
              style-src 'self' 'unsafe-inline'; img-src 'self' data: opensidian-img:; font-src 'self'; \
-             connect-src ipc: http://ipc.localhost; worker-src 'self' blob:"
+             connect-src ipc: http://ipc.localhost 'self'; worker-src 'self' blob:"
         );
-        // every directive other than script-src is byte-identical
-        let other = |c: &str| c.split("; ").filter(|d| !d.starts_with("script-src") && !d.starts_with("worker-src")).map(str::to_owned).collect::<Vec<_>>();
+        // every directive other than script-src / worker-src / connect-src is byte-identical
+        let other = |c: &str| c.split("; ").filter(|d| !d.starts_with("script-src") && !d.starts_with("worker-src") && !d.starts_with("connect-src")).map(str::to_owned).collect::<Vec<_>>();
         assert_eq!(other(&t), other(&base));
         // an existing worker-src is extended, not duplicated; Tauri's own hash tokens survive
         let w = csp_by_trust("script-src 'self' 'sha256-abc'; worker-src 'self'", true);

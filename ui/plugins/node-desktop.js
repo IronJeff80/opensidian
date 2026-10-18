@@ -1206,6 +1206,120 @@
     return a;
   }
 
+  /* ------------------------------------------- fs *Sync (stock parity: copilot, slides)
+     Node's synchronous fs over the same confined core as the async facade
+     (vaultfs plugin_op). An invoke is always async, so each call is one
+     same-origin synchronous XHR to the app's own scheme, answered in Rust by
+     main.rs vfs_sync (trusted vault only; connect-src 'self' exists only in a
+     trusted page's CSP). Paths are the facade's: "/vault/x" and "x" are one file,
+     anything outside the vault is refused EPERM by Rust. */
+  const VFS_SYNC = "/__os_vfs_sync";
+  const sysErr = (msg, p) => {
+    const V = host.vfs;
+    if (V && V.vfsError) return V.vfsError(msg, p);
+    const e = new Error(String(msg)); e.code = "EIO"; e.path = String(p); return e;
+  };
+  function vioSync(op, p, a) {
+    const V = host.vfs;
+    if (!V) throw sysErr("EPERM: plugin file access is not available", p);
+    const body = Object.assign({ op, path: V.vrel(p) }, a || {});
+    if (body.to != null) body.to = V.vrel(body.to);
+    const x = new XMLHttpRequest();
+    x.open("POST", location.origin + VFS_SYNC, false);
+    x.setRequestHeader("Content-Type", "text/plain;charset=UTF-8");
+    try { x.send(JSON.stringify(body)); } catch (e) { throw sysErr("EIO: synchronous fs request failed (" + String(e && e.message || e) + ")", p); }
+    let r = null;
+    try { r = JSON.parse(x.responseText); } catch (_) { /* below */ }
+    if (!r) throw sysErr("EIO: synchronous fs answered " + x.status, p);
+    if ("err" in r) throw sysErr(r.err, p);
+    return r.ok;
+  }
+  const b64bytes = s => { const b = atob(String(s)), u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; };
+  const bytesB64 = d => {
+    const u = typeof d === "string" ? new TextEncoder().encode(d) : ArrayBuffer.isView(d) ? new Uint8Array(d.buffer, d.byteOffset, d.byteLength) : d instanceof ArrayBuffer ? new Uint8Array(d) : new TextEncoder().encode(String(d == null ? "" : d));
+    let s = "";
+    for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
+    return btoa(s);
+  };
+  const encArg = o => (typeof o === "string" ? o : o && typeof o === "object" ? o.encoding || null : null);
+  class SyncStats {
+    constructor(s) {
+      const dir = s.type === "folder";
+      // no inode, owner or mode bits exist behind the vault core: fixed, plausible values
+      Object.assign(this, { dev: 0, ino: 0, mode: dir ? 0o40755 : 0o100644, nlink: 1, uid: 0, gid: 0, rdev: 0, size: s.size, blksize: 4096, blocks: Math.ceil(s.size / 512),
+        atimeMs: s.mtime, mtimeMs: s.mtime, ctimeMs: s.ctime, birthtimeMs: s.ctime,
+        atime: new Date(s.mtime), mtime: new Date(s.mtime), ctime: new Date(s.ctime), birthtime: new Date(s.ctime) });
+      Object.defineProperty(this, "_dir", { value: dir });
+    }
+    isFile() { return !this._dir; }
+    isDirectory() { return this._dir; }
+    isSymbolicLink() { return false; }
+    isBlockDevice() { return false; }
+    isCharacterDevice() { return false; }
+    isFIFO() { return false; }
+    isSocket() { return false; }
+  }
+  class SyncDirent {
+    constructor(name, kind, parent) { this.name = name; this.parentPath = this.path = parent; Object.defineProperty(this, "_k", { value: kind }); }
+    isFile() { return this._k === "file"; }
+    isDirectory() { return this._k === "folder"; }
+    isSymbolicLink() { return false; }
+    isBlockDevice() { return false; }
+    isCharacterDevice() { return false; }
+    isFIFO() { return false; }
+    isSocket() { return false; }
+  }
+  const noent = p => { const e = new Error("ENOENT: no such file or directory, '" + p + "'"); e.code = "ENOENT"; e.path = String(p); return e; };
+  function statS(p, o) {
+    try { return new SyncStats(vioSync("stat", p)); } catch (e) { if (e.code === "ENOENT" && o && o.throwIfNoEntry === false) return undefined; throw e; }
+  }
+  function rmTreeS(p) {
+    for (const [n, k] of vioSync("list", p)) {
+      const c = String(p).replace(/\/+$/, "") + "/" + n;
+      if (k === "folder") { rmTreeS(c); vioSync("rmdir", c); } else vioSync("unlink", c);
+    }
+  }
+  const fsSync = Object.freeze({
+    existsSync(p) { try { return p != null && vioSync("exists", p) === true; } catch (_) { return false; } },
+    statSync: statS,
+    lstatSync: statS,
+    accessSync(p) { if (!vioSync("exists", p)) throw noent(p); },
+    readFileSync(p, o) {
+      const u = b64bytes(vioSync("read", p)), enc = encArg(o);
+      return enc ? Buffer.from(u).toString(enc) : Buffer.from(u);
+    },
+    writeFileSync(p, d, o) { const enc = encArg(o); vioSync("write", p, { data: bytesB64(typeof d === "string" && enc && !/^utf-?8$/i.test(enc) ? Buffer.from(d, enc) : d) }); },
+    appendFileSync(p, d) { vioSync("append", p, { data: bytesB64(d) }); },
+    readdirSync(p, o) {
+      const l = vioSync("list", p);
+      return o && typeof o === "object" && o.withFileTypes ? l.map(([n, k]) => new SyncDirent(n, k, String(p))) : l.map(([n]) => n);
+    },
+    mkdirSync(p, o) {
+      const rec = !!(o && typeof o === "object" ? o.recursive : false);
+      if (rec && vioSync("exists", p)) return undefined;
+      vioSync("mkdir", p, { recursive: rec });
+      return rec ? "/vault/" + host.vfs.vrel(p) : undefined;
+    },
+    renameSync(a, b) { vioSync("rename", a, { to: String(b) }); },
+    copyFileSync(a, b, mode) {
+      if ((mode | 0) & 1 && vioSync("exists", b)) { const e = new Error("EEXIST: file already exists, '" + b + "'"); e.code = "EEXIST"; e.path = String(b); throw e; }
+      vioSync("copy", a, { to: String(b) });
+    },
+    unlinkSync(p) { vioSync("unlink", p); },
+    rmdirSync(p) { vioSync("rmdir", p); },
+    rmSync(p, o) {
+      o = o || {};
+      let s;
+      try { s = vioSync("stat", p); } catch (e) { if (e.code === "ENOENT" && o.force) return; throw e; }
+      if (s.type === "folder") {
+        if (!o.recursive) { const e = new Error("ERR_FS_EISDIR: Path is a directory: rm returned EISDIR, '" + p + "'"); e.code = "ERR_FS_EISDIR"; throw e; }
+        rmTreeS(p); vioSync("rmdir", p);
+      } else vioSync("unlink", p);
+    },
+  });
+  // the fs facade of node-modules.js (not fs/promises): it has readFile AND a promises member
+  const isFsFacade = m => m && typeof m === "object" && typeof m.readFile === "function" && m.promises && typeof m.promises === "object";
+
   /* ------------------------------------------- electron (shell real, Rust desk_shell)
      shell.openExternal / openPath / showItemInFolder go to the OS opener with the user's
      rights, as stock's do. remote / ipcRenderer: just enough for bundles that look up the
@@ -1218,9 +1332,19 @@
     beep() {},
   });
   const noWindow = Object.freeze({ show() {}, focus() {}, isFocused: () => document.hasFocus(), isDestroyed: () => false, webContents: Object.freeze({ id: 1 }) });
+  /* remote.app: what plugins read at load (pdf-plus: getVersion). The version is the
+     Obsidian API level this app implements, not a browser or engine version. */
+  const appVersion = () => "1.4.4";   // = api-core.js API_VERSION
+  const remoteApp = Object.freeze({
+    getVersion: appVersion,
+    getName: () => "opensidian",
+    getLocale: () => navigator.language || "en-US",
+    getPath: n => (n === "userData" || n === "appData" ? "/vault/.obsidian" : n === "home" ? OS_HOME : n === "temp" ? "/tmp" : "/vault"),
+    isPackaged: true,
+  });
   const electronOwn = {
     shell: shellOwn,
-    remote: Object.freeze({ shell: shellOwn, BrowserWindow: Object.freeze({ getFocusedWindow: () => noWindow, getAllWindows: () => [noWindow] }), getCurrentWindow: () => noWindow }),
+    remote: Object.freeze({ app: remoteApp, shell: shellOwn, BrowserWindow: Object.freeze({ getFocusedWindow: () => noWindow, getAllWindows: () => [noWindow] }), getCurrentWindow: () => noWindow }),
     ipcRenderer: Object.freeze({ send() {}, on() { return this; }, once() { return this; }, removeListener() { return this; }, removeAllListeners() { return this; }, sendSync: () => undefined, invoke: () => Promise.resolve(undefined) }),
   };
 
@@ -1271,6 +1395,8 @@
       if (!c) {
         const d = Object.getOwnPropertyDescriptors(m);
         for (const k of Reflect.ownKeys(d)) { d[k].configurable = true; if ("value" in d[k]) d[k].writable = true; }
+        // a trusted vault's fs has Node's *Sync calls (the facade's ENOSYS stubs are replaced)
+        if (isFsFacade(m)) for (const k of Object.keys(fsSync)) d[k] = { value: fsSync[k], enumerable: true, writable: true, configurable: true };
         c = Object.defineProperties(Object.create(Object.getPrototypeOf(m)), d);
         owned.set(m, c);
       }
