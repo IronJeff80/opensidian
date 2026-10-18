@@ -363,19 +363,81 @@
     Object.assign(K, NEW);
     Object.assign(K.exportValues, NEW);
 
-    /* ------------------------------------------------------ design-gated
-       MathJax, Mermaid, PDF.js and Prism are not vendored in opensidian
-       (vendoring one is a product decision of its own); these are exported so
-       a plugin can feature-test them, and they fail loudly instead of
-       pretending: the loaders and finishRenderMath reject, renderMath throws. */
+    /* ------------------------------------------------------ lib loaders
+       PDF.js, MathJax and Prism are vendored under ui/vendor/<lib>/ (exact pin,
+       sha256 + license in each VENDOR.md / SHA256SUMS) and loaded on first use
+       from 'self' under the unchanged CSP: no network, no eval. Each loader
+       resolves with the real library (also published on window like a plugin
+       expects: pdfjsLib, MathJax, Prism) and rejects honestly when the bytes
+       cannot be loaded; a failed load is retried by the next call. Mermaid is
+       still not vendored: loadMermaid rejects. */
     const unsupported = what => new Error("unsupported in opensidian: " + what);
+    const vendorUrl = p => new URL("vendor/" + p, document.baseURI).href;
+    const once = {};
+    function loadOnce(key, start) {
+      if (!once[key]) once[key] = start().catch(e => { once[key] = null; throw e; });
+      return once[key];
+    }
+    function loadScript(path, lib) {
+      return new Promise((res, rej) => {
+        const s = document.createElement("script");
+        s.src = vendorUrl(path);
+        s.onload = () => res();
+        s.onerror = () => { s.remove(); rej(new Error(lib + " failed to load (ui/vendor/" + path + ")")); };
+        document.head.appendChild(s);
+      });
+    }
+
+    function loadPdfJs() {
+      if (window.pdfjsLib && window.pdfjsLib.getDocument) return Promise.resolve(window.pdfjsLib);
+      return loadOnce("pdfjs", () => import(vendorUrl("pdfjs/pdf.min.mjs")).then(mod => {
+        if (!mod || typeof mod.getDocument !== "function") throw new Error("PDF.js loaded without getDocument");
+        mod.GlobalWorkerOptions.workerSrc = vendorUrl("pdfjs/pdf.worker.min.mjs");
+        const lib = Object.assign({}, mod);   // a plain object like a global build, not the frozen namespace
+        window.pdfjsLib = lib;
+        return lib;
+      }, e => { throw new Error("PDF.js failed to load (ui/vendor/pdfjs/pdf.min.mjs): " + (e && e.message || e)); }));
+    }
+
+    const mathJaxReady = () => !!(window.MathJax && window.MathJax.startup && window.MathJax.startup.document &&
+      typeof window.MathJax.tex2chtml === "function");
+    function loadMathJax() {
+      if (mathJaxReady()) return Promise.resolve(window.MathJax);
+      return loadOnce("mathjax", () => {
+        // configuration MathJax reads at startup: never typeset the app on its own, no context menu
+        window.MathJax = { startup: { typeset: false }, options: { enableMenu: false } };
+        return loadScript("mathjax/tex-chtml-full.js", "MathJax")
+          .then(() => window.MathJax.startup.promise)
+          .then(() => {
+            if (!mathJaxReady()) throw new Error("MathJax loaded without tex2chtml");
+            return window.MathJax;
+          });
+      });
+    }
+    function renderMath(source, display) {
+      if (!mathJaxReady()) throw new Error("renderMath: MathJax is not loaded yet (await loadMathJax() first)");
+      return window.MathJax.tex2chtml(String(source), { display: !!display });
+    }
+    function finishRenderMath() {
+      // write the CHTML styles the math rendered so far needs into the page
+      return loadMathJax().then(MJ => { const d = MJ.startup.document; d.clear(); d.updateDocument(); });
+    }
+
+    function loadPrism() {
+      if (window.Prism && typeof window.Prism.highlight === "function") return Promise.resolve(window.Prism);
+      return loadOnce("prism", () => {
+        // read by Prism at startup: no highlightAll over the app, no worker message handler
+        window.Prism = { manual: true, disableWorkerMessageHandler: true };
+        return loadScript("prism/prism.js", "Prism").then(() => {
+          if (!window.Prism || typeof window.Prism.highlight !== "function") throw new Error("Prism loaded without highlight");
+          return window.Prism;
+        });
+      });
+    }
+
     const GATED = {
-      loadMathJax: () => Promise.reject(unsupported("loadMathJax (MathJax is not bundled)")),
+      loadMathJax, loadPdfJs, loadPrism, renderMath, finishRenderMath,
       loadMermaid: () => Promise.reject(unsupported("loadMermaid (Mermaid is not bundled)")),
-      loadPdfJs: () => Promise.reject(unsupported("loadPdfJs (PDF.js is not bundled)")),
-      loadPrism: () => Promise.reject(unsupported("loadPrism (Prism is not bundled)")),
-      renderMath: () => { throw unsupported("renderMath (MathJax is not bundled)"); },
-      finishRenderMath: () => Promise.reject(unsupported("finishRenderMath (MathJax is not bundled)")),
     };
     Object.assign(K.exportValues, GATED);
   });
