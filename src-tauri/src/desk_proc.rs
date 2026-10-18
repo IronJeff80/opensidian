@@ -12,7 +12,7 @@
      - one long-lived thread does every fork, so PR_SET_PDEATHSIG (bound to the
        forking thread) fires only when the app itself goes away;
      - the child gets its own process group (kill reaches git's helpers too),
-       stdio pipes, and no other fd of ours (close_range);
+       stdio pipes, and no other fd of ours (close_range CLOEXEC);
      - two pump threads fill byte buffers the page drains with read();
      - a waiter reaps and records the exit code or the signal.
    cwd: the page sees the vault as "/vault" (getBasePath), so "/vault" and
@@ -210,7 +210,9 @@ fn build(sp: &Spec) -> Command {
             if libc::getppid() == 1 {
                 return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
             }
-            libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32);
+            // CLOEXEC, not close: std reports a failed exec (ENOENT) over its own cloexec
+            // pipe, which a plain close_range would cut (spawn would "succeed")
+            libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32 /* CLOSE_RANGE_CLOEXEC */);
             Ok(())
         });
     }
