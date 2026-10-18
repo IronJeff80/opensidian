@@ -33,6 +33,7 @@ mod sandbox;
 mod settings;
 mod spawn;
 mod spawner;
+mod desk_proc;
 mod vaultlock;
 mod srcmode;
 mod themefs;
@@ -3269,6 +3270,9 @@ fn plugins_set(
         if let Some(t) = trusted {
             let key = plugins::trust_key(&root);
             cfg_update(&[cfgstore::Op::SetIn(plugins::TRUST_KEY.into(), key, serde_json::json!(t))]);
+            if !t {
+                desk_proc::kill_all();   // flip OFF: what plugins started stops with them
+            }
         }
         if let (Some(id), Some(on)) = (id.as_deref(), on) {
             plugins::set_enabled(&root, id, on)?;
@@ -3315,6 +3319,58 @@ fn plugin_vfs(
         return Err("EPERM: restricted mode, plugin file access is off".into());
     }
     span_timed!(otel => "plugin_vfs", vaultfs::plugin_op(&root, &op, &path, to.as_deref(), data.as_deref(), recursive.unwrap_or(false)))
+}
+
+/* ---- cp-unrestricted: child_process for plugins (desk_proc.rs). Stock lets a
+   plugin spawn with the user's rights once community plugins are on; the gate
+   here is the same flip, checked on every spawn: an untrusted vault starts
+   nothing. read/write/end/kill act only on ids a spawn handed out. */
+#[tauri::command]
+fn desk_proc_spawn(
+    v: State<Vault>,
+    file: String,
+    args: Option<Vec<String>>,
+    cwd: Option<String>,
+    env: Option<std::collections::BTreeMap<String, String>>,
+) -> Result<serde_json::Value, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    if !plugins::is_trusted(&cfg_value(), &root) {
+        return Err("EPERM: restricted mode, plugins cannot start programs".into());
+    }
+    let args: Vec<String> = args.unwrap_or_default().iter().map(|a| desk_proc::map_arg(&root, a)).collect();
+    let sp = desk_proc::Spec { file, args, cwd: desk_proc::map_cwd(&root, cwd.as_deref()), env: env.unwrap_or_default().into_iter().collect() };
+    eprintln!("[desk] spawn {} {:?} cwd={}", sp.file, sp.args, sp.cwd.display());
+    let run = desk_proc::start(sp)?;
+    let pid = run.pid();
+    Ok(serde_json::json!({ "id": desk_proc::register(run), "pid": pid }))
+}
+
+#[tauri::command]
+async fn desk_proc_read(id: u64, wait_ms: Option<u64>) -> Result<desk_proc::Chunk, String> {
+    let run = desk_proc::get(id)?;
+    let wait = std::time::Duration::from_millis(wait_ms.unwrap_or(250).min(2000));
+    let c = tauri::async_runtime::spawn_blocking(move || run.read(wait)).await.map_err(|e| e.to_string())?;
+    if c.done {
+        desk_proc::forget(id);
+    }
+    Ok(c)
+}
+
+#[tauri::command]
+fn desk_proc_write(id: u64, data: String) -> Result<(), String> {
+    desk_proc::get(id)?.write(&desk_proc::latin1_to_bytes(&data))
+}
+
+#[tauri::command]
+fn desk_proc_end(id: u64) -> Result<(), String> {
+    desk_proc::get(id)?.end();
+    Ok(())
+}
+
+#[tauri::command]
+fn desk_proc_kill(id: u64, signal: Option<String>) -> Result<bool, String> {
+    let sig = desk_proc::sig_num(signal.as_deref().unwrap_or("SIGTERM")).ok_or("ERR_UNKNOWN_SIGNAL")?;
+    Ok(desk_proc::get(id)?.kill(sig))
 }
 
 /* ---- themefs R5 (themes): the listing predicate is the oracle's, verbatim
@@ -5598,7 +5654,7 @@ fn main() {
             read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
-            plugins_state, plugins_set, plugin_io, plugin_vfs,
+            plugins_state, plugins_set, plugin_io, plugin_vfs, desk_proc_spawn, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
             themes_scan, theme_css, get_css_theme, set_css_theme, theme_seed_report, vault_css_watch,
             get_quickfont, set_quickfont, get_fonts, set_font, font_families,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,

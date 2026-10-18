@@ -141,10 +141,13 @@
     for (; i < a.length; i++) s += " " + (typeof a[i] === "string" ? a[i] : inspect(a[i]));
     return s;
   }
+  const PCUSTOM = Symbol.for("nodejs.util.promisify.custom");
   function promisify(fn) {
     if (typeof fn !== "function") throw new TypeError('The "original" argument must be of type function');
+    if (typeof fn[PCUSTOM] === "function") return fn[PCUSTOM];   // exec/execFile resolve {stdout, stderr}
     return function (...a) { return new Promise((res, rej) => { fn.call(this, ...a, (e, ...r) => (e ? rej(e) : res(r.length > 1 ? r : r[0]))); }); };
   }
+  promisify.custom = PCUSTOM;
   function debuglog() { const f = () => {}; f.enabled = false; return f; }
   function inherits(ctor, sup) {
     if (typeof ctor !== "function" || typeof sup !== "function") throw new TypeError("inherits: ctor and superCtor must be functions");
@@ -639,6 +642,165 @@
   const OwnSAB = class SharedArrayBuffer extends ArrayBuffer {};
   Object.freeze(OwnSAB.prototype); Object.freeze(OwnSAB);
 
+  /* ------------------------------------------- child_process (real, Rust desk_proc.rs)
+     spawn / exec / execFile run real programs with the user's rights, as stock does once
+     community plugins are on. Rust checks the vault's trust flip on every spawn; the page
+     only ever sees an id. cwd "/vault[/x]" (getBasePath) is the real vault dir there.
+     env: process.env here is an empty shim, so Rust lays the given keys over the app's real
+     environment (what {...process.env, X} gives a stock child). Output is polled
+     (desk_proc_read waits up to 250 ms per call) and arrives as Buffers, or strings after
+     setEncoding. No *Sync variants and no fork(): those stay the inert stub. */
+  const desk = typeof host.desk === "function" ? host.desk : null;
+  const deskErr = (e, file, args) => {
+    const m = String(e && e.message || e);
+    const x = new Error(m.replace(/^(E[A-Z]+): (spawn \S+) .*/, "$2 $1"));
+    const c = /^([A-Z_]+):/.exec(m); x.code = c ? c[1] : "EIO"; x.errno = -1;
+    x.syscall = "spawn " + file; x.path = file; x.spawnargs = args;
+    return x;
+  };
+  class CpReadable extends EmitterBase {
+    constructor() { super(); this._enc = null; this._dec = null; this.readable = true; this.destroyed = false; this.readableEnded = false; }
+    setEncoding(e) { this._enc = String(e || "utf8").toLowerCase(); this._dec = /^utf-?8$/.test(this._enc) ? new TextDecoder("utf-8") : null; return this; }
+    _push(s) {
+      if (!s) return;
+      const b = Buffer.from(latin1Bytes(s));
+      this.emit("data", !this._enc ? b : this._dec ? this._dec.decode(b, { stream: true }) : b.toString(this._enc));
+    }
+    _end() {
+      if (this._dec) { const t = this._dec.decode(); if (t) this.emit("data", t); }
+      this.readableEnded = true; this.readable = false;
+      this.emit("end"); this.emit("close");
+    }
+    pipe(d) { this.on("data", c => d.write(c)); this.on("end", () => { if (d && typeof d.end === "function") d.end(); }); return d; }
+    pause() { return this; } resume() { return this; } unpipe() { return this; }
+    destroy() { this.destroyed = true; return this; }
+    ref() { return this; } unref() { return this; }
+  }
+  class CpWritable extends EmitterBase {
+    constructor(cp) { super(); this._cp = cp; this.writable = true; this.destroyed = false; this.writableEnded = false; }
+    write(c, enc, cb) {
+      if (typeof enc === "function") { cb = enc; enc = undefined; }
+      const b = typeof c === "string" ? Buffer.from(c, enc || "utf8") : Buffer.from(c);
+      const s = latin1Str(b, 0);
+      this._cp._q = this._cp._q.then(id => (id == null ? id : desk("desk_proc_write", { id, data: s }).then(() => id)))
+        .then(id => { if (cb) cb(null); return id; }, e => { if (cb) cb(errOf(e)); else this.emit("error", errOf(e)); return null; });
+      return true;
+    }
+    end(c, enc, cb) {
+      if (typeof c === "function") { cb = c; c = undefined; } else if (typeof enc === "function") { cb = enc; enc = undefined; }
+      if (c != null) this.write(c, enc);
+      if (this.writableEnded) return this;
+      this.writableEnded = true; this.writable = false;
+      this._cp._q = this._cp._q.then(id => (id == null ? id : desk("desk_proc_end", { id }).then(() => id, () => id)))
+        .then(id => { if (cb) cb(); this.emit("finish"); this.emit("close"); return id; });
+      return this;
+    }
+    destroy() { this.end(); this.destroyed = true; return this; }
+    cork() {} uncork() {}
+    setDefaultEncoding() { return this; }
+  }
+  class ChildProcess extends EmitterBase {
+    constructor() {
+      super();
+      this.pid = undefined; this.exitCode = null; this.signalCode = null; this.killed = false; this.connected = false;
+      this.stdin = new CpWritable(this); this.stdout = new CpReadable(); this.stderr = new CpReadable();
+      this.stdio = [this.stdin, this.stdout, this.stderr];
+      this._q = null;   // resolves to the Rust id (null if the spawn failed)
+    }
+    kill(sig) {
+      if (this.exitCode !== null || this.signalCode !== null) return false;
+      const signal = typeof sig === "number" ? ({ 1: "SIGHUP", 2: "SIGINT", 9: "SIGKILL", 15: "SIGTERM" }[sig] || "SIGTERM") : String(sig || "SIGTERM");
+      this.killed = true;
+      this._q.then(id => (id == null ? null : desk("desk_proc_kill", { id, signal }))).catch(() => {});
+      return true;
+    }
+    ref() { return this; } unref() { return this; }
+    disconnect() {}
+  }
+  function spawnArgs(args, opts) {
+    if (!Array.isArray(args)) { opts = args; args = []; }
+    return [args.map(String), opts && typeof opts === "object" ? opts : {}];
+  }
+  function cpSpawn(file, args0, opts0) {
+    let [args, opts] = spawnArgs(args0, opts0);
+    file = String(file);
+    if (opts.shell) { const cmd = [file, ...args].join(" "); file = typeof opts.shell === "string" ? opts.shell : "/bin/sh"; args = ["-c", cmd]; }
+    const cp = new ChildProcess();
+    cp.spawnfile = file; cp.spawnargs = [file, ...args];
+    const st = typeof opts.stdio === "string" ? [opts.stdio, opts.stdio, opts.stdio] : Array.isArray(opts.stdio) ? opts.stdio : [];
+    if (st[0] != null && st[0] !== "pipe") cp.stdin = null;
+    if (st[1] != null && st[1] !== "pipe") cp.stdout = null;
+    if (st[2] != null && st[2] !== "pipe") cp.stderr = null;
+    cp.stdio = [cp.stdin, cp.stdout, cp.stderr];
+    const out = cp.stdout || new CpReadable(), err = cp.stderr || new CpReadable();
+    let env;
+    if (opts.env && typeof opts.env === "object") { env = {}; for (const k of Object.keys(opts.env)) if (opts.env[k] != null) env[k] = String(opts.env[k]); }
+    const cwd = opts.cwd == null ? undefined : String(opts.cwd instanceof URL ? opts.cwd.pathname : opts.cwd);
+    cp._q = (desk ? desk("desk_proc_spawn", { file, args, cwd, env }) : Promise.reject(new Error("EPERM: no desktop backend")))
+      .then(r => { cp.pid = r.pid; later(() => cp.emit("spawn")); return r.id; },
+        e => { later(() => { cp.emit("error", deskErr(e, file, cp.spawnargs)); cp.emit("close", -2, null); }); return null; });
+    let timer = null;
+    if (opts.timeout > 0) timer = setTimeout(() => cp.kill(opts.killSignal || "SIGTERM"), Number(opts.timeout));
+    if (opts.signal && typeof opts.signal.addEventListener === "function") opts.signal.addEventListener("abort", () => cp.kill(opts.killSignal || "SIGTERM"), { once: true });
+    cp._q.then(async id => {
+      if (id == null) return;
+      for (;;) {
+        let c;
+        try { c = await desk("desk_proc_read", { id, waitMs: 250 }); } catch (_) { c = { out: "", err: "", exit: null, signal: "SIGKILL", done: true }; }
+        out._push(c.out); err._push(c.err);
+        if (c.done) { cp.exitCode = c.exit == null ? null : c.exit; cp.signalCode = c.signal || null; break; }
+      }
+      if (timer) clearTimeout(timer);
+      cp.emit("exit", cp.exitCode, cp.signalCode);
+      out._end(); err._end();
+      cp.emit("close", cp.exitCode, cp.signalCode);
+    });
+    return cp;
+  }
+  // execFile/exec: collect both pipes, cb(err, stdout, stderr); err.code = exit code
+  function cpRun(file, args, opts, cb, shownCmd) {
+    const enc = opts.encoding === undefined ? "utf8" : opts.encoding;
+    const cp = cpSpawn(file, args, opts);
+    const o = [], e = [];
+    if (cp.stdout) cp.stdout.on("data", b => o.push(b));
+    if (cp.stderr) cp.stderr.on("data", b => e.push(b));
+    const fin = buf => { const b = Buffer.concat(buf); return enc === "buffer" || enc === null ? b : b.toString(enc); };
+    let called = false;
+    const done = (er, so, se) => { if (called) return; called = true; if (cb) cb(er, so, se); };
+    cp.on("error", x => done(x, fin(o), fin(e)));
+    cp.on("close", (code, signal) => {
+      if (code === -2) return;   // spawn failed: "error" already answered
+      const so = fin(o), se = fin(e);
+      if (code === 0 && !signal) return done(null, so, se);
+      const x = new Error("Command failed: " + shownCmd + (se ? "\n" + se : ""));
+      x.code = code; x.killed = cp.killed; x.signal = signal; x.cmd = shownCmd; x.stdout = so; x.stderr = se;
+      done(x, so, se);
+    });
+    return cp;
+  }
+  function execFile(file, args, opts, cb) {
+    if (typeof args === "function") { cb = args; args = []; opts = {}; }
+    else if (!Array.isArray(args)) { cb = opts; opts = args; args = []; }
+    if (typeof opts === "function") { cb = opts; opts = {}; }
+    opts = opts || {};
+    return cpRun(String(file), (args || []).map(String), opts, cb, [file, ...(args || [])].join(" "));
+  }
+  function exec(cmd, opts, cb) {
+    if (typeof opts === "function") { cb = opts; opts = {}; }
+    opts = opts || {};
+    const sh = typeof opts.shell === "string" ? opts.shell : "/bin/sh";
+    return cpRun(sh, ["-c", String(cmd)], Object.assign({}, opts, { shell: false }), cb, String(cmd));
+  }
+  const asPromise = run => function (...a) {
+    let cp;
+    const p = new Promise((res, rej) => { cp = run(...a, (er, stdout, stderr) => (er ? rej(Object.assign(er, { stdout, stderr })) : res({ stdout, stderr }))); });
+    p.child = cp;
+    return p;
+  };
+  Object.defineProperty(exec, PCUSTOM, { value: asPromise(exec) });
+  Object.defineProperty(execFile, PCUSTOM, { value: asPromise(execFile) });
+  const cpOwn = { spawn: cpSpawn, exec, execFile, ChildProcess };
+
   /* ------------------------------------------------------ the view */
   // a frozen module object whose named members are real; any other member is the inert
   // deny stub (node-modules.js stub(), same message as the loader's). Members are OWN keys:
@@ -698,6 +860,7 @@
       ["util", (deny, n) => mod(n, deny, utilAll)],
       ["crypto", (deny, n) => mod(n, deny, cryptoAll)],
       ["tty", (deny, n) => mod(n, deny, { isatty: () => false })],
+      ["child_process", (deny, n) => mod(n, deny, cpOwn)],
       ["http", (deny, n) => mod(n, deny, { METHODS: HTTP_METHODS, STATUS_CODES: HTTP_STATUS })],
       ["https", (deny, n) => mod(n, deny, { METHODS: HTTP_METHODS, STATUS_CODES: HTTP_STATUS })],
     ]);

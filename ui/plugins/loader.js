@@ -231,6 +231,10 @@
       return true;
     },
     snapshot: () => [...status].map(([id, s]) => id + "=" + s.state).join(","),
+    /* cp-unrestricted: node-desktop.js captures this at boot (before the seal) for
+       the desktop builtins it backs with Rust (child_process, ...). Only desk_*
+       commands pass; Rust gates each spawn on the vault's trust flip. */
+    desk: (cmd, args) => (invoke && /^desk_[a-z_]+$/.test(String(cmd)) ? invoke(String(cmd), args) : Promise.reject(new Error("desktop call refused"))),
   };
   // configurable until seal() swaps in the public facade (item 7)
   Object.defineProperty(window, "__osPluginHost", { value: host, configurable: true, writable: false, enumerable: false });
