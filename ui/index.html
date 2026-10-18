@@ -16,6 +16,10 @@
      so this strip lies over the tab row, and the row underneath reserves its
      width (.wfinset). The empty
      part of the top row is the drag region; double-click it to maximise. -->
+<!-- census C4 make-md: the app chrome sits in one .app-container div, a child of body, as
+     in stock; plugins (make-md loadSpaces) set attributes on it and themes target it. It is
+     display:contents, so body stays the layout box and nothing moves. -->
+<div class="app-container">
 <div id="wframe">
   <button id="wf-min" title="Minimise" aria-label="Minimise window"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M1.5 6h9"/></svg></button>
   <button id="wf-max" title="Maximise / restore" aria-label="Maximise or restore window"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.7" y="1.7" width="8.6" height="8.6" rx="1"/></svg></button>
@@ -169,6 +173,7 @@
      renames nothing; a refusal nobody can see is indistinguishable from a
      rename that silently did nothing. -->
 <div id="notice" hidden></div>
+</div>
 <script src="census.js"></script>
 <script src="otel.js"></script>
 <script src="graph-gl.js"></script>

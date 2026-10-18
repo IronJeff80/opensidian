@@ -1712,3 +1712,6 @@ span.is-flashing { background: var(--highlight-yellow) }
 /* stock's missing-file banner is 37 px tall; the R29.4 banner shrunk to match */
 .lp .imgmiss.pdfmiss, .preview .imgmiss.pdfmiss { padding: 8px 16px }
 .lp.src .pdf-embed { display: none }
+/* census C4 make-md: .app-container (ui/index.html) wraps the app chrome for plugins and
+   themes that look it up; it generates no box, so body stays the layout container */
+.app-container { display: contents }
