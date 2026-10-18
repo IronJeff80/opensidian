@@ -134,12 +134,32 @@ fn bind_vault_locked(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr
     // which runs after this returns — sees the built-ins as ordinary theme
     // dirs. Seeding writes only paths that do not exist (builtins.rs).
     builtins::seed_and_record(p);
+    ensure_app_json(p);
     let base = watcher::snapshot(p); // the watcher baseline: walked first, so nothing created after it is missed
     let ix = span_timed!("index_build", Index::build(p), serde_json::json!({"notes": 0}));
     *v.index.lock().unwrap() = ix;
     *v.seed.lock().unwrap() = Some(base);
     Ok(())
 }
+/// census C4 (make-md): an opened vault always carries `.obsidian/app.json` —
+/// stock materializes it on open, so a plugin that reads it straight through
+/// the adapter (make-md: adapter.read(configDir + "/app.json")) gets `{}` on a
+/// fresh vault instead of ENOENT. Only ever CREATES (O_EXCL, `.obsidian`
+/// walked no-follow from the vault dir fd): an existing file — or a symlink
+/// in its place — is left byte-for-byte alone. `{}` reads as every key's
+/// default, exactly like the absent file did for our own readers. A failure
+/// (read-only vault, refused symlink) is logged and the bind goes on.
+fn ensure_app_json(root: &Path) {
+    let r = vaultfs::Vault::open(root)
+        .and_then(|vfs| vfs.create_new(Path::new(".obsidian/app.json"), true))
+        .and_then(|mut f| std::io::Write::write_all(&mut f, b"{}"));
+    match r {
+        Ok(()) => eprintln!("[vaultinit] created .obsidian/app.json"),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => eprintln!("[vaultinit] .obsidian/app.json not created: {e}"),
+    }
+}
+
 /// component-wise traversal check: only plain, non-hidden components allowed
 fn safe_rel(name: &str) -> Option<PathBuf> {
     let mut out = PathBuf::new();
@@ -9918,6 +9938,28 @@ mod vaultbleed_tests {
         assert!(bind_vault(&v, &a).is_err(), "re-binding the SAME vault is Err too");
         assert_clean(&v, &a, "onlyB", &["onlyB-note"], "after refused bind");
         let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b));
+    }
+
+    /* census C4: a fresh vault gets `.obsidian/app.json` = `{}`; an existing
+       one (or a symlink in its place) is never rewritten or followed. */
+    #[test]
+    fn vault_init_creates_app_json_only_when_absent() {
+        let a = mk("appjson-fresh", &[("n", "x\n")]);
+        assert!(!a.join(".obsidian").exists());
+        ensure_app_json(&a);
+        assert_eq!(fs::read_to_string(a.join(".obsidian/app.json")).unwrap(), "{}");
+        let b = mk("appjson-kept", &[("n", "x\n")]);
+        fs::create_dir_all(b.join(".obsidian")).unwrap();
+        fs::write(b.join(".obsidian/app.json"), "{\"strictLineBreaks\":true}").unwrap();
+        ensure_app_json(&b);
+        assert_eq!(fs::read_to_string(b.join(".obsidian/app.json")).unwrap(), "{\"strictLineBreaks\":true}");
+        let c = mk("appjson-link", &[("n", "x\n")]);
+        let outside = c.with_extension("outside.json");
+        fs::create_dir_all(c.join(".obsidian")).unwrap();
+        std::os::unix::fs::symlink(&outside, c.join(".obsidian/app.json")).unwrap();
+        ensure_app_json(&c);
+        assert!(!outside.exists(), "a dangling app.json symlink is not written through");
+        let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b), fs::remove_dir_all(&c));
     }
 
     #[test]
