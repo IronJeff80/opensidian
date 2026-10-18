@@ -850,8 +850,59 @@
         }
         if (md) await K.MarkdownRenderer.render(this.app, md, body, f.path, this);
       }
-      onunload() { if (!this._reading) this.containerEl.textContent = ""; }
+      /* editable embed: showEditor() swaps the rendering for an in-place editor (this.editMode), an
+         EmbedEditor whose base class is the internal MarkdownEditor; plugins (obsidian-kanban) read that
+         base off the prototype chain and subclass it for their own inline editors. */
+      showEditor() {
+        if (this.editMode) return this.editMode;
+        const ed = new EmbedEditor(this.app, this.containerEl, this);
+        this.editMode = ed; this.addChild(ed);
+        ed.set(this.text != null ? this.text : (this.data || ""), true);
+        return ed;
+      }
+      onunload() {
+        if (this.editMode) { this.removeChild(this.editMode); this.editMode = null; }
+        if (!this._reading) this.containerEl.textContent = "";
+      }
     }
+    /* MarkdownEditor: a CodeMirror 6 editor over the editor's own shared modules, mounted in a div
+       under containerEl. Subclasses extend buildLocalExtensions() (called once from the ctor) and
+       onUpdate(update, docChanged); owner is the object that hosts it (an embed, a plugin's view).
+       get/set read and replace the text, editor is the obsidian Editor over this.cm. */
+    class MarkdownEditor extends Component {
+      constructor(app, containerEl, owner) {
+        super();
+        this.app = app || K.app; this.containerEl = containerEl; this.owner = owner || null;
+        const M = window.__osModules || {}, Vw = M["@codemirror/view"], St = M["@codemirror/state"];
+        if (!Vw || !St) throw new Error("unsupported in opensidian: the editor modules are not loaded");
+        const el = document.createElement("div"); el.className = "markdown-source-view cm-s-obsidian mod-cm6";
+        if (containerEl) containerEl.appendChild(el);
+        this.editorEl = el;
+        const exts = [].concat(this.buildLocalExtensions() || [],
+          Vw.EditorView.updateListener.of(u => { if (u.docChanged || u.selectionSet || u.focusChanged) this.onUpdate(u, u.docChanged); }));
+        this.cm = new Vw.EditorView({ state: St.EditorState.create({ doc: "", extensions: exts }), parent: el });
+      }
+      buildLocalExtensions() {
+        const Vw = (window.__osModules || {})["@codemirror/view"];
+        return Vw ? [Vw.EditorView.lineWrapping] : [];
+      }
+      onUpdate(update, changed) {}
+      get editor() {
+        if (!this._editor) { const EA = K.EA; if (!EA || !EA.Editor) return null; Object.defineProperty(this, "_editor", { value: new EA.Editor(this) }); }
+        return this._editor;
+      }
+      get() { return this.cm.state.doc.toString(); }
+      set(text, clear) {
+        const d = this.cm.state.doc;
+        this.cm.dispatch({ changes: { from: 0, to: d.length, insert: String(text == null ? "" : text) }, selection: clear ? { anchor: 0 } : undefined });
+      }
+      clear() { this.set("", true); }
+      focus() { this.cm.focus(); }
+      hasFocus() { return this.cm.hasFocus; }
+      destroy() { this.unload(); }
+      onunload() { try { this.cm.destroy(); } catch (_) {} if (this.editorEl) this.editorEl.remove(); }
+    }
+    class EmbedEditor extends MarkdownEditor {}
 
     // SEAM S3: the renderers (editor-api embedPass) read this map; a change re-arms the reading view
     // hook (PPOST) and bumps its generation so a retained reading DOM is rendered again
