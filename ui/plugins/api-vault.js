@@ -372,6 +372,7 @@
         }
       }
       let fence = null;
+      const bodyLine = i, bodyOff = off;
       const push = (k, v) => { (out[k] || (out[k] = [])).push(v); };
       for (; i < lines.length; off += lines[i].length + 1, i++) {
         const raw = lineEnd(lines[i]);
@@ -398,7 +399,125 @@
           while ((m = tg.exec(s))) { const a = m.index + m[1].length; push("tags", { tag: "#" + m[2], position: P(a, a + 1 + m[2].length) }); }
         }
       }
+      parseBlocks(lines, bodyLine, bodyOff, out, pos);
       return out;
+    }
+    /* block pass over the note body: top-level `sections` (heading, paragraph,
+       list, code, blockquote/callout, thematicBreak, table, math, comment) and
+       `listItems` — one per list item, its position spanning its own lines
+       (not its children's), starting where its container's content starts
+       (col 0 at top level, the parent's content column when nested);
+       `parent` = the parent item's line, or -(first line of the list) for a
+       root item; `task` = the char between the brackets of "[ ]", "[x]", ...
+       Shapes as stock 1.13.7 (oracle part cblock). Lists inside a quote are
+       indexed too, their root items starting after the "> " prefix. */
+    function parseBlocks(lines, i0, off0, out, pos) {
+      const sections = out.sections || [], items = [];
+      const vw = s => { let w = 0; for (const ch of s) w = ch === "\t" ? w + 4 - (w % 4) : w + 1; return w; };
+      const idxAtW = (s, W) => { let w = 0, k = 0; while (k < s.length && w < W && (s[k] === " " || s[k] === "\t")) { w = s[k] === "\t" ? w + 4 - (w % 4) : w + 1; k++; } return k; };
+      const ITEM = /^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+|$)/, HR = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
+      const FENCE = /^[ \t]*(`{3,}|~{3,})/, HEAD = /^#{1,6}\s/, QUOTE = /^ {0,3}>/;
+      const TDELIM = /^[ \t]*\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/;
+      const blockStart = s => HEAD.test(s) || QUOTE.test(s) || FENCE.test(s) || HR.test(s);
+      const L = () => ({ stack: [], start: -1, kind: null, blank: false });
+      const span = (i, a, o, len) => ({ start: pos(i, a, o + a), end: pos(i, len, o + len) });
+      // a list item at line i (s = text after the container prefix of b chars) -> 0 none, 1 same list, 2 new list
+      function item(st, s, b, i, o, len) {
+        if (HR.test(s)) return 0;
+        const m = s.match(ITEM); if (!m) return 0;
+        const w = vw(m[1]);
+        while (st.stack.length && w < st.stack[st.stack.length - 1].cw) st.stack.pop();
+        const kind = /\d/.test(m[2]) ? "o" + m[2].slice(-1) : m[2];
+        let parent, r = 1, sc = b;
+        if (st.stack.length) { const top = st.stack[st.stack.length - 1]; parent = top.line; sc = b + idxAtW(s, top.cw); }
+        else { if (st.start < 0 || st.kind !== kind) { st.start = i; st.kind = kind; r = 2; } parent = -st.start; }
+        let sw = m[3] ? vw(m[1] + m[2] + m[3]) - vw(m[1] + m[2]) : 1; if (sw > 4) sw = 1;
+        const it = { parent, position: span(i, sc, o, len) };
+        const t = m[3] && s.slice(m[0].length).match(/^\[(.)\](?=[ \t]|$)/u);
+        if (t) it.task = t[1];
+        items.push(it); st.stack.push({ cw: vw(m[1] + m[2]) + sw, line: i, it }); st.blank = false;
+        return r;
+      }
+      // a non-item, non-blank line inside a list: continuation of an open item?
+      function cont(st, s, i, o, len) {
+        if (!st.stack.length) return false;
+        const w = vw(s.match(/^[ \t]*/)[0]);
+        if (st.blank) { while (st.stack.length && w < st.stack[st.stack.length - 1].cw) st.stack.pop(); if (!st.stack.length) return false; }
+        else if (w < st.stack[st.stack.length - 1].cw && blockStart(s)) return false;   // lazy continuation only for paragraph text
+        st.stack[st.stack.length - 1].it.position.end = pos(i, len, o + len); st.blank = false;
+        return true;
+      }
+      let blk = null, tl = L(), ql = L(), delim = null;
+      const close = () => {
+        if (blk) sections.push({ type: blk.type, position: { start: pos(blk.sl, 0, blk.so), end: pos(blk.el, blk.ec, blk.eo) } });
+        blk = null;
+      };
+      const open = (type, i, o) => { close(); blk = { type, sl: i, so: o }; };
+      const ext = (i, o, len) => { blk.el = i; blk.ec = len; blk.eo = o + len; };
+      const quoteLine = (raw, i, o, len) => {
+        const b = raw.match(/^(?: {0,3}>[ ]?)+/)[0].length, inner = raw.slice(b);
+        if (!inner.trim()) ql.blank = true;
+        else if (!item(ql, inner, b, i, o, len) && !cont(ql, inner, i, o, len)) ql = L();
+      };
+      for (let i = i0, off = off0; i < lines.length; off += lines[i].length + 1, i++) {
+        const raw = lines[i].replace(/\r$/, ""), len = raw.length, trim = raw.trim();
+        if (delim) {   // inside a fence / $$ / %% block (top level, or inside a list item)
+          if (blk) ext(i, off, len);
+          const shut = delim.re ? delim.re.test(raw) : trim.endsWith(delim.s) && (trim !== delim.s || !delim.first);
+          delim.first = false;
+          if (shut) { const own = delim.own; delim = null; if (own) close(); }
+          continue;
+        }
+        if (!trim) {
+          if (blk && blk.type === "list") tl.blank = true; else close();
+          continue;
+        }
+        if (blk && blk.type === "list") {
+          const r = item(tl, raw, 0, i, off, len);
+          if (r === 2) { close(); open("list", i, off); ext(i, off, len); continue; }
+          if (r === 1) { ext(i, off, len); continue; }
+          if (cont(tl, raw, i, off, len)) {
+            ext(i, off, len);
+            const fm = raw.match(FENCE);
+            if (fm) delim = { re: new RegExp("^[ \\t]*" + fm[1][0].replace("`", "\\`") + "{" + fm[1].length + ",}[ \\t]*$"), own: false };
+            continue;
+          }
+          close(); tl = L();
+        }
+        if (blk && /^(blockquote|callout)$/.test(blk.type)) {
+          if (QUOTE.test(raw)) { quoteLine(raw, i, off, len); ext(i, off, len); continue; }
+          if (!blockStart(raw) && !ITEM.test(raw)) { ext(i, off, len); continue; }   // lazy continuation
+          close();
+        }
+        const fm = raw.match(FENCE);
+        if (fm) {
+          open("code", i, off); ext(i, off, len);
+          delim = { re: new RegExp("^[ \\t]*" + fm[1][0].replace("`", "\\`") + "{" + fm[1].length + ",}[ \\t]*$"), own: true };
+          continue;
+        }
+        const dm = trim.startsWith("$$") ? "$$" : trim.startsWith("%%") ? "%%" : null;
+        if (dm) {
+          open(dm === "$$" ? "math" : "comment", i, off); ext(i, off, len);
+          if (trim.length > 4 && trim.endsWith(dm)) close();   // one-line $$x$$ / %%x%%
+          else delim = { s: dm, own: true, first: true };
+          continue;
+        }
+        if (HEAD.test(raw)) { open("heading", i, off); ext(i, off, len); close(); continue; }
+        if (HR.test(raw)) { open("thematicBreak", i, off); ext(i, off, len); close(); continue; }
+        if (QUOTE.test(raw)) {
+          open(/^ {0,3}>\s*\[!/.test(raw) ? "callout" : "blockquote", i, off); ql = L();
+          quoteLine(raw, i, off, len); ext(i, off, len); continue;
+        }
+        if (ITEM.test(raw)) { open("list", i, off); tl = L(); item(tl, raw, 0, i, off, len); ext(i, off, len); continue; }
+        if (blk && (blk.type === "paragraph" || blk.type === "table")) {
+          if (blk.type === "paragraph" && blk.sl === i - 1 && lines[i - 1].includes("|") && raw.includes("-") && TDELIM.test(raw)) blk.type = "table";
+          ext(i, off, len); continue;
+        }
+        open("paragraph", i, off); ext(i, off, len);
+      }
+      close();
+      if (sections.length) out.sections = sections;
+      if (items.length) out.listItems = items;
     }
     /* link resolution: exact path, path+".md", then the shortest note whose path
        ends with it (case-insensitive) — the app resolves [[x]] by full path OR
