@@ -100,13 +100,19 @@ pub fn plugin_file_in(root: &Path, id: &str, file: &str, cap: u64) -> Result<Opt
     }
 }
 
+/// cp-unrestricted: the CommonJS / Electron-renderer free variables every plugin
+/// bundle may read at module scope, bound as factory parameters after
+/// module,exports,require. loader.js fills them from ui/plugins/node-desktop.js
+/// (one view per plugin), so nothing is assigned onto window.
+pub const FREE_VARS: &str = "process,global,Buffer,Error,__filename,__dirname,SharedArrayBuffer";
+
 /// the CJS wrapper: module/exports/require come from the host's define fn.
 /// The plugin source starts the function body, so its own "use strict" stays a
 /// directive. The trailing newline before "})" survives a final // comment.
 pub fn wrap_cjs(id: &str, src: &str) -> String {
     let src = src.strip_prefix('\u{feff}').unwrap_or(src);
     format!(
-        ";(function(){{var d=window.{DEFINE_FN};if(typeof d!==\"function\")return;d({id:?},function(module,exports,require){{{src}\n}});}})();\n//# sourceURL={SCHEME}://localhost/{id}/main.js\n"
+        ";(function(){{var d=window.{DEFINE_FN};if(typeof d!==\"function\")return;d({id:?},function(module,exports,require,{FREE_VARS}){{{src}\n}});}})();\n//# sourceURL={SCHEME}://localhost/{id}/main.js\n"
     )
 }
 
@@ -279,7 +285,7 @@ mod tests {
         let r = vault("ok");
         let out = js(serve(Some(&r), "/good/main.js", true));
         assert!(out.starts_with(";(function(){var d=window.__osPluginDefine;"), "{out}");
-        assert!(out.contains("d(\"good\",function(module,exports,require){\"use strict\";module.exports=1;//end\n});"), "{out}");
+        assert!(out.contains("d(\"good\",function(module,exports,require,process,global,Buffer,Error,__filename,__dirname,SharedArrayBuffer){\"use strict\";module.exports=1;//end\n});"), "{out}");
         assert!(out.ends_with("//# sourceURL=opensidian-plugin://localhost/good/main.js\n"), "{out}");
     }
 

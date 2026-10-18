@@ -26,8 +26,11 @@
      "path/posix" (+ node:)        leaves, one frozen POSIX path object, no I/O
      "fs", "fs/promises" (+ node:) -> ui/plugins/node-modules.js (host.nodeModules):
                                    the vault-confined fs facade over Rust plugin_vfs
-     "child_process", "electron", anything else -> throws. No shims: a plugin
-                                   that needs Node/Electron does not run here (recon §E).
+     events, util, os, crypto,   -> ui/plugins/node-desktop.js (host.desktopNode): the
+     buffer, process, url, ...     trusted-vault Node surface, one view per plugin
+     any other Node/Electron     -> an inert stub that throws on use (node-modules.js)
+     builtin (child_process, ...)
+     anything else               -> throws "unknown module"
 
    Privileges: the Tauri invoke handle is captured HERE, at boot, into this
    closure. Only host.grant() (one call, made by api.js before any plugin can
@@ -41,24 +44,24 @@
   const listen = T && T.event && T.event.listen ? T.event.listen.bind(T.event) : null;   // item 5: vault-changed for the plugin vault model
   const SCHEME = "opensidian-plugin://localhost/";
   const NODE = window.__osNodeModules;   // captured at boot (index.html loads node-leaves.js first)
-  const DENIED = new Set(["fs", "fs/promises", "child_process", "electron", "original-fs", "os", "net", "http", "https", "crypto", "module", "worker_threads", "process", "vm"]);
 
   const status = new Map();   // id -> {state: "loading"|"loaded"|"failed"|"unloaded", error?}
   const pending = new Map();  // id -> {resolve(factory)}
   let seq = 0, granted = false;
 
-  /* guarded (td-census-fix integration, ruling on recon-bundles.md): api.js
-     passes it for a manifest isDesktopOnly:false plugin with no granted desktop
-     capability. Such a plugin gets the guarded "obsidian" view (host.apiGuarded:
-     mobile Platform, no FileSystemAdapter match) and a denied BUILTIN binds to an
-     inert stub that throws the same deny error on use (node-modules.js stub()).
-     Outside guarded mode the deny error is thrown at require time, as before. */
-  function makeRequire(id, guarded) {
-    guarded = guarded === true;
-    return function require(name) {
+  /* cp-unrestricted (operator ruling 2026-10-18, stock parity): guarded mode is
+     retired. Plugin code only runs in a trusted vault (the flip), and there every
+     plugin gets the desktop view stock gives it: the desktop "obsidian" (Platform
+     desktop, adapter instanceof FileSystemAdapter) and the Node surface of
+     ui/plugins/node-desktop.js. A builtin that has no member there yet binds the
+     inert stub (throws on use), so a bundle that only binds it at module scope
+     still loads. api-core still passes its old guarded flag; it is ignored. */
+  function makeRequire(id) {
+    const dv = host.desktopNode ? host.desktopNode.view(id) : null;
+    const require = function require(name) {
       name = String(name);
       if (name === "obsidian") {
-        const a = guarded ? host.apiGuarded : host.api;
+        const a = host.api;
         if (!a) throw new Error(id + ': require("obsidian"): the plugin API is not available');
         return a;
       }
@@ -70,13 +73,22 @@
       const leaf = NODE && NODE.get(name);   // ui/plugins/node-leaves.js: pure leaves (path)
       if (leaf) return leaf;
       const nm = host.nodeModules && host.nodeModules.resolve(name);   // ui/plugins/node-modules.js: fs, fs/promises (vault-confined)
-      if (nm) return nm;
-      const bare = name.replace(/^node:/, "");
-      const deny = id + ': require("' + name + '") is not available in opensidian (no Node/Electron APIs)';
-      if (guarded) { const s = host.nodeModules && host.nodeModules.stub(name, deny); if (s) return s; }
-      if (DENIED.has(bare)) throw new Error(deny);
+      if (nm) return dv ? dv.own(nm) : nm;
+      const deny = id + ': require("' + name + '"): this member is not available in opensidian yet';
+      const d = dv && dv.resolve(name, deny);   // ui/plugins/node-desktop.js: the trusted-vault Node surface
+      if (d) return d;
+      const s = host.nodeModules && host.nodeModules.stub(name, deny);
+      if (s) return s;
       throw new Error(id + ': require("' + name + '"): unknown module');
     };
+    if (dv) dv.bindRequire(require);
+    return require;
+  }
+  // the CommonJS free variables plugins.rs wrap_cjs binds after module,exports,require
+  function freeVars(id) {
+    const dv = host.desktopNode ? host.desktopNode.view(id) : null;
+    if (!dv) return [undefined, window, undefined, Error, "", "", undefined];
+    return [dv.process, dv.global, dv.Buffer, dv.Error, dv.filename, dv.dirname, dv.SharedArrayBuffer];
   }
 
   // the Rust wrapper calls this; only a define for a PENDING load is honoured
@@ -123,7 +135,7 @@
 
   /* fetch + evaluate one plugin's main.js. Resolves {ok, id, exports, error};
      never rejects — a broken plugin must not take the caller down. */
-  function evaluate(id, guarded) {
+  function evaluate(id) {   // api-core passes a retired guarded flag (makeRequire)
     if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/.test(id)) return Promise.resolve(fail(id, new Error("bad plugin id")));
     if (pending.has(id)) return Promise.resolve(fail(id, new Error("already loading")));
     seal();   // item 7: no plugin script is ever requested while __TAURI__ / the full host are public
@@ -136,7 +148,7 @@
         resolve: factory => {
           const module = { exports: {} };
           try {
-            factory.call(module.exports, module, module.exports, makeRequire(id, guarded === true));
+            factory.call(module.exports, module, module.exports, makeRequire(id), ...freeVars(id));
           } catch (e) { fin(fail(id, e)); return; }
           fin({ ok: true, id, exports: module.exports });
         },
