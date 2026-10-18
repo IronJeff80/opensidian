@@ -9,7 +9,8 @@
        ~/.opensidian.json plugins_trusted[<vault>], so a vault cannot ship itself
        trusted) and the installed list (<vault>/.obsidian/plugins/<id>/manifest.json)
        with one enable toggle per plugin (.obsidian/community-plugins.json,
-       Obsidian's format). Browse/install is OUT of M1: install = copy the folder.
+       Obsidian's format). cp-browser: a Browse button opens the community plugin
+       browser (ui/plugins/browser.js) on this pane; copying a folder in still works.
      - a "Community plugins" GROUP under it with one entry per setting tab a
        LOADED plugin registered (pane id "plg:<id>"); the group exists only while
        it has entries (no empty heading — noplugins' structural rule).
@@ -18,6 +19,7 @@
    not collide with it. Census (only while settings is open):
      [cpp:<R|T>,<installed>,<enabled>]   on the community pane
      [cpr:<x>,<y>,<1 restricted|0>]      the restricted toggle's centre
+     [cpbb:<x>,<y>]                      the Browse button; [cpb...] browser.js tok() while browsing
      [cpt=<id>:<x>,<y>,<on>,<loaded>,<gear x|0>]   one per installed plugin
      [cpn=<pane id>:<x>,<y>]             every community nav entry's centre
      [ptab:<id>,<setting-items>,<elements>]  a plugin tab is on screen (display() ran) */
@@ -27,6 +29,30 @@
   if (!host || !host.app) return;
   const setting = host.app.setting;
   let busy = false;           // one toggle round-trip at a time (a double click is one intent)
+  /* cp-browser: the community plugin browser (ui/plugins/browser.js) is written into the page right
+     after this script, while index.html is still parsing (before the loader's seal), and hands itself
+     back through adoptBrowser() once. browsing = it owns #spage on the community pane. */
+  let browser = null, browsing = false;
+  if (document.readyState === "loading") document.write('<script src="plugins/browser.js"><\/script>');
+  function adoptBrowser(b) {
+    // only while index.html is parsing: no plugin code has run yet (plugins load after the vault opens)
+    if (browser || document.readyState !== "loading" || !b || typeof b.open !== "function") return false;
+    browser = b;
+    return true;
+  }
+  const browserCtx = Object.freeze({
+    host,
+    page: () => (typeof settingsOpen !== "undefined" && settingsOpen && sPane === "community" && browsing ? document.getElementById("spage") : null),
+    back: () => { stopBrowsing(); rebuild(); },
+    title: () => updateTitle(),
+  });
+  function stopBrowsing() { if (browsing && browser) browser.close(); browsing = false; }
+  function startBrowsing() {
+    if (!browser) return;
+    browsing = true;
+    const pg = document.getElementById("spage"); pg.innerHTML = "";
+    browser.open(browserCtx, true);
+  }
 
   const el = (tag, cls, txt) => { const d = document.createElement(tag); if (cls) d.className = cls; if (txt != null) d.textContent = txt; return d; };
   const tabOf = id => setting.pluginTabs.find(t => t && t.id === id) || null;
@@ -96,6 +122,7 @@
   const paneOf = t => t._pane !== undefined ? t._pane : "plg:" + t.id;
   function selNav(id) { for (const d of document.getElementById("snav").querySelectorAll(".snavi")) d.classList.toggle("sel", d.dataset.pane === id); }
   function clearPage(id, cls) {
+    stopBrowsing();
     fontPage = null; sPane = id; selNav(id);
     const pg = document.getElementById("spage"); pg.innerHTML = ""; pg.className = cls;
     sRowsShown = 0; sEnabledShown = 0;
@@ -147,7 +174,8 @@
   }
   function rebuild() {
     const pg = document.getElementById("spage"); if (!pg) return;
-    pg.innerHTML = ""; buildCommunity(pg); updateTitle();
+    if (browsing && browser) { browser.open(browserCtx, false); return; }
+    pg.innerHTML = ""; pg.className = "rows"; buildCommunity(pg); updateTitle();
   }
   function buildCommunity(pg) {
     const s = host.state();
@@ -158,6 +186,12 @@
     row(c1, "Restricted mode", [
       restricted ? "On: no community plugin code runs in this vault." : "Off: enabled community plugins run with this app's access to your vault.",
       "Plugins are third-party code. Turn restricted mode off only for plugins you trust."], [rt]);
+    if (browser) {
+      const b = el("button", "cpb-btn cpb-cta", "Browse");
+      b.id = "cpbrowse"; b.type = "button";
+      b.onclick = ev => { ev.stopPropagation(); startBrowsing(); };
+      row(c1, "Community plugin list", "Find plugins in the public community list, then install, update or remove them here.", [b]);
+    }
     pg.appendChild(el("div", "ssec", "Installed plugins"));
     const c2 = el("div", "scard"); pg.appendChild(c2);
     const ids = Object.keys(s.installed).sort((a, b) => String(s.installed[a].name || a).localeCompare(String(s.installed[b].name || b)));
@@ -185,8 +219,8 @@
       const r = row(c2, String(m.name || id), desc, ctls, restricted);
       r.dataset.plugin = id;
     }
-    sRowsShown = 1 + ids.length;
-    sEnabledShown = (restricted ? 0 : ids.length) + 1;
+    sRowsShown = 1 + (browser ? 1 : 0) + ids.length;
+    sEnabledShown = (restricted ? 0 : ids.length) + 1 + (browser ? 1 : 0);
   }
   async function act(f) {
     if (busy) return; busy = true;
@@ -207,6 +241,9 @@
       t += " [cpp:" + (s.trusted ? "T" : "R") + "," + Object.keys(s.installed).length + "," + s.enabled.length + "]";
       const r = document.getElementById("cprestrict");
       if (r) t += " [cpr:" + ctr(r) + "," + (r.classList.contains("on") ? 1 : 0) + "]";
+      const bb = document.getElementById("cpbrowse");
+      if (bb) t += " [cpbb:" + ctr(bb) + "]";
+      if (browsing && browser) t += browser.tok();
       for (const row of document.querySelectorAll("#spage .srow[data-plugin]")) {
         const id = row.dataset.plugin, tg = row.querySelector(".toggle"), g = row.querySelector(".cpgear");
         t += " [cpt=" + id + ":" + ctr(tg) + "," + (tg.classList.contains("on") ? 1 : 0) + "," +
@@ -222,7 +259,7 @@
   /* kept for older callers: app.setting.openTabById */
   const openTab = id => setting.openTabById(id);
 
-  const api = Object.freeze({ nav, show, tok, tabsChanged, close: closeUi, openTab, pane, mount, builtin });
+  const api = Object.freeze({ nav, show, tok, tabsChanged, close: () => { stopBrowsing(); closeUi(); }, openTab, pane, mount, builtin, adoptBrowser });
   Object.defineProperty(window, "__osPluginSettings", { value: api, writable: false, configurable: false });
   Object.defineProperty(window, "openPluginSettingTab", { value: openTab, writable: false, configurable: false });
 })();
