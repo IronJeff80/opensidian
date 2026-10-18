@@ -17,8 +17,8 @@
      width (.wfinset). The empty
      part of the top row is the drag region; double-click it to maximise. -->
 <!-- census C4 make-md: the app chrome sits in one .app-container div, a child of body, as
-     in stock; plugins (make-md loadSpaces) set attributes on it and themes target it. It is
-     display:contents, so body stays the layout box and nothing moves. -->
+     in stock; plugins (make-md loadSpaces) set attributes on it and themes target it.
+     It is a real flex box filling body (style.css), laid out as body was; see goal cp-makemd3. -->
 <div class="app-container">
 <div id="wframe">
   <button id="wf-min" title="Minimise" aria-label="Minimise window"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M1.5 6h9"/></svg></button>

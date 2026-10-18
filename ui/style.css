@@ -1713,5 +1713,8 @@ span.is-flashing { background: var(--highlight-yellow) }
 .lp .imgmiss.pdfmiss, .preview .imgmiss.pdfmiss { padding: 8px 16px }
 .lp.src .pdf-embed { display: none }
 /* census C4 make-md: .app-container (ui/index.html) wraps the app chrome for plugins and
-   themes that look it up; it generates no box, so body stays the layout container */
-.app-container { display: contents }
+   themes that look it up. goal cp-makemd3: a REAL box, not display:contents — under
+   display:contents the editor scrollers lost their bottom range (srclick R25.13c line-83
+   jump read scrollTop 0, scrollsync's lp clamp moved up to L274). It is body's one flex
+   item, stretched to body's box, and lays the chrome out as body did (a flex row). */
+.app-container { display: flex; flex: 1 1 0; min-width: 0; min-height: 0 }
