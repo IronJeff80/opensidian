@@ -585,6 +585,25 @@
     };
     Object.defineProperty(window, "CodeMirror", { value: CM, configurable: true, writable: true, enumerable: false });
   }
+
+  /* ------------------------------------------ window.CodeMirrorAdapter (census C4)
+     Obsidian exposes its vim layer's CM5-compatible adapter class on window, and its
+     static `commands` table is where the vim Ex commands look up named editor commands
+     (`:w` runs commands.save). obsidian-linter 1.32.0 assigns
+     `window.CodeMirrorAdapter.commands.save = () => executeCommandById("editor:save-file")`
+     in onload and failed to load with "undefined is not an object (evaluating
+     'window.CodeMirrorAdapter.commands')". Bounded to that public shape: the class and a
+     plain, writable command table that plugins may add to. opensidian has no vim mode,
+     so nothing dispatches from the table — an entry is stored, never run, and reports
+     nothing — and an adapter instance cannot be made (the constructor throws: there is no
+     vim editor to adapt). */
+  if (!window.CodeMirrorAdapter) {
+    class CodeMirrorAdapter {
+      constructor() { throw new Error("CodeMirrorAdapter: unsupported in opensidian: no vim mode"); }
+    }
+    Object.defineProperty(CodeMirrorAdapter, "commands", { value: {}, configurable: true, writable: true, enumerable: true });
+    Object.defineProperty(window, "CodeMirrorAdapter", { value: CodeMirrorAdapter, configurable: true, writable: true, enumerable: false });
+  }
 })();
 
 /* the "obsidian" module, part EDITOR (api-parity stage 0: moved here from api.js,
