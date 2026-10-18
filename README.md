@@ -83,6 +83,36 @@ To add one, put its `manifest.json` and `theme.css` in `<vault>/.obsidian/themes
 `.obsidian/snippets/`. Both reload live. A broken theme shows greyed out with the reason, and the app
 stays on AnuPpuccin.
 
+## Community plugins
+Off by default. Each vault starts in restricted mode: no community plugin code runs.
+
+**Turning it on.** Open **Settings ▸ Community plugins** and switch **Restricted mode** off. The
+choice is per vault and is saved in `~/.opensidian.json`, outside the vault, so a vault you open
+cannot switch it off for itself.
+
+**What that means.** With restricted mode off, the plugins you enable run code from the internet
+with your user's rights, the same as in Obsidian. They can run programs, open network connections
+and servers, send HTTP requests to any host, and open files and links with your system's default
+apps. There is no per-plugin permission prompt. Enable only plugins you trust.
+
+**Browse.** **Settings ▸ Community plugins ▸ Browse** lists the community plugins. You can search,
+sort, and open a plugin to read its details and README. Install, Update and Uninstall download
+only from GitHub over HTTPS. The sha256 of every installed file is recorded. Installing does not
+enable a plugin; you enable it yourself. Copying a plugin folder into `<vault>/.obsidian/plugins/`
+still works.
+
+**Secrets.** Plugins that store secrets (API keys, tokens) use your system keyring through the
+Secret Service: gnome-keyring, KWallet or KeePassXC. Secrets are never written to a file. Without
+a running keyring, secret storage reports that it is unsupported and those plugins cannot save
+secrets.
+
+**Compatibility.** We test 50 popular plugins. 44 pass. Known not to work yet:
+- realclaudian: needs `node:zlib`
+- editing-toolbar: needs a keyring; not yet tested with one
+- advanced-slides, local-rest-api: their built-in servers
+- zotero integration
+- markmind: no public source to test
+
 ## Donate
 
 Donation makes it possible! 
