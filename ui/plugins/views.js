@@ -399,7 +399,9 @@
         async open(view) {              // show a View the caller built (for this leaf) in this leaf
           if (!(view instanceof View)) throw new TypeError("WorkspaceLeaf.open: expected a View");
           let type = ""; try { type = String(view.getViewType() || ""); } catch (_) {}
-          await openTyped(this, type || "empty", null, true, view);
+          // the view shows in this leaf, but the active leaf stays where it was (stock): a split leaf's new
+          // pane does not take focus, so a view that follows the active note (mind-map) still sees the note
+          await openTyped(this, type || "empty", null, true, view, true);
           return view;
         }
         getDisplayText() { const v = this.view; try { const s = v && v.getDisplayText(); if (s) return s; } catch (_) {} return ""; }
@@ -429,7 +431,7 @@
       const emptyOf = new WeakMap();
       function emptyView(leaf) { let v = emptyOf.get(leaf); if (!v) { v = new View(leaf); v.getViewType = () => (leaf._t ? leaf._t.utype : "empty"); emptyOf.set(leaf, v); } return v; }
 
-      async function openTyped(leaf, type, state, active, inst) {
+      async function openTyped(leaf, type, state, active, inst, keepFocus) {
         if (leaf._side) return sideOpenView(leaf, type, state, active, inst);
         const t0 = leaf._t;
         if (t0 && t0.kind === "unk") {  // a plugin-view tab: same type -> new state; other type / a given view -> a new view in the same tab
@@ -454,7 +456,11 @@
         // (the note tab stays, as before; it gets a leaf of its own on next use); a stale group leaf mirrors
         if (t0 || leaf._nt || split || !g.tabs.length) bindLeaf(leaf, t);
         const r = makeView(t, type, state, inst); if (!r) return;
-        if (split && typeof splitWith === "function") await splitWith(g, split, t);
+        if (split && typeof splitWith === "function") {
+          const prev = keepFocus ? M().fg() : null;   // splitWith focuses the new pane; WorkspaceLeaf.open gives focus back
+          await splitWith(g, split, t);
+          if (prev && prev !== M().fg() && M().groups().indexOf(prev) >= 0 && typeof focusGroup === "function") try { focusGroup(prev); } catch (_) {}
+        }
         else if (t0 && !active && !leaf._nt) {
           // a leaf already showing something changes view in place: the active leaf stays where it is (stock);
           // the leaf's tab stays the one its group shows if it was, without focusing that group
