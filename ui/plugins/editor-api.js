@@ -349,19 +349,42 @@
     /* ------------------------------------------------------- EditorSuggest
        onTrigger(cursor, editor, file) -> {start, end, query} | null after a doc change;
        getSuggestions(ctx) (sync or Promise) -> renderSuggestion(item, el) into a popup
-       drawn with the wikilink autocomplete's .ac styling; ArrowUp/Down, Enter/Tab
-       choose, Escape closes (keydown at Prec.highest, ahead of Ed.onKey). */
+       drawn with the wikilink autocomplete's .ac styling; keys go to the suggest's own scope
+       (arrows / PageUp / PageDown / Home / End / Ctrl+P / Ctrl+N move, Enter chooses, Escape
+       closes; keydown at Prec.highest, ahead of Ed.onKey). */
     class PopoverSuggest {
-      // scope: the suggest's own key scope, a child of the one passed in (oracle: a new Scope,
-      // not the caller's); its handlers see a key before the built-in arrows / Enter / Escape
+      // scope: the suggest's own key scope, a child of the one passed in (or of app.scope), never
+      // the caller's. It is BORN with the popover's navigation keys (oracle suggest.scopeKeys, stock
+      // 1.13.7: ArrowUp, ArrowDown, PageUp, PageDown, Home, End, Ctrl+P, Ctrl+N, Enter, Escape, in
+      // that order), so a subclass may read / unregister / rebind them right after super(). They are
+      // the ONLY key path of an open EditorSuggest: an unregistered key is not handled by the popover.
       constructor(app_, scope) {
-        this.app = app_; this.scope = ctx.Scope ? new ctx.Scope(scope || undefined) : null;
+        this.app = app_; this.scope = ctx.Scope ? new ctx.Scope(scope || (app_ && app_.scope) || undefined) : null;
         this.isOpen = false; this.suggestEl = document.createElement("div"); this.suggestEl.className = "ac os-esug suggestion-container"; this.suggestEl.hidden = true; this._items = []; this._sel = 0;
+        const sc = this.scope;
+        if (sc && typeof sc.register === "function") {
+          const n = () => (this.isOpen && this._items && this._items.length) | 0;
+          const step = d => () => { const c = n(); if (!c) return; this._sel = (((this._sel | 0) + d) % c + c) % c; this._draw(); return false; };
+          const jump = f => () => { const c = n(); if (!c) return; this._sel = Math.max(0, Math.min(c - 1, f(c, this._sel | 0))); this._draw(); return false; };
+          const page = () => { const el = this.suggestEl, it = el && el.firstElementChild, h = it ? it.offsetHeight : 0; return h > 0 ? Math.max(1, Math.floor(el.clientHeight / h)) : 10; };
+          sc.register([], "ArrowUp", step(-1));
+          sc.register([], "ArrowDown", step(1));
+          sc.register([], "PageUp", jump((c, i) => i - page()));
+          sc.register([], "PageDown", jump((c, i) => i + page()));
+          sc.register([], "Home", jump(() => 0));
+          sc.register([], "End", jump(c => c - 1));
+          sc.register(["Ctrl"], "P", step(-1));
+          sc.register(["Ctrl"], "N", step(1));
+          sc.register([], "Enter", e => { if (!n()) return; this._choose(this._sel | 0, e); return false; });
+          sc.register([], "Escape", () => { if (!this.isOpen) return; this.close(); if (openS === this) openS = null; return false; });
+        }
       }
       open() { this.isOpen = true; this.suggestEl.hidden = false; }
       close() { this.isOpen = false; this.suggestEl.hidden = true; this.suggestEl.textContent = ""; this._items = []; ctx.touch(); }
       onHistoryBack() { if (this.isOpen) this.close(); }   // history back (mouse back button) dismisses an open popover
       renderSuggestion() {} selectSuggestion() {}
+      _draw() { if (this._v) draw(this, this._v); }   // redraw where it was last drawn (AbstractInputSuggest has its own)
+      _choose(i, e) { choose(this, i, e); }
     }
     protoField(PopoverSuggest, "app", null);
     protoField(PopoverSuggest, "scope", null);
@@ -376,6 +399,7 @@
     protoField(EditorSuggest, "limit", 100);   // oracle: 100 until a subclass sets its own
     let openS = null, reqN = 0;
     function draw(s, v) {
+      s._v = v;
       const el = s.suggestEl, g = v.g;
       el.textContent = "";
       s._items.forEach((it, i) => {
@@ -424,14 +448,14 @@
     }
     function suggestKey(v, e) {
       const s = openS; if (!s || !s.isOpen || !s._items.length) return false;
-      if (s.scope && s.scope.keys && s.scope.keys.length) {   // the suggest's own scope first: a handler returning false consumed the key
-        let r; try { r = s.scope.handle(e); } catch (er) { console.error("[plugin] suggest scope:", er); }
-        if (r === false) { e.preventDefault(); e.stopPropagation(); return true; }
-      }
-      if (e.key === "ArrowDown" || e.key === "ArrowUp") { s._sel = (s._sel + (e.key === "ArrowDown" ? 1 : s._items.length - 1)) % s._items.length; draw(s, v); }
-      else if (e.key === "Enter" || e.key === "Tab") choose(s, s._sel, e);
-      else if (e.key === "Escape") { s.close(); openS = null; }
-      else return false;
+      // the suggest's own scope is its whole key map (born with the navigation keys, see PopoverSuggest):
+      // a handler returning false consumed the key. Only ITS handlers run here — the parent chain
+      // (app.scope) is not consulted from inside the editor's keydown.
+      const sc = s.scope; if (!sc || typeof sc.handle !== "function") return false;
+      let r; const par = sc.parent;
+      try { sc.parent = undefined; r = sc.handle(e); } catch (er) { console.error("[plugin] suggest scope:", er); }
+      finally { sc.parent = par; }
+      if (r !== false) return false;
       e.preventDefault(); e.stopPropagation(); return true;
     }
     /* the one live EditorSuggest list: workspace.editorSuggest.suggests IS this array (views.js), so a
