@@ -1012,9 +1012,9 @@
        keyring in call order; a write the keyring refuses restores the previous value and is
        logged. No Secret Service (or no session bus) = the load fails, and every method throws
        the unsupported error naming the cause: there is no fallback store. Ids are app-wide
-       strings (lowercase alphanumeric with single inner dashes), as stock; any plugin in the
+       strings (1-64 of a-z, 0-9 and "-"), as stock; any plugin in the
        vault can read any id, which is what SecretComponent's picker relies on. */
-    const ssTok = {}, SS_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+    const ssTok = {}, SS_ID = /^[a-z0-9-]{1,64}$/;   // stock 1.13.7, black-box: apioracle cpsecret.ids / .idlen
     let ssVals = null, ssWhy = "secret storage is not loaded (no plugin has started)", ssP = null, ssQ = Promise.resolve();
     function ssLoad() {
       if (ssP) return ssP;   // loaded, or loading; a failed load is retried by the next start
@@ -1036,15 +1036,19 @@
       throw /^unsupported: /.test(why) ? unsupported(why.slice(13)) : new Error("secretStorage." + what + ": " + why);
     }
     function ssCheckId(id, what) {
-      if (typeof id !== "string" || !SS_ID.test(id)) throw new Error("secretStorage." + what + ": invalid secret id " + JSON.stringify(id) + " (lowercase letters, digits and inner dashes)");
+      // null / undefined is a TypeError, any other non-id an Error (stock, apioracle cpsecret.ids)
+      if (id == null) throw new TypeError("secretStorage." + what + ": the secret id is " + id);
+      if (typeof id !== "string" || !SS_ID.test(id)) throw new Error("secretStorage." + what + ": invalid secret id " + JSON.stringify(id) + " (1-64 lowercase letters, digits or dashes)");
     }
     class SecretStorage extends Events {
       constructor(tok) { super(); if (tok !== ssTok) throw new TypeError("SecretStorage: use app.secretStorage"); }
       setSecret(id, secret) {
         ssCheckId(id, "setSecret");
-        const vals = ssOpen("setSecret"), v = String(secret), had = vals.has(id), prev = vals.get(id);
+        // this session reads back the value as given (stock: setSecret(id, 7) -> getSecret 7, apioracle
+        // cpsecret.roundtrip); the keyring stores its string form, which is what a later start reads
+        const vals = ssOpen("setSecret"), v = secret, had = vals.has(id), prev = vals.get(id);
         vals.set(id, v);
-        ssQ = ssQ.then(() => be.invoke("secrets_op", { op: "set", id, value: v })).catch(e => {
+        ssQ = ssQ.then(() => be.invoke("secrets_op", { op: "set", id, value: String(v) })).catch(e => {
           if (vals.get(id) === v) { if (had) vals.set(id, prev); else vals.delete(id); }
           console.error("[plugin] secretStorage.setSecret(" + JSON.stringify(id) + "): the keyring refused the write: " + ((e && e.message) || e));
         });

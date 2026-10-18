@@ -31,8 +31,9 @@ ksecretd, KeePassXC). Rules, each one pinned by a test below or by the
 use std::collections::HashMap;
 
 pub const APP: &str = "opensidian";
-/// longest id / value we pass to the keyring (a plugin API key is ~100 bytes)
-pub const MAX_ID: usize = 256;
+/// longest id (stock 1.13.7 accepts 64 chars, refuses 65: apioracle cpsecret.idlen) and the
+/// longest value we pass to the keyring (a plugin API key is ~100 bytes)
+pub const MAX_ID: usize = 64;
 pub const MAX_VALUE: usize = 64 * 1024;
 
 /// the error a restricted-mode vault gets; the bus is never touched
@@ -334,7 +335,8 @@ mod tests {
 
     #[test]
     fn ids_are_lowercase_alnum_dash_and_capped() {
-        for ok in ["a", "openai-key", "k1", "a-b-c", "0"] {
+        // stock accepts leading / trailing / doubled dashes (apioracle cpsecret.ids)
+        for ok in ["a", "openai-key", "k1", "a-b-c", "0", "-a", "a-", "a--b", &"a".repeat(MAX_ID)] {
             assert!(valid_id(ok), "{ok}");
         }
         for bad in ["", "A", "a b", "a_b", "a/b", "ä", "a\0", "a.b", &"a".repeat(MAX_ID + 1)] {
