@@ -47,11 +47,19 @@ pub const ALLOWED_HOSTS: &[&str] = &[
 pub const BASE_ENV: &str = "OPENSIDIAN_PLUGIN_STORE_BASE";
 const LIST_URL: &str = "https://raw.githubusercontent.com/obsidianmd/obsidian-releases/HEAD/community-plugins.json";
 const STATS_URL: &str = "https://raw.githubusercontent.com/obsidianmd/obsidian-releases/HEAD/community-plugin-stats.json";
+/// the same literal as a macro, so a compile-time label (settings.rs API_LABEL) can
+/// concat! it without a second copy
+#[macro_export]
+macro_rules! compat_app_version {
+    () => {
+        "1.14.4"
+    };
+}
 /// the Obsidian plugin API version this build implements -- the ONE source of truth.
 /// ui/plugins/api-core.js API_VERSION and ui/plugins/node-desktop.js appVersion carry the
 /// same literal; compat_version_matches_the_js_api fails T0 on drift. Shown in Settings >
 /// General ("Plugin API version"). A manifest asking for more is refused.
-pub const COMPAT_APP_VERSION: &str = "1.14.4";
+pub const COMPAT_APP_VERSION: &str = compat_app_version!();
 /// what install writes next to the plugin: where each file came from + its sha256
 pub const SIDECAR: &str = "opensidian-install.json";
 const MAX_REDIRECTS: usize = 5;

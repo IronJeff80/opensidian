@@ -10359,7 +10359,7 @@ function setTok() {
   return " [set:" + SMODEL.nav.length + "/" + SMODEL.rows.length + "/" + e + "]" +
          snavlTok() +
          " [spane:" + sPane + "/" + sRowsShown + "/" + sEnabledShown + "]" +
-         svtTok() + ssnTok() + slbTok() + sqfTok() + fontSetTok() +
+         svtTok() + ssnTok() + sactTok() + slbTok() + sqfTok() + fontSetTok() +
          (window.__osPluginSettings ? __osPluginSettings.tok() : "") +
          (sfpMs >= 0 ? " [sfp:" + sfpMs + "/" + sfpMax + "/" +
                        (Math.round(sfpSum / sfpN * 100) / 100) + "/" + sfpN + "]" : "") +
@@ -10474,6 +10474,40 @@ function showSettingsPage(id) {
    controls at the card's right edge) lives in style.css under R30. The palette stays opensidian's
    dark theme — that delta is recorded in R30. */
 const SDIS_TITLE = "Not implemented yet";
+/* ACTION rows (goal/settings-general): a row whose control runs an app action
+   instead of writing a config key. settings.rs ACTIONS names them (enabled like a
+   backed row); every action named there has its handler HERE — pinned by
+   settings.rs actions_are_all_handled_by_the_ui. Help opens the project site in
+   the system browser through open_external, the same Rust choke point (scheme
+   re-checked, xdg-open) the a.ext link gate uses. [sact:<action>:<n>] counts
+   presses so a phase can assert the click reached the handler. */
+const sOpenExt = url => inv("open_external", { url }).catch(err => say("Open: " + String(err && err.message || err)));
+const SACT = {
+  help: () => sOpenExt("https://www.opensidian.org"),
+};
+const sactN = {};
+function sactCtl(r) {
+  const d = document.createElement("div");
+  d.className = "sctl button live"; d.dataset.act = r.action;
+  const b = document.createElement("span"); b.className = "sbtn"; b.tabIndex = 0;
+  b.setAttribute("role", "button");
+  b.textContent = r.default_shown === "-" ? r.action : r.default_shown;
+  const run = ev => {
+    ev.preventDefault(); ev.stopPropagation();
+    sactN[r.action] = (sactN[r.action] || 0) + 1;
+    SACT[r.action](r, d);
+    updateTitle();
+  };
+  b.onmousedown = ev => ev.stopPropagation();
+  b.onclick = run;
+  b.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") run(ev); };
+  d.appendChild(b);
+  return d;
+}
+function sactTok() {
+  const k = Object.keys(sactN);
+  return k.length ? " [sact:" + k.map(a => a + ":" + sactN[a]).join(",") + "]" : "";
+}
 /* THE PALETTE CONTROL IS DELETED (themeone item 7 / C1 / R1). A second live
    dropdown used to be built here for Appearance > Current community themes:
    paletteCtl / renderPaletteCtl / openPaletteMenu, the settings-UI route onto
@@ -10631,6 +10665,7 @@ function openSnipMenu(anchor) {
 let sRowsShown = 0, sEnabledShown = 0;
 function sctl(r) {                            // the control cell for one row, or null
   const v = r.default_shown === "-" ? "" : r.default_shown;
+  if (r.action && SACT[r.action]) return sactCtl(r);   // goal/settings-general: Help (and later Check for updates)
   /* THE LIVE DROPDOWNS (themefs R5/R3). Everything else in this pane is a
      transcription of Obsidian's pixels with no handler; a row is rendered live
      only when settings.rs BACKED names its real key (cssTheme /
