@@ -1761,3 +1761,34 @@ span.is-flashing { background: var(--highlight-yellow) }
 .cpb-readme th, .cpb-readme td { border: 1px solid var(--border); padding: 2px 6px }
 .cpb-readme a.cpb-link { color: var(--interactive-accent); text-decoration: underline; cursor: default }
 /* ==== cp-browser END ==== */
+/* ---- Settings ▸ Keychain (goal keychain-pane, ui/keychain.js): a live pane over secrets_op ---- */
+.kc-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px }
+.kc-head .kc-title { margin: 0 }
+.kc-add { width: 28px; height: 28px; font-size: 18px; line-height: 1; padding: 0; border-radius: 4px;
+          background: var(--bg-surface); color: var(--text-chrome); border: 1px solid var(--border); cursor: pointer }
+.kc-add:disabled { opacity: .45; cursor: default }
+.kc-find { width: 100%; box-sizing: border-box; margin-bottom: 12px; padding: 6px 8px; border-radius: 4px;
+           background: var(--bg-base); color: var(--text-chrome); border: 1px solid var(--border) }
+.kc-callout { border-left: 3px solid var(--text-error); background: var(--bg-surface); border-radius: 4px;
+              padding: 10px 12px; margin-bottom: 12px; font-size: 13px; line-height: 18px; color: var(--text-chrome) }
+.kc-callout[hidden] { display: none }
+.kc-ctitle { font-weight: 600; color: var(--text-error); margin-bottom: 4px }
+.kc-cause { margin-top: 6px; color: var(--text-chrome-faint); font-family: var(--font-monospace, monospace); font-size: 12px; overflow-wrap: anywhere }
+.kc-learn { display: inline-block; margin-top: 6px; color: var(--accent-blue); text-decoration: underline; cursor: pointer }
+.kc-empty { padding: 12px; color: var(--text-chrome-faint); font-size: 13px }
+.kcrow { min-height: 44px }
+.kcrow .kc-id { font-family: var(--font-monospace, monospace) }
+.kcrow button, .kc-btns button { padding: 4px 10px; border-radius: 4px; border: 1px solid var(--border);
+                                 background: var(--bg-surface); color: var(--text-chrome); cursor: pointer }
+.kcrow button.mod-warning, .kc-btns button.mod-warning { color: var(--text-error) }
+.kc-btns button.mod-cta { background: var(--bg-button-primary); color: var(--text-on-accent) }
+.kc-modal { position: fixed; inset: 0; z-index: 70; display: flex; align-items: center; justify-content: center;
+            background: var(--background-modifier-cover, var(--bg-surface)) }
+.kc-card { width: 380px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px;
+           padding: 16px; display: flex; flex-direction: column; gap: 10px; color: var(--text-chrome) }
+.kc-mtitle { font-weight: 600; font-size: 15px }
+.kc-mbody { font-size: 13px; color: var(--text-chrome-muted); overflow-wrap: anywhere }
+.kc-card input { padding: 6px 8px; border-radius: 4px; background: var(--bg-base); color: var(--text-chrome); border: 1px solid var(--border) }
+.kc-msg { font-size: 12px; color: var(--text-error) }
+.kc-msg[hidden] { display: none }
+.kc-btns { display: flex; justify-content: flex-end; gap: 8px }

@@ -70,6 +70,8 @@ pub fn label(vault: &str, key: &str) -> String {
 
 pub enum Op<'a> {
     Load,
+    /// this vault's ids only, sorted: Settings ▸ Keychain lists ids and never needs a value
+    Ids,
     Set(&'a str, &'a str),
     Delete(&'a str),
 }
@@ -82,6 +84,7 @@ pub fn parse<'a>(op: &str, id: Option<&'a str>, value: Option<&'a str>) -> Resul
     };
     match op {
         "load" => Ok(Op::Load),
+        "ids" => Ok(Op::Ids),
         "set" => {
             let id = id_of()?;
             let v = value.ok_or("secret storage: value missing")?;
@@ -270,6 +273,15 @@ mod bus {
             Ok(())
         }
 
+        /// this vault's ids (sorted, deduplicated), no value is read
+        fn ids(&self, vault: &str) -> Result<Vec<String>, String> {
+            let mut out = std::collections::BTreeSet::new();
+            for it in self.search(&attrs(vault, None))? {
+                out.insert(self.key_of(&it)?);
+            }
+            Ok(out.into_iter().collect())
+        }
+
         /// {id: value} of this vault's items (ids sorted)
         fn load(&self, vault: &str) -> Result<std::collections::BTreeMap<String, String>, String> {
             let mut out = std::collections::BTreeMap::new();
@@ -285,6 +297,7 @@ mod bus {
         let s = Svc::open(addr)?;
         match op {
             Op::Load => Ok(serde_json::json!({ "secrets": s.load(vault)? })),
+            Op::Ids => Ok(serde_json::json!({ "ids": s.ids(vault)? })),
             Op::Set(k, v) => s.set(vault, k, v).map(|_| serde_json::Value::Null),
             Op::Delete(k) => s.delete(vault, k).map(|_| serde_json::Value::Null),
         }
@@ -307,7 +320,7 @@ pub fn admit<'a>(trusted: bool, op: &str, id: Option<&'a str>, value: Option<&'a
     parse(op, id, value)
 }
 
-/// op "load" -> {secrets: {id: value}} | "set" (id, value) -> null | "delete" (id) -> null.
+/// op "load" -> {secrets: {id: value}} | "ids" -> {ids: [id]} (no values) | "set" (id, value) -> null | "delete" (id) -> null.
 /// Off the main thread: a keyring prompt can wait for the user.
 #[tauri::command]
 pub(crate) async fn secrets_op(
@@ -356,10 +369,11 @@ mod tests {
 
     #[test]
     fn untrusted_vault_is_refused_before_parsing() {
-        for op in ["load", "set", "delete", "bogus"] {
+        for op in ["load", "ids", "set", "delete", "bogus"] {
             assert_eq!(admit(false, op, Some("k"), Some("v")).err().as_deref(), Some(REFUSED));
         }
         assert!(matches!(admit(true, "load", None, None), Ok(Op::Load)));
+        assert!(matches!(admit(true, "ids", None, None), Ok(Op::Ids)));
         assert!(matches!(admit(true, "set", Some("k"), Some("v")), Ok(Op::Set("k", "v"))));
     }
 
@@ -379,7 +393,7 @@ mod tests {
     fn no_service_is_unsupported_not_a_fake_success() {
         let dir = std::env::temp_dir().join(format!("ossec-nobus-{}", std::process::id()));
         let addr = format!("unix:path={}/no-such-bus", dir.display());
-        for op in [Op::Load, Op::Set("k", "v"), Op::Delete("k")] {
+        for op in [Op::Load, Op::Ids, Op::Set("k", "v"), Op::Delete("k")] {
             let e = run(Some(&addr), "/v", op).unwrap_err();
             assert!(e.starts_with("unsupported: secret storage needs a Secret Service"), "{e}");
             assert!(e.contains("cannot connect"), "{e}");

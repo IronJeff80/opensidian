@@ -10389,6 +10389,7 @@ async function openSettings() {
 function closeSettings() {
   const r = sEdSel; sEdSel = null;
   settingsOpen = false; hkRec = null; fontPage = null;
+  KC.close();                           // keychain-pane: and with the modal
   if (window.__osPluginSettings) __osPluginSettings.close();   // a plugin tab on screen gets its hide()
   /* THE PANE'S OWN MENU GOES WITH IT (goal/theme-1984). Appearance ▸ Themes
      opens a .ctxmenu anchored to a control INSIDE this modal; .ctxmenu is
@@ -10430,6 +10431,7 @@ function buildSettingsNav() {
 /* `id` is a pane id from the model ("general", "hotkeys", ...);
    an Obsidian ENTRY NAME is accepted too, so older call sites keep working. */
 function showSettingsPage(id) {
+  KC.close();                           // keychain-pane: an open add/edit/delete form goes with the pane
   if (window.__osPluginSettings && __osPluginSettings.show(id)) return;   // plugin-loader: "community" / "plg:<id>" panes (ui/plugins/settings.js)
   fontPage = null;                      // fontset: any pane switch leaves the font chooser
   const e = SMODEL.nav.find(n => n.id === id) || SMODEL.nav.find(n => n.entry === id);
@@ -10440,6 +10442,10 @@ function showSettingsPage(id) {
   const rows = SMODEL.rows.filter(r => r.tab === pane);   // what this pane owes the census
   sRowsShown = rows.length;
   sEnabledShown = rows.filter(r => r.enabled).length;
+  /* goal keychain-pane: Keychain is a LIVE pane over secrets_op (ui/keychain.js). Its three
+     table rows stay what the census counts ([spane:keychain/3/0]): the table transcribes stock,
+     the pane is built by code, the way Hotkeys is. */
+  if (pane === "keychain") { KC.build(pg); return updateTitle(); }
   if (pane !== "hotkeys") {
     if (!rows.length) {                     // fallback only: since goal/noplugins every nav pane has rows
       const d = document.createElement("div"); d.className = "sempty";

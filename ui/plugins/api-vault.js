@@ -1065,6 +1065,13 @@
       // K.ensureModel before evaluating a plugin); restricted mode never gets here
       const ensureModel0 = K.ensureModel;
       K.ensureModel = () => ensureModel0().then(() => ssLoad());
+      // goal keychain-pane: Settings ▸ Keychain wrote to the SAME keyring (add / edit / delete);
+      // re-read once the queued writes drained, so a plugin never reads a value the user replaced
+      // or deleted. Only a runtime that already loaded (or tried) re-reads: restricted mode never did.
+      window.addEventListener("os-secrets-changed", () => {
+        if (!ssP && !ssVals && ssWhy === "secret storage is not loaded (no plugin has started)") return;
+        ssQ = ssQ.then(() => { ssP = null; return ssLoad(); });
+      });
     }
     K.exportClasses.RenderContext = RenderContext;
     K.exportClasses.SecretStorage = SecretStorage;
