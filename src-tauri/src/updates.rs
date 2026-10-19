@@ -122,7 +122,7 @@ pub fn packets(mut b: &[u8]) -> Result<Vec<(u8, &[u8])>, String> {
         if ctb & 0x80 == 0 {
             return Err("packet: bad header byte".into());
         }
-        let (tag, len, hl) = if ctb & 0x40 != 0 {
+        let (tag, len, hl): (u8, usize, usize) = if ctb & 0x40 != 0 {
             let tag = ctb & 0x3f;
             match *b.get(1).ok_or("packet: truncated")? {
                 l @ 0..=191 => (tag, l as usize, 2),
