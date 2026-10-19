@@ -1085,3 +1085,87 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
+
+---
+
+## Plugin-API libraries (vendored, loaded only for community plugins)
+
+These files are unmodified upstream bytes under `ui/vendor/`, served from 'self'
+under the app's CSP and loaded only when a community plugin asks for them
+(`moment`, `loadMathJax`, `loadPdfJs`, `loadPrism`). Versions, publish dates,
+npm integrity and sha256 sums live in each directory's `VENDOR.md` / `SHA256SUMS`.
+They carry no SPDX tag of ours: tagging them would modify them, and our GPL tag
+would mislabel them.
+
+### moment 2.30.1
+
+**Used in:** `ui/vendor/moment.min.js` (`require("obsidian").moment`, `window.moment`)
+**Upstream:** https://momentjs.com (npm `moment@2.30.1`)
+**Licence:** MIT. GPL-compatible; the file keeps its upstream MIT header.
+
+```
+Copyright (c) JS Foundation and other contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+### Prism 1.30.0
+
+**Used in:** `ui/vendor/prism/prism.js` (`loadPrism`, manual mode)
+**Upstream:** https://prismjs.com (npm `prismjs@1.30.0`)
+**Licence:** MIT. GPL-compatible. Full text: `ui/vendor/prism/LICENSE`, reproduced here.
+
+```
+MIT LICENSE
+
+Copyright (c) 2012 Lea Verou
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+### MathJax 3.2.2
+
+**Used in:** `ui/vendor/mathjax/` (`tex-chtml-full.js` and its CHTML woff fonts; `loadMathJax`, `renderMath`)
+**Upstream:** https://www.mathjax.org (npm `mathjax@3.2.2`)
+**Licence:** Apache-2.0, full text shipped beside the files as `ui/vendor/mathjax/LICENSE`.
+Apache-2.0 is compatible with GPL-3.0 (not with GPL-2.0, see the summary at the top).
+The vendored files include no NOTICE file.
+
+### PDF.js (pdfjs-dist 6.3.289)
+
+**Used in:** `ui/vendor/pdfjs/` (`pdf.min.mjs`, `pdf.worker.min.mjs`; `loadPdfJs`)
+**Upstream:** https://mozilla.github.io/pdf.js (npm `pdfjs-dist@6.3.289`)
+**Licence:** Apache-2.0, full text shipped beside the files as `ui/vendor/pdfjs/LICENSE`.
+Apache-2.0 is compatible with GPL-3.0. The vendored files include no NOTICE file.
