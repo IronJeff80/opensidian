@@ -187,8 +187,9 @@
        - flag ON, page has no eval (restricted mode was just turned off, or the
          vault was bound after the page loaded): plugins load without a reload
          (most never eval); the FIRST time anything on the page is refused eval
-         or a blob: script/worker by the CSP (a securitypolicyviolation, or a
-         plugin that fails with an EvalError), the page reloads into the
+         or a blob: script/worker, or a same-origin connection (the fs *Sync
+         route) by the CSP (a securitypolicyviolation, or a plugin that fails
+         with an EvalError), the page reloads into the
          trusted CSP and the plugin loads again there.
      Every reload waits the save debounce so a pending note write lands first.
      Two reloads in a row that still disagree stop with a console warning
@@ -211,7 +212,9 @@
   window.addEventListener("securitypolicyviolation", e => {
     if (!evalWanted) return;
     const d = String(e.effectiveDirective || e.violatedDirective || ""), u = String(e.blockedURI || "");
-    if ((/^(script-src|worker-src)/.test(d) && (u === "eval" || u.startsWith("blob"))) || /^worker-src/.test(d)) cspReloadNow();
+    if ((/^(script-src|worker-src)/.test(d) && (u === "eval" || u.startsWith("blob"))) || /^worker-src/.test(d)
+      // node-desktop.js fs *Sync: a same-origin synchronous XHR ('self' is only in the trusted connect-src)
+      || (/^connect-src/.test(d) && u.startsWith(location.origin + "/"))) cspReloadNow();
   });
   function cspCheck(s) {
     if (!s || typeof s.pageEval !== "boolean") return s;
