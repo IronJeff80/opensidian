@@ -387,9 +387,22 @@
           if (this._side && (type === "empty" || !type)) return;
           const p = vs && vs.state && vs.state.file; const f = p && d.vault().getAbstractFileByPath(p);
           if (!(f instanceof d.TFile())) return;
-          return this.openFile(f, { state: vs.state, eState, active: vs.active });
+          return this._openFileDirect(f, { state: vs.state, eState, active: vs.active });
         }
+        /* openFile goes through setViewState like stock: {type: the view type registered for the file's
+           extension (md -> "markdown"), state: {...openState.state, file}}. Plugins that pick the view
+           for a file by wrapping WorkspaceLeaf.prototype.setViewState (Excalidraw turns a markdown
+           drawing into its "excalidraw" view this way) see every file open; "markdown" (or a type
+           nothing registered) falls through to the app's own note open. */
         openFile(file, openState) {
+          const os = openState || {};
+          if (!(file instanceof d.TFile())) return this._openFileDirect(file, os);
+          const reg = this.app && this.app.viewRegistry;
+          const type = (reg && typeof reg.getTypeByExtension === "function" && reg.getTypeByExtension(file.extension)) || (file.extension === "md" ? "markdown" : "");
+          if (!type) return this._openFileDirect(file, os);
+          return this.setViewState({ type, state: Object.assign({}, os.state, { file: file.path }), active: os.active }, os.eState);
+        }
+        _openFileDirect(file, openState) {
           if ((this._t && this._t.kind === "unk") || this._side) {   // a plugin leaf asked to show a note: a new tab in its group (or the focused one)
             const n = new WorkspaceLeaf(this.app); n._g = this._grp || M().fg(); n._nt = true;
             return d.openFileIn(n, file, openState);
