@@ -286,10 +286,10 @@ mod tests {
         let (ro, rw) = (read_roots(home), write_roots(home, Path::new("/home/u/vault")));
         assert!(!ro.contains(&home.to_path_buf()), "$HOME itself must never be readable: {ro:?}");
         // no granted root may be an ancestor of a secret-bearing dotfile
-        for secret in [".ssh/id_ed25519", ".gnupg/secring.gpg", ".aws/credentials", ".netrc", ".bash_history", ".mozilla/firefox"] {
-            let s = home.join(secret);
+        for dotfile in [".ssh/id_ed25519", ".gnupg/secring.gpg", ".aws/credentials", ".netrc", ".bash_history", ".mozilla/firefox"] {
+            let p = home.join(dotfile);
             for (label, v) in [("ro", &ro), ("rw", &rw)] {
-                assert!(!v.iter().any(|r| s.starts_with(r)), "{label} grants ~/{secret} via one of {v:?}");
+                assert!(!v.iter().any(|r| p.starts_with(r)), "{label} grants ~/{dotfile} via one of {v:?}");
             }
         }
         // /home and / must not appear by accident either
