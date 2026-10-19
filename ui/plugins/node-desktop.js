@@ -1334,7 +1334,7 @@
   const noWindow = Object.freeze({ show() {}, focus() {}, isFocused: () => document.hasFocus(), isDestroyed: () => false, webContents: Object.freeze({ id: 1 }) });
   /* remote.app: what plugins read at load (pdf-plus: getVersion). The version is the
      Obsidian API level this app implements, not a browser or engine version. */
-  const appVersion = () => "1.4.4";   // = api-core.js API_VERSION
+  const appVersion = () => "1.14.4";   // = api-core.js API_VERSION = plugin_store.rs COMPAT_APP_VERSION (T0 drift test)
   const remoteApp = Object.freeze({
     getVersion: appVersion,
     getName: () => "opensidian",

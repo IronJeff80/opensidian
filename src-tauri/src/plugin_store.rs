@@ -47,9 +47,11 @@ pub const ALLOWED_HOSTS: &[&str] = &[
 pub const BASE_ENV: &str = "OPENSIDIAN_PLUGIN_STORE_BASE";
 const LIST_URL: &str = "https://raw.githubusercontent.com/obsidianmd/obsidian-releases/HEAD/community-plugins.json";
 const STATS_URL: &str = "https://raw.githubusercontent.com/obsidianmd/obsidian-releases/HEAD/community-plugin-stats.json";
-/// the app version our plugin API answers to (ui/plugins/api-core.js API_VERSION;
-/// a unit test keeps the two equal). A manifest asking for more is refused.
-pub const COMPAT_APP_VERSION: &str = "1.4.4";
+/// the Obsidian plugin API version this build implements -- the ONE source of truth.
+/// ui/plugins/api-core.js API_VERSION and ui/plugins/node-desktop.js appVersion carry the
+/// same literal; compat_version_matches_the_js_api fails T0 on drift. Shown in Settings >
+/// General ("Plugin API version"). A manifest asking for more is refused.
+pub const COMPAT_APP_VERSION: &str = "1.14.4";
 /// what install writes next to the plugin: where each file came from + its sha256
 pub const SIDECAR: &str = "opensidian-install.json";
 const MAX_REDIRECTS: usize = 5;
@@ -563,13 +565,19 @@ mod tests {
         assert!(version_gt("v2.0", "1.99"));
         assert!(!version_gt("1.0.0", "1.0"));
         assert!(!version_gt("0.13.11", COMPAT_APP_VERSION));
-        assert!(version_gt("1.5.0", COMPAT_APP_VERSION));
+        assert!(!version_gt("1.13.0", COMPAT_APP_VERSION));
+        assert!(!version_gt("1.14.4", COMPAT_APP_VERSION));
+        assert!(version_gt("1.14.5", COMPAT_APP_VERSION));
+        assert!(version_gt("1.15.0", COMPAT_APP_VERSION));
     }
 
     #[test]
     fn compat_version_matches_the_js_api() {
+        assert_eq!(COMPAT_APP_VERSION, "1.14.4");
         let js = include_str!("../../ui/plugins/api-core.js");
-        assert!(js.contains(&format!("const API_VERSION = \"{COMPAT_APP_VERSION}\"")));
+        assert!(js.contains(&format!("const API_VERSION = \"{COMPAT_APP_VERSION}\";")), "api-core.js API_VERSION drifted from COMPAT_APP_VERSION");
+        let nd = include_str!("../../ui/plugins/node-desktop.js");
+        assert!(nd.contains(&format!("const appVersion = () => \"{COMPAT_APP_VERSION}\";")), "node-desktop.js appVersion drifted from COMPAT_APP_VERSION");
     }
 
     #[test]
@@ -590,6 +598,8 @@ mod tests {
         assert!(check_manifest(br#"{"id":"p","version":"1.0.0","minAppVersion":"0.15.0"}"#, "p").is_ok());
         let e = check_manifest(br#"{"id":"other","version":"1.0.0"}"#, "p").unwrap_err();
         assert!(e.contains("does not match the list id"), "{e}");
+        // Templater-style manifest: minAppVersion 1.13.0 is within the 1.14.4 API
+        assert!(check_manifest(br#"{"id":"templater-obsidian","name":"Templater","version":"2.16.0","minAppVersion":"1.13.0","isDesktopOnly":false}"#, "templater-obsidian").is_ok());
         assert!(check_manifest(br#"{"id":"p","version":"1","minAppVersion":"9.0.0"}"#, "p").unwrap_err().contains("needs app version"));
         assert!(check_manifest(br#"{"id":"p"}"#, "p").is_err());
         assert!(check_manifest(b"[]", "p").is_err());

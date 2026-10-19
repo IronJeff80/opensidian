@@ -123,7 +123,7 @@
        its system-command exec, obsidian-git picks isomorphic-git over the adapter
        instead of spawning git). Desktop-only plugins keep the desktop view. */
     const PlatformGuarded = Object.freeze(Object.assign({}, Platform, { isDesktop: false, isMobile: true, isDesktopApp: false, isMobileApp: true }));
-    const API_VERSION = "1.4.4";
+    const API_VERSION = "1.14.4";   // = src-tauri plugin_store.rs COMPAT_APP_VERSION (T0 drift test)
     const vcmp = (a, b) => { const x = String(a).split("."), y = String(b).split("."); for (let i = 0; i < 3; i++) { const d = (+x[i] || 0) - (+y[i] || 0); if (d) return d; } return 0; };
     const requireApiVersion = v => vcmp(API_VERSION, v) >= 0;
     /* Keymap: the scope stack manager (app.keymap is the instance) + the
