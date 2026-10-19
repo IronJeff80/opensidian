@@ -1,6 +1,6 @@
 {
   "productName": "opensidian",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "identifier": "dev.koto.opensidian",
   "build": { "frontendDist": "../ui" },
   "app": {
