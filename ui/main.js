@@ -7,7 +7,11 @@
 /* otel (R18): every invoke carries the innermost open UI action span as the
    `otel` arg, so backend spans nest under it (commands without the param
    ignore it). ui/otel.js owns ids, buffering and the 250ms batched IPC. */
-const inv = (c, a) => { const x = otel.ctx(); return window.__TAURI__.core.invoke(c, x ? Object.assign({ otel: x }, a) : a); };
+const TAURI = window.__TAURI__;   // plugin-loader item 7: captured at load; ui/plugins/loader.js deletes window.__TAURI__ before any plugin runs (security.md)
+// cp-hover-editor: the plugin host's app + "obsidian" module, captured at load like TAURI (the seal narrows the
+// host before any plugin runs); main.js fills the core-plugin hooks plugins read (see QuickSwitcherModal)
+const PLG = window.__osPluginHost && __osPluginHost.app && __osPluginHost.api ? { app: __osPluginHost.app, X: __osPluginHost.api } : null;
+const inv = (c, a) => { const x = otel.ctx(); return TAURI.core.invoke(c, x ? Object.assign({ otel: x }, a) : a); };
 /* perf-spans shim over otel: mark(name, t0, extra) = a span that started at
    t0 and ends now; push(name, ms, extra) = an already-measured span (graph
    frames); both no-ops once the backend said telemetry is off. */
@@ -92,6 +96,18 @@ function leaves(node, out = []) {
 const groups = () => (state ? leaves(state.root) : []);
 let rlwOn = true;   // goal/minimalmargin: app.json readableLineLength mirror (rlwLoad, near loadVaultCss); declared up here because mkView reads it
 const fg = () => state.focused;
+/* plugin-views: the plugin host (ui/plugins/views.js) sets PVHOST when a plugin registers a view
+   type; loadActive asks it to mount a kept "unk" tab of that type (and to hide it again). */
+let PVHOST = null;
+/* plugin-views item 5: set by ui/plugins/api.js when a plugin listens for "file-menu" / "editor-menu";
+   noteMenu and the editor right-click ask it to add the plugin rows. */
+let PMENU = null;
+/* plugin-views item 7: set by ui/plugins/api.js while a plugin has a markdown post / code-block
+   processor or a plugin embed extension; preview() runs it over the fresh reading html. Its gen keys the retained reading DOM. */
+let PPOST = null;
+/* SEAM S3: set by ui/plugins/editor-api.js; tabGone hands it the closed tab so the reading
+   view's plugin embed children of that tab are unloaded. */
+let PTABGONE = null;
 const curOf = g => (g.active >= 0 ? g.tabs[g.active].name : null);
 const cur = () => (state && fg() ? curOf(fg()) : null);
 // R18: is this group's active tab showing the READING pane? (the only pane the
@@ -271,7 +287,7 @@ async function cmdToggleRight() {
     $("rside").hidden = $("rdiv").hidden = !rightOpen;
     $("rtoggle").title = rightOpen ? "Collapse right sidebar" : "Expand right sidebar";
     placeRToggle();
-    if (rightOpen) setRTab(rTab, false);   // pane content fills in AFTER the toggle paints (not awaited)
+    if (rightOpen && !(PVHOST && PVHOST.sideShowing("right"))) setRTab(rTab, false);   // pane content fills in AFTER the toggle paints (not awaited); a plugin pane that was showing stays
     updateTitle();
   });
 }
@@ -298,6 +314,7 @@ async function setRTab(t, persist = true) {
     $(id).hidden = k !== t;
     $("rtab-" + k).classList.toggle("active", k === t);
   }
+  if (PVHOST) PVHOST.sideHide("right");   // plugin-views: a plugin view's pane in the right sidebar hides
   if (persist) inv("set_rside_tab", { tab: t }).catch(() => {});
   if (!rightOpen) return;
   await rPanesRefresh();
@@ -622,8 +639,7 @@ async function tocGo(line) {               // scroll + focus the heading at `lin
   if (fg() !== g) focusGroup(g);           // Obsidian 1.13.7: the active leaf moves to the note (docs/tocjump recon, shots 06,16)
   if (isLp(t.mode)) {                     // R12: source mode = lp with reveal
     await lpMove(g, line, 0, "heading");   // raw row = the heading, caret on it
-    const row = Ed.rowAt(g, line);                 // R17: one row per source line
-    if (row) g.lp.scrollTop = row.offsetTop - g.lp.offsetTop;
+    if (!Ed.revealTop(g, line)) Ed.scrollToLine(g, line);   // the heading line at the top (CM6 scroll effect)
   } else {
     const k = tocHeads.findIndex(h => h.line === line);
     const el = g.preview.querySelectorAll("h1,h2,h3,h4,h5,h6")[k];
@@ -638,9 +654,7 @@ function tocSync() {                       // highlight the heading at the viewp
   const { g, t } = L;
   let top = 0;                             // first visible source line
   if (isLp(t.mode)) {
-    const st = g.lp.scrollTop + 2;
-    let _i = 0;
-    for (const r of g.lp.children) { if (r.offsetTop - g.lp.offsetTop <= st) top = _i; _i++; }
+    top = Math.floor(Ed.topLine(g, 2) || 0);
   } else {
     const st = g.preview.scrollTop + 2, hs = g.preview.querySelectorAll("h1,h2,h3,h4,h5,h6");
     let k = -1;
@@ -669,8 +683,7 @@ function tjTok() {
   if (g.tabs[g.active] !== t) return " [tj:" + nm + "|bg]";
   let top = 0, st = 0;
   if (isLp(t.mode)) {
-    st = g.lp.scrollTop; let i = 0;
-    for (const r of g.lp.children) { if (r.offsetTop - g.lp.offsetTop <= st + 2) top = i; i++; }
+    st = g.lp.scrollTop; top = Math.floor(Ed.topLine(g, 2) || 0);
   } else {
     st = g.preview.scrollTop; let k = -1;
     g.preview.querySelectorAll("h1,h2,h3,h4,h5,h6").forEach((el, i) => { if (el.offsetTop - g.preview.offsetTop <= st + 2) k = i; });
@@ -756,6 +769,7 @@ function setPane(p) {
     $(id).hidden = k !== p;
     $("stab-" + k).classList.toggle("active", k === p);
   }
+  if (PVHOST) PVHOST.sideHide("left");    // plugin-views: a plugin view's pane in the left sidebar hides
   if (p === "search") $("sinput").focus();
   if (p === "bm") refreshBm();               // re-read: disk is the truth
   updateTitle();
@@ -832,65 +846,27 @@ function scLC(g, off) {
   return { l: last, c: (L[last] || "").length };
 }
 /* R25.13f/m: this runs on EVERY keystroke while a decoration is live (from
-   lpRender and from scheduleSave), and what it does is DOM SURGERY ON THE ROW
-   THE CARET IS IN: the unwrap below calls p.normalize(), which MERGES the text
-   nodes the DOM Selection is anchored in, and a merged anchor is a moved
-   caret. Measured on the box (12:54 and 13:2x): typing `ZCDIRTY` at the start
-   of the line-42 match put `Z` at column 0 and the remaining six characters at
-   column 10 — the END of the match — because the first keystroke's scMarks
-   relocated the caret and every later one landed where it had been left. The
-   model position is the truth, so read it BEFORE the surgery and put it back
-   after. Ed.sel() returns null when the caret is not in this pane's lp, so a
-   blurred editor (R25.13f's query-input case) is left exactly as it was. */
-function scMarks(g) {
-  const s0 = g && g.lp ? Ed.sel(g) : null;
-  scPaint(g);
-  if (!s0) return;
-  if (s0.empty) Ed.place(g, s0.b.l, s0.b.c, false);
-  else { Ed.place(g, s0.a.l, s0.a.c, false); Ed.extendTo(g, s0.b.l, s0.b.c); }
-}
-/* paint the set with the SAME per-text-node right-to-left walk the find bar
-   uses (fWrap): a match that straddles a rendered <strong> becomes two spans,
-   and no offset is invalidated mid-walk. Only the lp surface is painted —
-   R25.13k measured that Obsidian paints NO highlight in the reading renderer. */
+   lpRender and from scheduleSave). The R17 painter did DOM surgery on the row
+   the caret was in and had to put the caret back (ZCDIRTY, box 12:54); the CM6
+   painter is a decoration set (Ed.hl "sc"), which never touches the document
+   or the selection, so there is nothing to restore. */
+function scMarks(g) { scPaint(g); }
+/* paint the set as ONE decoration range per hit: CM6 splits a range that
+   straddles a rendered <strong> into two spans itself. Only the lp surface is
+   painted — R25.13k measured that Obsidian paints NO highlight in the reading
+   renderer; the preview unwrap below clears what an older build left there. */
 function scPaint(g) {
-  for (const sc of [g.lp, g.preview]) {
-    if (!sc) continue;
-    for (const m of [...sc.querySelectorAll("span." + SC_MARK)]) {
-      const p = m.parentNode;
-      if (!p) continue;
-      while (m.firstChild) p.insertBefore(m.firstChild, m);
-      p.removeChild(m);
-      p.normalize();
-    }
+  if (g.preview) for (const m of [...g.preview.querySelectorAll("span." + SC_MARK)]) {
+    const p = m.parentNode;
+    if (!p) continue;
+    while (m.firstChild) p.insertBefore(m.firstChild, m);
+    p.removeChild(m);
+    p.normalize();
   }
-  const hs = scHits(g);
-  if (!hs.length || !g.lp) return;
-  const t = g.active >= 0 ? g.tabs[g.active] : null;
-  if (!t || t.kind || !isLp(t.mode)) return;
-  const byRow = new Map();
-  hs.forEach((h, i) => {
-    const a = scLC(g, h.off), b = scLC(g, h.off + h.len);
-    for (let l = a.l; l <= b.l; l++) {
-      const c0 = l === a.l ? a.c : 0;
-      const c1 = l === b.l ? b.c : (Ed.lines(g)[l] || "").length;
-      if (c1 <= c0) continue;
-      if (!byRow.has(l)) byRow.set(l, []);
-      byRow.get(l).push({ c: c0, end: c1, i });
-    }
-  });
-  for (const [l, rs] of byRow) {
-    const row = Ed.rowAt(g, l);
-    if (!row) continue;
-    const map = Ed.nodes(row), jobs = new Map();
-    for (const h of rs) for (const s of map) {
-      const a = Math.max(h.c, s.c), b = Math.min(h.end, s.c + s.len);
-      if (b <= a) continue;
-      if (!jobs.has(s.n)) jobs.set(s.n, []);
-      jobs.get(s.n).push({ a: a - s.c, b: b - s.c, i: h.i, cur: false });
-    }
-    fWrap(jobs, SC_MARK);
-  }
+  if (!g.lp) return;
+  const hs = scHits(g), t = g.active >= 0 ? g.tabs[g.active] : null;
+  const on = hs.length && t && !t.kind && isLp(t.mode);
+  Ed.hl(g, "sc", on ? hs.map((h, i) => ({ from: h.off, to: h.off + h.len, cls: SC_MARK, fh: i })) : []);
 }
 /* R25.13c: the match is CENTRED — measured at a 349 px offset in a 718 px
    viewport, independent of note length — and the scroll is a SINGLE-FRAME JUMP
@@ -936,9 +912,28 @@ async function scJump(g, hits) {
   // first half-viewport, a match on the last line) are distinguishable from a
   // jump that simply did not scroll. Row heights differ per line, so they are
   // MEASURED here and never assumed by the phase.
-  const rt = row ? row.offsetTop - g.lp.offsetTop : -1;
-  const rh = row ? row.offsetHeight : -1;
-  if (row) scCenter(g.lp, rt, rh);
+  // a cm-line's offsetParent is .cm-editor (position: relative), not the scroller's:
+  // its top in scroller CONTENT coordinates is read from the two boxes
+  // An off-screen line has no cm-line yet (CM6 draws only its viewport), so the
+  // geometry comes from CM6's height map (lineBlockAt covers undrawn lines); once
+  // the scroll has drawn it, the block is re-read from the measured DOM and the
+  // centring corrected if the estimate differed.
+  const cm = Ed.cm(g);
+  const geo = () => {
+    const r = Ed.rowAt(g, p.l);
+    if (r) return [r.getBoundingClientRect().top - g.lp.getBoundingClientRect().top - g.lp.clientTop + g.lp.scrollTop, r.offsetHeight];
+    if (!cm || p.l + 1 > cm.state.doc.lines) return [-1, -1];
+    const b = cm.lineBlockAt(cm.state.doc.line(p.l + 1).from);
+    return [cm.documentTop + b.top - g.lp.getBoundingClientRect().top - g.lp.clientTop + g.lp.scrollTop, b.height];
+  };
+  let [rt, rh] = geo();
+  if (rh >= 0) scCenter(g.lp, rt, rh);
+  if (!row && cm && rh >= 0) {
+    await new Promise(res => cm.requestMeasure({ key: "osScJump", read: () => null, write: () => res() }));
+    await new Promise(res => requestAnimationFrame(() => res()));
+    const [rt2, rh2] = geo();
+    if (rh2 >= 0 && (Math.round(rt2) !== Math.round(rt) || Math.round(rh2) !== Math.round(rh))) { rt = rt2; rh = rh2; scCenter(g.lp, rt, rh); }
+  }
   scInfo = "sc:" + curOf(g) + "@" + p.l + "." + p.c + "|hl:" + scHits(g).length +
            "|top:" + Math.round(g.lp.scrollTop) +
            "|vp:" + Math.round(g.lp.clientHeight) + "x" + Math.round(g.lp.scrollHeight) +
@@ -1302,7 +1297,7 @@ function nmwTok() {
   for (const c of R.children) {
     if (++n > 400) break;
     const st = getComputedStyle(c);
-    if (st.display !== "block" || st.position === "absolute" || st.position === "fixed") continue;
+    if (!/^(block|flex|grid|flow-root)$/.test(st.display) || st.position === "absolute" || st.position === "fixed") continue;
     const r = c.getBoundingClientRect();
     if (r.width > 0 && (!col || r.width > col.width + 0.5)) { col = r; colEl = c; }
   }
@@ -1323,6 +1318,35 @@ function tywTok() {
   if (!g || g.active < 0) return "";
   const rd = isReading(g), R = rd ? g.preview : g.lp;
   if (!R || !R.textContent.includes("Heading one Hxg")) return "";
+  const gh = rd ? null : tywGhost(g, R);
+  try { return tywMeasure(rd, R); } finally { if (gh) gh.remove(); }
+}
+/* cm6-editor: CM6 draws only its viewport; R17 drew every row. The want values
+   are read at the TOP of the fixture, where the code-span and blockquote rows
+   are not drawn yet. Those undrawn "Hxg" lines are rendered for the read by the
+   same parser the LP decorations come from (Ed.row / Ed.lpParse), into a hidden
+   shallow clone of CM6's .cm-editor > .cm-scroller > .cm-content > .cm-line
+   chain appended to .lp. As .lp's second child it takes the same column
+   (.lp > *) and carries the same theme classes. It sits outside contentDOM (CM6's
+   observer never sees it) and is removed before the census returns. */
+function tywGhost(g, R) {
+  const cm = typeof Ed !== "undefined" && Ed.cm ? Ed.cm(g) : null;
+  if (!cm || !R.contains(cm.dom)) return null;
+  const d = cm.state.doc, vp = cm.viewport, rows = [];
+  for (let i = 1; i <= d.lines; i++) { const ln = d.line(i); if ((ln.to < vp.from || ln.from > vp.to) && ln.text.includes("Hxg")) rows.push(ln.text); }
+  if (!rows.length) return null;
+  const ed = cm.dom.cloneNode(false), sc = cm.scrollDOM.cloneNode(false), ct = cm.contentDOM.cloneNode(false);
+  ct.removeAttribute("contenteditable"); ed.setAttribute("aria-hidden", "true"); ed.style.visibility = "hidden";
+  for (const t of rows) {
+    const r = Ed.row(g, t, 0), l = document.createElement("div");
+    l.className = "cm-line " + Ed.lpParse(g, t).cls;
+    while (r.firstChild) l.appendChild(r.firstChild);
+    ct.appendChild(l);
+  }
+  sc.appendChild(ct); ed.appendChild(sc); R.appendChild(ed);
+  return ed;
+}
+function tywMeasure(rd, R) {
   const ctx = (tywCanvas = tywCanvas || document.createElement("canvas")).getContext("2d");
   const fnt = el => { const s = getComputedStyle(el); return s.fontStyle + " " + s.fontWeight + " " + s.fontSize + " " + s.fontFamily; };
   const met = (el, ch) => { ctx.font = fnt(el); return ctx.measureText(ch); };
@@ -2032,6 +2056,7 @@ function noteMenu(e, nm) {                 // right-click a tree note row
      harder here than it did for tabs: an OCR row miss followed by "Delete" would
      delete a note nobody named and still look green. */
   m.dataset.mt = "note:" + nm;
+  if (PMENU) PMENU.fileMenu(m, nm, "file-explorer-context-menu");   // plugin-views: workspace "file-menu" rows, after a rule
   placeMenu(m, e.clientX, e.clientY);   /* R22: viewport-clamped by measured size */
 }
 
@@ -2176,6 +2201,9 @@ let dragTok = "", mvTok = "";
    is not mechanically reproducible at 250ms — OPENSIDIAN_SAVE_MS widens it for
    the smoke (backend save_debounce_ms; default 250 in every normal run). */
 let SAVE_MS = 250;
+/* save-maxwait: the longest an edit waits in RAM while typing never pauses for
+   SAVE_MS — a continuous burst reaches disk at least this often (scheduleSave). */
+const SAVE_MAX_MS = 2000;
 const errStr = e => String((e && e.message) || e);
 function saveFailed(name, e) {
   saveErr = String(name).replace(/[\[\]|]/g, "").slice(0, 60);
@@ -2192,9 +2220,18 @@ function saveCleared() {
   if (!saveErr) return;
   saveErr = ""; $("saveerr").hidden = true; updateTitle();
 }
+// typing-j: [svq:n,bytes] = the count and UTF-8 size of the last save whose
+// bytes are on disk. Set only AFTER the write resolved, so any census title that
+// shows it was BUILT after that flush: its [buf:] is a model read ordered with
+// the flush, which is what typing J compares a disk sample against (the native
+// title is an async IPC behind the save, so a bare [buf:] can predate it).
+let svqN = 0, svqB = 0;
+function svqTok() { return " [svq:" + svqN + "," + svqB + "]"; }
 async function saveNote(name, content) {    // true == the bytes are on disk
   try { await writeNote(name, content); }
   catch (e) { saveFailed(name, e); return false; }
+  svqN++; svqB = new TextEncoder().encode(content).length;
+  requestAnimationFrame(updateTitle);         // publish [svq:] (one coalesced title per frame)
   saveCleared();
   return true;
 }
@@ -2329,8 +2366,8 @@ function mkView(g) {
   const pv = document.createElement("div"); pv.className = "preview";
   lp.classList.toggle("is-readable-line-width", rlwOn); pv.classList.toggle("is-readable-line-width", rlwOn);   // minimalmargin
   v.editor = ed; v.lp = lp; v.preview = pv;
-  v.lines = [""];                                 // R17: the MODEL (source of truth)
-  Ed.mount(v);                                    // R17: lp is the contenteditable view
+  v.lines = [""];                                 // the seed doc (CM6 state.doc is the model)
+  Ed.mount(v);                                    // cm6-editor: a CM6 EditorView inside lp (the scroller)
   // R17: click below the last row (empty pane space) = caret at the end of
   // the note, like Obsidian; rows themselves get the native caret placement
   lp.addEventListener("mousedown", e => {
@@ -3308,7 +3345,9 @@ function xiAgain() {
   requestAnimationFrame(() => { xiPending = false; updateTitle(); });
 }
 function updateTitle() {          // pane/focus census in the window title (headless probe)
-  rTrack();                       // lgpanes: keep rLeaf current even with the right sidebar closed
+  if (fHold > 0) return;          // a find reveal is in flight: fGo republishes when it lands
+  if (twHold > 0) { twDue = true; return; }   // a tab switch is in flight: switchTab republishes after its paint
+  rTrack();                      // lgpanes: keep rLeaf current even with the right sidebar closed
   const ps = [...document.querySelectorAll("#main .pane")];
   const nf = document.querySelectorAll("#main .pane.focused").length;
   const fx = (state.root.fractions || []).map(f => f.toFixed(2)).join(",");
@@ -3382,7 +3421,11 @@ function updateTitle() {          // pane/focus census in the window title (head
   if (scInfo) md += " [" + scInfo + "]";
   if (fg() && scHits(fg()).length) {
     const sc = fg().lp;
-    md += " [scm:" + (sc ? sc.querySelectorAll("span." + SC_MARK).length : -1) +
+    // CM6: distinct hits painted (a hit split by rendered markup is 2 spans, 1 data-fh),
+    // plus hits whose mark sits in the decoration set on a line CM6 has not drawn
+    const scPainted = sc ? new Set([...sc.querySelectorAll("span." + SC_MARK)].map(m => m.dataset.fh)) : null;
+    if (scPainted && Ed.hlUndrawn) for (const fh of Ed.hlUndrawn(fg(), "sc")) scPainted.add(fh);
+    md += " [scm:" + (scPainted ? scPainted.size : -1) +
           "/" + scHits(fg()).length + "]";
   }
   if (md) md += mswTok();                        // R35 perf: the mode switch's own cost (see mswEnd)
@@ -3393,8 +3436,15 @@ function updateTitle() {          // pane/focus census in the window title (head
      ui/style.css .titlewrap). A phase compares the row count in this token with
      the count from Ed.geom before the click; a mechanism that prepended a node
      would read one higher here and break every positional index silently. */
-  if (titling) md += " [te:" + titling.el.textContent.replace(/[[\]|/]/g, "") +
-                     "/" + (titling.g.lp ? titling.g.lp.children.length : -1) + "]";
+  /* CM6: g.lp holds ONE host (.cm-editor); the positional rows are .cm-content's
+     children (one .cm-line per line, block widgets in between). Count those, plus
+     anything else that landed beside the host in g.lp — a node prepended either
+     into the content or into the scroller still reads one higher. */
+  if (titling) {
+    const tl = titling.g.lp, cm = tl && Ed.cm(titling.g);
+    const rows = !tl ? -1 : cm ? cm.contentDOM.children.length + tl.children.length - 1 : tl.children.length;
+    md += " [te:" + titling.el.textContent.replace(/[[\]|/]/g, "") + "/" + rows + "]";
+  }
   /* R34.18 — the two surfaces, MEASURED, not claimed (see tpType above).
      [tty:<rendered>~<editing>], each side
        font-size/weight/letter-spacing/line-height/colour/family-hash/family-head
@@ -3448,7 +3498,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   // byte (getAttribute, not .src: the property is absolutised and would hide a disagreement).
   if (md && ft && !ft.kind && fg()) {
     const rv = ft.mode === "reading" ? fg().preview : fg().lp;
-    const ims = rv ? [...rv.querySelectorAll("img:not(.pdf-page)")] : [];      // pdfembed: frame pages are [pf:]'s
+    const ims = rv ? [...rv.querySelectorAll("img:not(.pdf-page):not(.cm-widgetBuffer)")] : [];  // pdfembed: frame pages are [pf:]'s; CM6 caret buffers are not images
     const nmiss = rv ? rv.querySelectorAll(".imgmiss:not(.pdfmiss)").length : 0;
     if (ims.length || nmiss) {
       // the title only MOVES in updateTitle (see noteErr's note), and an image decodes
@@ -3812,7 +3862,7 @@ function updateTitle() {          // pane/focus census in the window title (head
             (saveErr ? " [saveerr:" + saveErr + "]" : "") +             // F1: a save that did not land
             " [armed:" + groups().filter(h => h.saveT).length + "]" +   // F2: groups holding a live save timer
             menuTok() +
-            (navInfo ? " [" + navInfo + "]" : "") +
+            (navInfo ? " [" + navInfo + "]" + (nvRv ? " [nvr:" + nvRv + "]" : "") : "") +
             (revealInfo ? " [bmrv:" + revealInfo + "]" : "") +      // bmmenu: "Reveal file in navigation" ran (bmReveal) — not merely "the Files pane is showing"
             (acItems.length ? " [ac:" + acKind + ":" + acItems.length + "]" : "") +
             " [pane:" + sidePane + "]" +
@@ -3864,7 +3914,7 @@ function pushTitle(t) {
     if (tWant !== cur) pushTitle(tWant);
   };
   try {
-    window.__TAURI__.window.getCurrentWindow().setTitle(cur).catch(() => {}).then(fin);
+    TAURI.window.getCurrentWindow().setTitle(cur).catch(() => {}).then(fin);
   } catch (e) { fin(); }
   setTimeout(fin, 500);
 }
@@ -4060,7 +4110,10 @@ function clampMenu(m) {
   m.style.left = Math.max(0, Math.min(+m.dataset.x, innerWidth - m.offsetWidth)) + "px";
   m.style.top = Math.max(0, Math.min(+m.dataset.y, innerHeight - m.offsetHeight)) + "px";
 }
-document.addEventListener("contextmenu", e => e.preventDefault()); // app-like: native menu never
+document.addEventListener("contextmenu", e => {   // app-like: native menu never
+  e.preventDefault();
+  if (PMENU && e.target instanceof Element && e.target.closest(".cm-editor")) PMENU.editorMenu(e);   // plugin-views: workspace "editor-menu"
+});
 document.addEventListener("mousedown", e => {
   if (menuEl && !menuEl.contains(e.target)) closeMenu();
 }, true);
@@ -4354,10 +4407,7 @@ function ssAnchor(g) {   // the (fractional, 0-based) SOURCE LINE at the top of 
     const a = bl[i] - 1, b = i + 1 < bl.length ? bl[i + 1] - 1 : a + 1;
     return a + f * Math.max(1, b - a);
   }
-  const rows = g.lp.children;
-  if (!rows.length) return null;
-  const [i, f] = ssTopOf(g.lp, rows);
-  return i + f;
+  return Ed.topLine(g, 1);            // CM6 height map: the line under the scroller top
 }
 function ssRestore(g, line) {   // scroll the CURRENT view so `line` is at the top
   const t = g.active >= 0 ? g.tabs[g.active] : null;
@@ -4371,13 +4421,7 @@ function ssRestore(g, line) {   // scroll the CURRENT view so `line` is at the t
     ssScrollTo(g.preview, ch[i], Math.min(1, Math.max(0, (line - a) / Math.max(1, b - a))));
     return;
   }
-  const rows = g.lp.children;
-  if (!rows.length) return;
-  const i = Math.min(rows.length - 1, Math.max(0, Math.floor(line)));
-  // longpos: build the anchor row first (a lazy placeholder is one line tall),
-  // so the fraction lands inside the real row; Ed.wakeView keeps it in place after
-  g.lp._lzyKeep = !!g.lp._lzy;
-  ssScrollTo(g.lp, Ed.rowAt(g, i) || rows[i], Math.min(1, Math.max(0, line - i)));
+  Ed.scrollToLine(g, line);           // CM6 height map, re-landed once the lines are measured
 }
 
 /* ---------- R35 PERF: the mode switch against the 100 ms ceiling ----------
@@ -5332,10 +5376,16 @@ async function loadActive(g) {
   hideAc();
   const t = g.active >= 0 ? g.tabs[g.active] : null;
   if (g.unkEl) g.unkEl.hidden = !(t && t.kind === "unk");
+  if (PVHOST) PVHOST.hide(g, t);   // plugin-views: another tab shows -> this pane's plugin views hide
   if (t && t.kind === "unk") {      // W4: a kept leaf we have no view for — say so, keep it, touch nothing
     showEditor(g);                  // stops a graph sim this pane may have been running
     g.status.hidden = true;
     g.lp.style.display = g.preview.style.display = g.editor.style.display = "none";
+    if (PVHOST && PVHOST.mount(g, t)) {   // plugin-views: its type is registered -> the plugin's view is the tab
+      if (g.unkEl) g.unkEl.hidden = true;
+      renderTabs(g); treeHighlight(); rgFollow();
+      return;
+    }
     if (!g.unkEl) {
       g.unkEl = document.createElement("div");
       g.unkEl.className = "unkview";
@@ -5398,7 +5448,7 @@ async function loadActive(g) {
   if (n) mruTouch(n);                // m5: quick-switcher MRU order
   const m = t ? t.mode : "livepreview";
   if (!t || !v.loaded || t.stale || v.name !== n) {   // v.name: navigate() renames the tab in place
-    Ed.setText(g, n ? await inv("read_note", { name: n }) : "");   // R17: load the MODEL
+    Ed.setText(g, n ? await inv("read_note", { name: n }) : "", true);   // R17: load the MODEL (fresh parse, one LP build)
     v.name = n;
     if (t) { t.base = g.editor.value; t.stale = false; v.loaded = true; }  // R11: disk base
     if (m === "reading") await preview(g);
@@ -5427,13 +5477,30 @@ async function lgFollow(src) {
   }
 }
 
+/* cm6-editor (graphperf tabsw_note_ms): the window-title census (updateTitle) is a headless probe,
+   and on a CM6 note it reads row geometry (Ed.geom / rowAt / firstRect), which FORCES the newly
+   shown view's style + layout in the middle of the switch and then walks it (prof qkqhgF2F:
+   updateTitle ~7-8 ms of the switch's ~9-10 ms JS). A tab switch now holds every census call
+   made inside it and publishes ONE census after the switch has painted: the view is laid out
+   once, in its own frame, and the probe reads settled geometry. The title still moves
+   atomically (old census -> full new census, nothing in between), like the fHold find reveal.
+   The graph is untouched: no view is kept, no element changes its box or pointer path. */
+var twHold = 0, twDue = false;
 async function switchTab(g, i) {
   if (i === g.active) return;
-  await act("tab_switch", { kind: g.tabs[i].kind || "note", tabs: g.tabs.length }, async () => {
-    await flushSave(g);
-    g.active = i;
-    await loadActive(g);
-  });
+  twHold++;
+  try {
+    await act("tab_switch", { kind: g.tabs[i].kind || "note", tabs: g.tabs.length }, async () => {
+      await flushSave(g);
+      g.active = i;
+      await loadActive(g);
+    });
+  } finally {
+    // act() queued its paint end (rAF -> setTimeout) before returning: this rAF + timeout run after it
+    requestAnimationFrame(() => setTimeout(() => {
+      if (--twHold === 0 && twDue) { twDue = false; updateTitle(); }
+    }, 0));
+  }
 }
 
 async function openInTab(name, via = "tab") {   // explorer click -> FOCUSED group (R6.3); via:"boot" = auto-open at startup (already inside the boot span)
@@ -5481,7 +5548,7 @@ async function rowOpen(name, ev) {
   return navigate(g, name);                                  // REQ-1/2/3 (+ R13.3 linked members follow)
 }
 async function navigate(g, name, anchor) { // wikilink / graph click: replace g's ACTIVE tab, push history
-  navInfo = "";
+  navInfo = ""; nvRv = "";
   await act("note_open", { via: "link", tabs: g.tabs.length }, async sp => {
     await flushSave(g);
     if (g.active < 0) { g.tabs.push(mkTab(name)); g.active = 0; }
@@ -5501,7 +5568,7 @@ async function navigate(g, name, anchor) { // wikilink / graph click: replace g'
    flash it ~2 s. LP centers the row (Obsidian), reading/source put it at the
    top. Unresolvable anchor -> note stays at the top. [nav:<anchor>@<line>]
    in the census reports the line that was hit (headless probe). */
-let navInfo = "";
+let navInfo = "", nvRv = "";   // nvRv: [nvr:] the last LP heading-nav reveal, per frame n:drawn,scrollTop|f<centred>
 function anchorLine(text, anchor) {  // 0-based source line of the target, or -1
   const L = text.split("\n");
   if (anchor.startsWith("^")) {
@@ -5536,10 +5603,40 @@ async function navAnchor(g, anchor) {
   navInfo = "nav:" + anchor + "@" + line;
   if (line < 0) return updateTitle();
   if (isLp(t.mode)) {
-    const row = Ed.rowAt(g, line);                 // R17: one row per source line
-    if (row) {
-      g.lp.scrollTop = row.offsetTop - g.lp.offsetTop - (g.lp.clientHeight - row.offsetHeight) / 2;
-      flash(row);
+    // CM6 draws only the viewport: a line it has not drawn is brought in first and
+    // centred once CM6 has measured it; a drawn line is centred on its real box
+    const sc = g.lp, cm = Ed.cm(g);
+    const centre = () => {
+      const row = Ed.rowAt(g, line);
+      if (!row) return false;
+      const rt = row.getBoundingClientRect().top - sc.getBoundingClientRect().top - sc.clientTop + sc.scrollTop;
+      sc.scrollTop = rt - (sc.clientHeight - row.offsetHeight) / 2;
+      return true;
+    };
+    const centred = () => {          // the target row's middle within the middle half of the scroller
+      const row = Ed.rowAt(g, line); if (!row) return false;
+      const r = row.getBoundingClientRect(), b = sc.getBoundingClientRect();
+      return Math.abs(r.top + r.height / 2 - b.top - sc.clientTop - sc.clientHeight / 2) < sc.clientHeight / 4;
+    };
+    if (!cm) { if (!centre()) Ed.scrollToLine(g, line); flash(Ed.rowAt(g, line)); }
+    else {
+      // One scrollIntoView dispatch was not enough: the heading stayed at scrollTop 0 after
+      // a wikilink opened the note (links blob '') — the effect raced the note load's own
+      // measure. Same shape as the find reveal: ask CM6, then check per frame INSIDE its
+      // measure loop until the row is drawn and centred (re-ask / centre on its real box),
+      // bounded. [nvr:] logs the frames (diagnostic, no phase asserts it).
+      Ed.revealAt(g, line, 0); Ed.flashLine(g, line);
+      nvRv = "s" + Math.round(sc.scrollTop);
+      let n = 0;
+      const step = () => cm.requestMeasure({ key: "osNavAnchor", read: () => null, write: () => {
+        if (Ed.cm(g) !== cm) { nvRv += "|gone"; return updateTitle(); }
+        const ok = centred(), drawn = !!Ed.rowAt(g, line);
+        nvRv += "|" + n + ":" + (drawn ? 1 : 0) + "," + Math.round(sc.scrollTop);
+        if (ok || ++n > 12) { nvRv += "|f" + (ok ? 1 : 0); return updateTitle(); }
+        if (!drawn) Ed.revealAt(g, line, 0); else centre();
+        requestAnimationFrame(step);
+      } });
+      requestAnimationFrame(step);
     }
     if (t.mode === "source") await lpEdit(g, line, 0);  // R12: source puts the caret on the line
   } else {
@@ -5711,7 +5808,7 @@ for (const ev of ["mousedown", "mouseup", "auxclick", "click"])
    undo-close rescue buffer because writing them was not allowed (R11.4: the
    file is gone). dirty=1 flushed=0 preserved=0 is the F-class defect, stated at
    the moment it happens instead of reconstructed from a bug report. */
-const TAB_CAUSES = ["user-close", "external-delete", "external-rename", "pane-collapse"];
+const TAB_CAUSES = ["user-close", "external-delete", "external-rename", "pane-collapse", "plugin-detach"];
 let tgSeq = 0, tgHist = [];        // census [tgn:<seq>] [tg:<cause>:<d>:<note>|...]
 /* A note name is user data and the census is a bracket-delimited string, so the
    same stripping the bookmark census uses applies: a note called "x] [dirty:0"
@@ -5739,6 +5836,7 @@ function tabGone(cause, t, opts) {
   tgHist.push((bad ? "BAD" : cause) + ":" + (dirty ? "d" : "c")
     + (o.flushed ? "f" : "") + (o.preserved ? "p" : "") + ":" + tgSafe(name));
   if (tgHist.length > 8) tgHist.shift();              // the census is a title, not a journal
+  if (PTABGONE && t && typeof t === "object") try { PTABGONE(t); } catch (e) { console.error(e); }
   try {
     inv("tab_removed", {
       cause: bad ? "BAD-" + cause : cause, note: String(name).slice(0, 120),
@@ -6232,6 +6330,7 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   // view task tick all count) — any doubt is a miss, and a miss is the old path.
   const k = P._pvk;
   if (k && k.src === src && k.notes === notesCache && k.imgs === imgsCache && k.slb === slbOn
+      && k.pp === (PPOST ? PPOST.gen : 0)
       && !P._pvDirty && !pvTouched(P, P._pvObs.takeRecords())) {
     g.pvLines = k.lines;
     mswpMark("render"); mswpMark("html"); mswpMark("blines"); mswpMark("wire");
@@ -6292,6 +6391,10 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
         if (an) await navAnchor(g, an);
       } else navigate(g, n, an);
     };
+  // plugin-views item 7: plugin code-block / post processors over the fresh html. Before the
+  // observer is armed, so their synchronous output is part of the retained DOM; async writes
+  // later mark it dirty (the next switch re-renders). Not awaited: a slow plugin never holds the switch.
+  if (PPOST) try { PPOST.run(P, curOf(g), g.active >= 0 ? g.tabs[g.active] : null).catch(e => console.error("[plugin] markdown processors:", e)); } catch (e) { console.error(e); }
   // modeswitch opt2: arm the retained-DOM key. Our own innerHTML above is the
   // last write: drop its records synchronously, from here on any record = dirty.
   if (!P._pvObs) {
@@ -6300,7 +6403,7 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   }
   P._pvObs.takeRecords(); P._pvDirty = false;
   if (g.preview === P && g.editor.value === src)
-    P._pvk = { src, notes: notesCache, imgs: imgsCache, slb: slbOn, lines: pvL };
+    P._pvk = { src, notes: notesCache, imgs: imgsCache, slb: slbOn, lines: pvL, pp: PPOST ? PPOST.gen : 0 };
   mswpMark("wire");
 }
 
@@ -6314,9 +6417,18 @@ function scheduleSave(g) {
   // rows it was painted on were just rebuilt, so it is repainted here, at the
   // same choke point, from offsets Ed.replace already mapped through the edit.
   if (scHits(g).length) scMarks(g);
+  // save-maxwait: a pure trailing debounce never fires while keys keep arriving
+  // < SAVE_MS apart, so a long burst sat in RAM until it ended (a crash mid-burst
+  // lost all of it). The FIRST edit after a save arms a deadline; every later
+  // edit still pushes the debounce, but never past that deadline. Idle (one edit)
+  // is unchanged: deadline - now >= SAVE_MS, so the delay is SAVE_MS. Never
+  // shorter than SAVE_MS, so a widened test debounce (F2) is not cut short.
+  // The flush is the same saveBuf (queued, R11.3 merge, bytes = model now).
+  const now = Date.now();
+  if (!g.saveT || g.saveDl == null) g.saveDl = now + Math.max(SAVE_MAX_MS, SAVE_MS);
   clearTimeout(g.saveT);
   g.saveT = setTimeout(async () => {
-    g.saveT = null;
+    g.saveT = null; g.saveDl = null;
     await saveBuf(g);                       // R11.3: merge an external append instead of clobbering it
     // R18: only the READING pane needs the Rust renderer. This used to call
     // preview() on every debounced save, i.e. one full-note render IPC per
@@ -6325,7 +6437,7 @@ function scheduleSave(g) {
     // so the hidden refresh bought nothing and put Rust on the typing path.
     if (isReading(g)) preview(g);
     updateStatus(g);
-  }, SAVE_MS);
+  }, Math.max(0, Math.min(SAVE_MS, g.saveDl - now)));
 }
 
 /* ---------- status bar (R2.7, per group) ---------- */
@@ -6524,7 +6636,7 @@ async function cmdJumpTab(n) {     // R5.3 ctrl+1..9 — tab n; 9 = last
 /* ---------- m5: shared fuzzy modal — quick switcher (Ctrl+O) + command
    palette (Ctrl+P). One component; item source decides the kind.
    census [modal:qs|cp] while open. ---------- */
-let modalKind = null, mdItems = [], mdSel = 0, mdSrc = null;
+let modalKind = null, mdItems = [], mdSel = 0, mdSrc = null, qsModal = null;   // qsModal: the switcher's QuickSwitcherModal
 let mruList = [];                    // per-session note-use order, newest first
 function mruTouch(name) {
   const i = mruList.indexOf(name);
@@ -6587,6 +6699,7 @@ function closeModal() {
   if (!modalKind) return;
   modalKind = null;
   mdNew = "";
+  if (PLG && qsModal) PLG.app.keymap.popScope(qsModal.scope);
   $("modal").hidden = true;
   updateTitle();
 }
@@ -6653,18 +6766,13 @@ async function qsCreateNote(name, how = "cur") {
   if (r === "err") return;              // no tab for a note that is not on disk
   await qsOpenHow(target, how);         // "exists" (racing writer) -> open it, untouched
 }
-const QS_FOOT = [["↑↓", " to navigate"], ["↵", " to open"], ["ctrl ↵", " to open in new tab"],
-  ["ctrl alt ↵", " to open to the right"], ["shift ↵", " to create"], ["esc", " to dismiss"]];
+const QS_FOOT = [["↑↓", "to navigate"], ["↵", "to open"], ["ctrl ↵", "to open in new tab"],
+  ["ctrl alt ↵", "to open to the right"], ["shift ↵", "to create"], ["esc", "to dismiss"]].map(([command, purpose]) => ({ command, purpose }));
 function qsFoot(on) {                   // stock's static instructions row (r1 c00..c02), switcher only
   const f = $("mfoot");
   if (!f) return;
   f.hidden = !on || qsCreateOff;
-  if (f.hidden || f.childElementCount) return;
-  for (const [k, t] of QS_FOOT) {
-    const s = document.createElement("span"); s.className = "mfi";
-    const b = document.createElement("b"); b.textContent = k;
-    s.append(b, t); f.appendChild(s);
-  }
+  if (!f.hidden) qsModal.setInstructions(QS_FOOT);   // every open: a plugin's addition lasts one open, as stock
 }
 /* audit #10 (measured on the 20k-embed note): one title publish costs ~170 ms
    when the note in live preview is huge (the census reads layout across the
@@ -6746,8 +6854,79 @@ $("minput").onkeydown = async e => {
 };
 $("modal").onmousedown = e => { if (e.target === $("modal")) closeModal(); };
 function cmdQuickSwitch() {
-  modalKind === "qs" ? closeModal()
-    : pspan("qs_open", { notes: notesCache.length }, () => openModal("qs", qsItems));   // perfhunt: Ctrl+O -> list painted
+  modalKind === "qs" ? closeModal() : qsModal.open();   // through the prototype: a plugin may wrap open
+}
+/* cp-hover-editor: the core-plugin hooks plugins read through app.internalPlugins.plugins, shapes recorded
+   black-box from stock 1.13.7 (harness api-probes.d/hover.js, part hover).
+   switcher: the Ctrl+O switcher IS a QuickSwitcherModal; inputEl / instructionsEl are its DOM, its scope is
+   pushed while it is open (a key a plugin registers there runs first), chooser.values[selectedItem].file is
+   the TFile of the row under the selection. */
+class QuickSwitcherModal {
+  constructor(app) {
+    this.app = app; this.inputEl = $("minput"); this.instructionsEl = $("mfoot");
+    this.scope = PLG ? new PLG.X.Scope() : null;
+    const tfile = n => { const f = PLG && PLG.app.vault.getAbstractFileByPath(wsPathOut(n)); return PLG && f instanceof PLG.X.TFile ? f : null; };
+    this.chooser = {
+      get values() { return mdSrc === qsItems ? mdItems.map(it => ({ type: "file", file: tfile(it.label) })) : null; },
+      get selectedItem() { return mdSel; },
+    };
+  }
+  open() {
+    pspan("qs_open", { notes: notesCache.length }, () => openModal("qs", qsItems));   // perfhunt: Ctrl+O -> list painted
+    if (PLG) PLG.app.keymap.pushScope(this.scope);
+  }
+  close() { if (modalKind === "qs") closeModal(); }
+  setInstructions(list) {
+    const el = this.instructionsEl;
+    typeof el.empty === "function" ? el.empty() : el.replaceChildren();
+    for (const { command, purpose } of list || []) {
+      const s = document.createElement("span"); s.className = "mfi";
+      const b = document.createElement("b"); b.textContent = command;
+      s.append(b, " " + purpose); el.appendChild(s);
+    }
+  }
+}
+qsModal = new QuickSwitcherModal(PLG && PLG.app);
+/* graph: views.graph / views.localgraph(leaf) build a View whose engine is a GraphEngine; startGraph tells
+   its canvas's engine whenever the hovered node changes (gHover). Our sim runs on the main thread, so the
+   view's renderer.worker has no thread behind it: terminate() only marks the handle. */
+const NODE_TYPE = ["resolved", "unresolved", "tag", "attachment"];   // graphctx node kind -> engine node type
+class GraphEngine {
+  constructor(app) { this.app = app; this.hoverPopover = null; this.hoveredNode = null; this.lastHoverLink = null; }
+  // a note / attachment node under the pointer is a link hover (source "graph"); a tag or ghost has no file
+  onNodeHover(evt, id, type) {
+    this.hoveredNode = { id, type };
+    if (type === "tag" || type === "unresolved" || !(evt instanceof MouseEvent)) return;
+    this.lastHoverLink = id;
+    this.app.workspace.trigger("hover-link", { event: evt, source: "graph", hoverParent: this, targetEl: null, linktext: id });
+  }
+  onNodeUnhover() { this.hoveredNode = null; }
+}
+function gHover(g, e, p) {               // startGraph: the hovered node changed (p null = none); leaving one node unhovers it first
+  if (!PLG) return;
+  const en = g.gEngine || (g.gEngine = new GraphEngine(PLG.app));
+  try {
+    if (g.gHovOn) { g.gHovOn = false; en.onNodeUnhover(); }
+    if (p) { g.gHovOn = true; en.onNodeHover(e, p.n, NODE_TYPE[p.kind] || "resolved"); }
+  } catch (err) { console.error("[plugin] graph hover:", err); }
+}
+if (PLG) {
+  class GraphView extends PLG.X.View {
+    constructor(leaf, type) {
+      super(leaf); this.gType = type; this.engine = new GraphEngine(PLG.app);
+      const worker = { terminated: false, terminate() { worker.terminated = true; } };
+      this.renderer = { worker };
+    }
+    getViewType() { return this.gType; }
+    getDisplayText() { return this.gType === "graph" ? "Graph view" : "Local graph"; }
+  }
+  // page-preview: there is no page preview here, so it is not enabled
+  Object.assign(PLG.app.internalPlugins.plugins, {
+    graph: { enabled: true, instance: { id: "graph" },
+             views: { graph: leaf => new GraphView(leaf, "graph"), localgraph: leaf => new GraphView(leaf, "localgraph") } },
+    switcher: { enabled: true, instance: { id: "switcher", QuickSwitcherModal } },
+    "page-preview": { enabled: false, instance: { id: "page-preview" } },
+  });
 }
 /* ---------- R14: command registry = the ONE source of truth for the palette
    (Ctrl+P), the keymap dispatcher and Settings ▸ Hotkeys. Chords are
@@ -7754,8 +7933,7 @@ async function undoCloseTab() {
   await openInTab(e.name);
   const g = fg();
   if (e.text != null && !wrote && disk !== e.text && curOf(g) === e.name && g.active >= 0) {
-    await reloadInPlace(g, e.text);
-    g.tabs[g.active].base = disk == null ? "" : disk;   // base = the bytes on disk -> the tab reads DIRTY, honestly
+    await reloadInPlace(g, e.text, disk == null ? "" : disk);   // base = the bytes on disk -> the tab reads DIRTY, honestly (from the first paint)
   }
   updateTitle();
   return true;
@@ -7781,7 +7959,7 @@ const CMDS = [
      stable id for "a directory that may not exist in the next vault". The mode
      toggle below IS a registry row and keeps its binding. */
   ["workspace:close",          "Close current tab",                   ["ctrl+w"],               cmdCloseTab],
-  ["window:close",             "Close window",                        ["ctrl+shift+w"],         () => window.__TAURI__.window.getCurrentWindow().close()],
+  ["window:close",             "Close window",                        ["ctrl+shift+w"],         () => TAURI.window.getCurrentWindow().close()],
   ["command-palette:open",     "Open command palette",                ["ctrl+p"],               () => cmdPalette()],
   ["file-explorer:new-file",   "Create new note",                     ["ctrl+n"],               cmdNewNote],
   ["file-explorer:new-file-in-new-pane", "Create note to the right",  ["ctrl+shift+n"],         async () => { await splitWith(fg(), "row", null); await cmdNewNote(); }],
@@ -8962,6 +9140,7 @@ async function startGraph(g, cfg) {
     N.length = 0; N.push(...N2);
     gr.edges = g2.edges; gr.col = g2.col;
     rebuild();
+    if (hov >= 0) gHover(g, null, null);
     hov = -1;
     // C5: a0 is the sim's REAL alpha before the restart — a graph can go quiet with alpha
     // still around 0.5 (kinetic calm wins the race against the alpha floor), and reheat only
@@ -9549,11 +9728,11 @@ async function startGraph(g, cfg) {
     }
     const [x, y] = toWorld(e.clientX - r.left, e.clientY - r.top);
     const h = hitTest(x, y);
-    if (h !== hov) { hov = h; redraw(); }
+    if (h !== hov) { hov = h; redraw(); gHover(g, e, N[h]); }   // cp-hover-editor: the engine hears every hover change
     cv.style.cursor = hov >= 0 ? "pointer" : "";
   };
   cv.onmouseup = () => { release(); };
-  cv.onmouseleave = () => { release(); if (hov >= 0) { hov = -1; redraw(); } cv.style.cursor = ""; };
+  cv.onmouseleave = () => { release(); if (hov >= 0) { hov = -1; redraw(); gHover(g, null, null); } cv.style.cursor = ""; };
   cv.oncontextmenu = e => {               // graphctx GC29-GC31: the file menu on a note / attachment node, nothing elsewhere
     e.preventDefault();
     const r = cv.getBoundingClientRect();
@@ -9807,6 +9986,9 @@ async function enterVault() {
   }
   perf.mark("boot", 0, { notes: names.length });   // perf: page start -> vault ready (first note rendered)
   switchReveal();   // item 14: a switch-started window shows itself only now, at the old window's rect
+  // plugin-loader: enabled community plugins load once the vault is on screen (after the boot
+  // mark), unawaited. Restricted mode (the default) = one plugins_state call, no plugin code.
+  if (window.__osPluginHost && __osPluginHost.boot) __osPluginHost.boot(vaultPath);
 }
 /* ---------- R11 external edits (backend watcher -> `vault-changed`) ---------- */
 // tab.base = the bytes we last loaded from / saved to disk. bufOf(g) = the
@@ -9862,8 +10044,10 @@ async function saveBuf1(g) {
       // exact loss F1 is about, reintroduced through the merge path. base
       // means "the bytes we last saw on disk", so put the DISK bytes there:
       // correct on failure (dirty, and the next merge still sees the append
-      // as an append), and overwritten by setBase below on success.
-      if (merged !== buf) { await reloadInPlace(g, merged); buf = merged; t.base = disk; }
+      // as an append), and overwritten by setBase below on success. Passed
+      // INTO reloadInPlace: assigned after its await, base == buf for the
+      // whole render (that render publishes the census) = a dirty tab read clean.
+      if (merged !== buf) { await reloadInPlace(g, merged, disk); buf = merged; }
     }
   }
   if (!await saveNote(n, buf)) return false;   // F1: a failed save leaves the tab DIRTY, banner up
@@ -9871,10 +10055,17 @@ async function saveBuf1(g) {
   return true;
 }
 // R11.2: replace the ACTIVE tab's text in place — caret line/col + scroll kept
-async function reloadInPlace(g, text) {
+// `base` = the disk bytes the tab holds once the new text is in (default: the
+// text itself = clean). Set in the SAME synchronous step as the text, BEFORE the
+// render: lpRender/preview publish the census (updateTitle), and callers that set
+// base only after this await (saveBuf1, onVaultChanged, undoCloseTab) left a
+// window where a dirty tab read base == buffer, CLEAN, while its save was in
+// flight or about to fail (pviews-dloss: dloss F1xR11.3 caught that snapshot).
+// A dirty tab never reads clean, not for one paint.
+async function reloadInPlace(g, text, base = text) {
   const t = g.tabs[g.active];
   const c = g.lpActive ? Ed.caret(g) : null;   // R17: caret survives the reload
-  Ed.setText(g, text); t.base = text;
+  Ed.setText(g, text); t.base = base;
   if (t.mode === "reading") await preview(g);
   else await lpRender(g, c ? c.l : -1, c ? c.c : 0);   // dirty rows only
   updateStatus(g);
@@ -9937,7 +10128,7 @@ async function onVaultChanged(c) {
     // R11.3 dirty: never lose typed text. External append on top of our base
     // merges (buf + tail); anything else keeps the buffer. Either way re-save.
     const merged = ext.startsWith(t.base) ? buf + ext.slice(t.base.length) : buf;
-    if (merged !== buf) await reloadInPlace(g, merged);
+    if (merged !== buf) await reloadInPlace(g, merged, ext);   // base = disk from the first paint: dirty throughout
     t.base = ext; scheduleSave(g);
   }
   await refreshTree();
@@ -9946,11 +10137,11 @@ async function onVaultChanged(c) {
   if (rightOpen) rSchedule();
   updateTitle();
 }
-window.__TAURI__.event.listen("vault-changed", e => onVaultChanged(e.payload));
-window.__TAURI__.event.listen("vault-css-changed", e => onVaultCssChanged(e.payload));  // themefs item 6: hot reload
+TAURI.event.listen("vault-changed", e => onVaultChanged(e.payload));
+TAURI.event.listen("vault-css-changed", e => onVaultCssChanged(e.payload));  // themefs item 6: hot reload
 // R31.1: a real OS drop arrives here, from Rust, never from a DOM drop event.
 // osdrop: the payload is [paths, x, y] (main.rs R31.1), x/y physical px in the webview
-window.__TAURI__.event.listen("drop-files", e => { const p = e.payload || []; attachDrop(p[0] || [], { x: p[1], y: p[2] }); });
+TAURI.event.listen("drop-files", e => { const p = e.payload || []; attachDrop(p[0] || [], { x: p[1], y: p[2] }); });
 
 $("vswitch").onclick = showPicker;
 
@@ -10169,11 +10360,22 @@ function setTok() {
          snavlTok() +
          " [spane:" + sPane + "/" + sRowsShown + "/" + sEnabledShown + "]" +
          svtTok() + ssnTok() + slbTok() + sqfTok() + fontSetTok() +
+         (window.__osPluginSettings ? __osPluginSettings.tok() : "") +
          (sfpMs >= 0 ? " [sfp:" + sfpMs + "/" + sfpMax + "/" +
                        (Math.round(sfpSum / sfpN * 100) / 100) + "/" + sfpN + "]" : "") +
          (sfpW >= 0 ? " [sfpw:" + sfpW + "/" + sfpWMax + "]" : "");
 }
+/* goal/cm6-editor obspal/builtins: the settings modal hands the editor back the way the palette does.
+   R17 painted its caret whether or not it held DOM focus; CM6 draws .cm-cursor only while the
+   editor is focused, so closing settings left a caret-less window and the settings route and
+   the Ctrl+P route differed by exactly the 1x39 caret column (pal_same_window, 39 px). Obsidian
+   returns focus to the editor when a modal closes: snapshot at open, restore at close. */
+let sEdSel = null;
 async function openSettings() {
+  if (!settingsOpen) {                       // BEFORE anything in the modal takes focus; only an editor that HAD focus gets it back
+    const cm = edEditable() && Ed.cm(fg());
+    sEdSel = cm && cm.hasFocus ? edSelSnap() : null;
+  }
   if (!SMODEL) await smodelPrefetch();   // cold open only (prefetched at boot)
   try { slbOn = !!(await inv("strict_line_breaks")); } catch (err) { slbOn = false; }   // goal/linebreak: disk is the truth
   settingsOpen = true; hkRec = null;
@@ -10185,7 +10387,9 @@ async function openSettings() {
   updateTitle();   // the R22 overflow probe, and that is the instrument's cost, not the modal's
 }
 function closeSettings() {
+  const r = sEdSel; sEdSel = null;
   settingsOpen = false; hkRec = null; fontPage = null;
+  if (window.__osPluginSettings) __osPluginSettings.close();   // a plugin tab on screen gets its hide()
   /* THE PANE'S OWN MENU GOES WITH IT (goal/theme-1984). Appearance ▸ Themes
      opens a .ctxmenu anchored to a control INSIDE this modal; .ctxmenu is
      position:fixed at z-index 60, so a menu left open when the modal is hidden
@@ -10194,10 +10398,12 @@ function closeSettings() {
      Esc, which is how the smoke phase found it. */
   closeMenu();
   $("settings").hidden = true;
+  edSelRestore(r);
   updateTitle();
 }
-/* the left nav, Obsidian's order and grouping (Options 1-7; the Core/Community plugins
-   entries and the Core plugins group are gone, goal/noplugins) — built ONCE from the model, never re-created on a tab
+/* the left nav, Obsidian's order and grouping (Options 1-7; the Core plugins entry and
+   group are gone, goal/noplugins; Community plugins + its per-plugin group come back from
+   ui/plugins/settings.js, plugin-loader) — built ONCE from the model, never re-created on a tab
    switch: selection is a class toggle, so clicking a nav entry costs one pane
    build and nothing else. */
 function buildSettingsNav() {
@@ -10218,11 +10424,13 @@ function buildSettingsNav() {
     d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); showSettingsPage(e.id); } };
     nav.appendChild(d);
   }
+  if (window.__osPluginSettings) __osPluginSettings.nav(nav);   // plugin-loader: Community plugins entry + its per-plugin group
   nav.dataset.built = "1";
 }
 /* `id` is a pane id from the model ("general", "hotkeys", ...);
    an Obsidian ENTRY NAME is accepted too, so older call sites keep working. */
 function showSettingsPage(id) {
+  if (window.__osPluginSettings && __osPluginSettings.show(id)) return;   // plugin-loader: "community" / "plg:<id>" panes (ui/plugins/settings.js)
   fontPage = null;                      // fontset: any pane switch leaves the font chooser
   const e = SMODEL.nav.find(n => n.id === id) || SMODEL.nav.find(n => n.entry === id);
   const pane = e ? e.id : "hotkeys";
@@ -11037,11 +11245,10 @@ wfArm();
    WHERE THE MATCHES LIVE. Hits are computed over the MODEL (Ed.lines), never
    over the painted DOM: live preview hides markup, so a DOM-text search would
    silently disagree with the bytes on disk (and with the replace that follows).
-   The MARKS, by contrast, are pure DOM: each hit's run is wrapped in a
-   <span class="fmk"> by splitting the row's text nodes. That is safe for every
-   other part of the editor because Ed.nodes() maps a row's text nodes to source
-   columns by CONCATENATION — wrapping a run adds no text and removes none, so
-   every caret column, selection range and token range reads exactly as before.
+   The MARKS on the editor surface are a CM6 decoration set (Ed.hl "fd"): each
+   hit renders as <span class="fmk" data-fh=i>, mapped through edits by CM6 and
+   never touching the document or the selection. The reading view still wraps
+   the preview's text nodes (fWrap), which no editor reads back.
    Nothing in this block writes g.view.lines.
 
    ONE BAR PER PANE, owned by the group (g.findEl / g.find), because a split is
@@ -11227,7 +11434,9 @@ function fScan(g) {
 function fClear(g) {                   // unwrap every mark, leaving the row byte-identical
   /* BOTH surfaces: a mode switch leaves the marks it painted behind in the view
      the user just left, where nothing else will ever come back to remove them. */
-  for (const sc of [g.lp, g.preview]) {
+  // the lp surface is a CM6 decoration set (Ed.hl "fd"); only the preview holds DOM marks
+  if (g.lp) Ed.hl(g, "fd", []);
+  for (const sc of [g.preview]) {
     if (!sc) continue;
     for (const m of [...sc.querySelectorAll("span." + F_MARK)]) {
       const p = m.parentNode;
@@ -11270,25 +11479,13 @@ function fMarks(g) {
     return;
   }
   if (!g.lp) return;
-  const qlen = st.q.length, byRow = new Map();
-  st.hits.forEach((h, i) => {
-    if (!byRow.has(h.l)) byRow.set(h.l, []);
-    byRow.get(h.l).push({ c: h.c, i, cur: i === st.idx });
-  });
-  for (const [l, hs] of byRow) {
-    const row = Ed.rowAt(g, l);
-    if (!row) continue;                // row not rendered (should not happen: one row per line)
-    const map = Ed.nodes(row), jobs = new Map();
-    for (const h of hs) for (const s of map) {
-      const a = Math.max(h.c, s.c), b = Math.min(h.c + qlen, s.c + s.len);
-      if (b <= a) continue;
-      if (!jobs.has(s.n)) jobs.set(s.n, []);
-      jobs.get(s.n).push({ a: a - s.c, b: b - s.c, i: h.i, cur: h.cur });
-    }
-    fWrap(jobs);
-  }
+  // the lp surface: one CM6 mark per hit over the MODEL offsets (CM6 splits a hit
+  // that straddles a rendered <strong> into two spans with the same data-fh)
+  const qlen = st.q.length;
+  Ed.hl(g, "fd", st.hits.map((h, i) => { const a = Ed.off(g, h.l, h.c);
+    return { from: a, to: a + qlen, cls: F_MARK + (i === st.idx ? " " + F_CUR : ""), fh: i }; }));
 }
-/* The wrap itself, shared by both surfaces: per text node, right to left, so a
+/* The wrap itself, for the PREVIEW surface (the lp surface is CM6 decorations): per text node, right to left, so a
    splitText never invalidates an offset that has not been used yet. */
 function fWrap(jobs, cls) {
   for (const [node, js] of jobs) {
@@ -11337,27 +11534,104 @@ function fSync(g, reset) {             // recompute hits against the current tex
    done on the NOTE SCROLLER only (g.lp), never through scrollIntoView, which
    would also scroll every ancestor — including the window, which R22 says must
    never scroll at all. */
-function fReveal(g) {
+function fReveal(g, done) {   // done(): called once the reveal has finished (sync, or after CM6 drew the line)
+  const fin = () => { if (done) done(); };
   /* Nothing to reveal in reading view: no .fcur is ever painted there, so this
      returns without touching g.preview.scrollTop — R26.24's "does not
      navigate" includes not moving the page under the reader. */
   const sc = fSurf(g);
-  if (!sc) return;
-  const el = sc.querySelector("span." + F_MARK + "." + F_CUR);
-  if (!el) return;
-  const r = el.getBoundingClientRect(), b = sc.getBoundingClientRect();
-  if (r.top >= b.top + 4 && r.bottom <= b.bottom - 4) return;      // already on screen: do not jitter
-  sc.scrollTop += (r.top - b.top) - Math.max(0, (sc.clientHeight - r.height) / 2);
+  if (!sc) return fin();
+  const go = () => {
+    const el = sc.querySelector("span." + F_MARK + "." + F_CUR);
+    if (!el) return false;
+    const r = el.getBoundingClientRect(), b = sc.getBoundingClientRect();
+    if (r.top >= b.top + 4 && r.bottom <= b.bottom - 4) return true;      // already on screen: do not jitter
+    sc.scrollTop += (r.top - b.top) - Math.max(0, (sc.clientHeight - r.height) / 2);
+    return true;
+  };
+  if (go()) return fin();
+  // CM6 draws only its viewport: a match on a line it has not drawn carries no span
+  // yet — bring the line in, then centre the mark once CM6 has measured and drawn it.
+  // The scroll is drawn in a LATER frame than the measure that set it, so retry per
+  // frame until the span exists (bounded), then report done.
+  const st = fState(g), h = st.hits[st.idx], cm = sc === g.lp ? Ed.cm(g) : null;
+  if (!h || h.l == null || !cm) { fRv = "nohit"; return fin(); }
+  // The undrawn line is brought in by CM6 ITSELF (Ed.revealAt: a scrollIntoView effect,
+  // centred inside its measure loop, after its redraw). Earlier tries wrote scrollTop
+  // from outside the loop and saw it land back at 0 (0c612980 [frv:..|t0]).
+  // No synchronous cm.measure() here: CM6's measure keeps its scroll anchor when it
+  // has not yet SEEN a scroll event, so a flush right after a programmatic scrollTop
+  // write can put the scroller back (5a79ae48: [fsc:0]). The line is brought in, CM6
+  // measures and draws it in its own cycle, and the mark is centred then — the same
+  // order scJump uses. fGo holds the census until done(), so no title is published
+  // with the new counter before the match is on screen.
+  if (!Ed.revealAt(g, h.l, h.c)) Ed.scrollToLine(g, h.l);
+  fRv = "l" + h.l + "|s" + Math.round(sc.scrollTop) + "/" + Math.round(sc.scrollHeight);
+  // DIAGNOSTIC (find reveal lost its scroll, 805c5264 [frv:..|t0]): every JS write to
+  // the scroller while the reveal is in flight is logged with its caller
+  const P = Object.getOwnPropertyDescriptor(Element.prototype, "scrollTop");
+  const who = () => { const s = String(new Error().stack || "").split("\n").slice(2, 5);
+    return s.map(x => ((x.match(/^\s*(?:at\s+)?([\w$.]+)/) || [])[1] || "?") + ":" +
+      ((x.match(/(\w+)\.js:(\d+):\d+\)?\s*$/) || []).slice(1, 3).join(""))).join(">"); };
+  try {
+    Object.defineProperty(sc, "scrollTop", { configurable: true, get() { return P.get.call(this); },
+      set(v) { if (Math.abs(v - P.get.call(this)) > 1) fRv += "|w" + Math.round(v) + "@" + who(); P.set.call(this, v); } });
+    for (const m of ["scrollTo", "scrollBy"]) sc[m] = function () { fRv += "|" + m + "@" + who(); return Element.prototype[m].apply(this, arguments); };
+  } catch (_) {}
+  let lastE = Math.round(sc.scrollTop);
+  const onS = () => { const tp = Math.round(P.get.call(sc)); if (tp !== lastE) { fRv += "|e" + tp; lastE = tp; } };
+  sc.addEventListener("scroll", onS);
+  // native scrollers: focus() and DOM-selection writes reveal their target
+  const ae = () => { const a = document.activeElement; return a ? a.tagName.toLowerCase() + "." + String(a.className || "").split(" ")[0] : "-"; };
+  const sel0 = document.getSelection(), anc = () => { const n = sel0 && sel0.anchorNode; return !n ? "-" : sc.contains(n) ? "in" : "out"; };
+  fRv += "|a" + ae() + "|sel" + anc();
+  const saved = [];
+  const hookP = (proto, m, tag) => { const o = proto[m]; saved.push([proto, m, o]);
+    proto[m] = function () { fRv += "|" + tag + "@" + who(); return o.apply(this, arguments); }; };
+  try {
+    hookP(HTMLElement.prototype, "focus", "F");
+    for (const m of ["setBaseAndExtent", "collapse", "addRange", "removeAllRanges", "extend", "setPosition"]) hookP(Selection.prototype, m, "S" + m.slice(0, 3));
+    hookP(Element.prototype, "scrollIntoView", "SIV");
+  } catch (_) {}
+  // and every CM6 DOM redraw that moved the scroller (U<before>><after>)
+  const dv = cm.docView, dvU = dv && dv.update;
+  if (dvU) dv.update = function () { const b0 = Math.round(P.get.call(sc)); const r = dvU.apply(this, arguments);
+    const b1 = Math.round(P.get.call(sc)); if (b1 !== b0) fRv += "|U" + b0 + ">" + b1 + "/" + Math.round(sc.scrollHeight); return r; };
+  const unhook = () => { sc.removeEventListener("scroll", onS); if (dvU) delete dv.update; for (const [p, m, o] of saved) p[m] = o; try { delete sc.scrollTop; delete sc.scrollTo; delete sc.scrollBy; } catch (_) {} };
+  let n = 0, lastTop = -1;
+  const step = () => cm.requestMeasure({ key: "osFindReveal", read: () => null, write: () => {
+    const tp = Math.round(sc.scrollTop);
+    if (tp !== lastTop) { fRv += "|@" + n + ":" + tp + "/" + Math.round(sc.scrollHeight) + "," + ae() + "," + anc(); lastTop = tp; }
+    const ok = Ed.cm(g) === cm && go();
+    if (ok || Ed.cm(g) !== cm || ++n > 12) {
+      unhook();
+      fRv += "|n" + n + "|f" + (ok ? 1 : 0) + "|t" + Math.round(sc.scrollTop);
+      fin(); if (done !== updateTitle) updateTitle(); return;      // callers without done took their census before the draw
+    }
+    requestAnimationFrame(step);
+  } });
+  requestAnimationFrame(step);
 }
+/* [frv:] the last lp find reveal: l<line>|s<scrollTop after the line was brought in>
+   |n<frames waited>|f<mark found 0/1>|t<final scrollTop> (diagnostic, no phase asserts it) */
+var fRv = "-";
+/* fGo holds the census while a reveal is in flight: CM6 draws an off-screen line a
+   frame or more after the counter changed, and a title published in between would
+   carry [fc:i / n] beside the pre-scroll [fsc:]/[fvis:] — R17 revealed inside the
+   keypress, so the counter never led the scroll. Bounded: released after 500 ms. */
+var fHold = 0;
 function fGo(g, d) {                   // R26.11 + R26.13
   const st = fState(g);
   if (!st.open || !st.hits.length) return;
   if (fRead(g)) return;                // R26.24: reading view counts, it does not navigate
   const n = st.hits.length;
   st.idx = (st.idx + d + n) % n;       // past the last match IS the first: the cycle wraps
-  fPaint(g);
-  fReveal(g);
-  updateTitle();
+  let rel = false;
+  const release = () => { if (rel) return; rel = true; fHold--; updateTitle(); };
+  fHold++;
+  setTimeout(release, 500);
+  try { fPaint(g); } catch (e) { release(); throw e; }
+  fReveal(g, release);                  // census after the match is on screen (CM6 may draw it frames later)
 }
 /* ---------- R26.15–R26.20: replace ---------- */
 /* R26.17: ONE match — the current one — and the cycle moves on to the next.
@@ -11485,11 +11759,20 @@ function fClose(g, atMatch) {          // R26.14
      [rels:<n>]            children of .reprow — replacement box, Replace, Replace all
      [fr:<text>]           the text in the REPLACEMENT box (R26.16 inheritance)
      [fc:<counter text>]   the counter's own textContent ("3 / 7", "0 / 0", "-" = empty)
-     [fmk:<marked>/<hits>] DISTINCT hits carrying a painted mark / hits found (R26.8)
+     [fmk:<marked>/<hits>] DISTINCT hits carrying a painted mark (lp: or, on a line CM6
+                           has not drawn, a mark in its decoration set) / hits found (R26.8)
      [fcw:<text>]          the painted text of the CURRENT match — a lowercase
                            query selecting "ALPHA" is how R26.4 is observed
      [fsc:<scrollTop>]     the note scroller's own scroll offset (R26.12)
      [fvis:0|1]            is the current match's box inside the scroller's box */
+/* hits that carry a mark: painted spans, plus (lp only) hits whose mark is in the CM6
+   decoration set on a line CM6 has not drawn — no DOM exists for such a line until it
+   scrolls in, where the set paints it. A DRAWN hit still counts only with a painted span. */
+function fMarked(g, marks) {
+  const s = new Set(marks.map(m => m.dataset.fh));
+  if (!fRead(g) && g.lp && Ed.hlUndrawn) for (const fh of Ed.hlUndrawn(g, "fd")) s.add(fh);
+  return s;
+}
 function fTok(g) {
   const st = g && g.find;
   if (!st || !st.open || !g.findEl) return "";
@@ -11505,13 +11788,13 @@ function fTok(g) {
   let t = " [find:1] [fels:" + row.children.length + "]" +
           " [fvels:" + [...row.children].filter(c => !c.hidden).length + "]" +
           " [fbar:" + (fRead(g) ? "read" : "full") + "]" +
-          " [ffoc:" + (a === inp ? "q" : a === rin ? "r" : a === g.lp ? "lp" : "-") + "]" +
+          " [ffoc:" + (a === inp ? "q" : a === rin ? "r" : g.lp && (a === g.lp || g.lp.contains(a)) ? "lp" : "-") + "]" +
           " [fq:" + (q(inp.value) || "-") + "]" +
           " [frep:" + (st.rep && !rrow.hidden ? 1 : 0) + "]" +
           " [rels:" + rrow.children.length + "]" +
           " [fr:" + (q(rin.value) || "-") + "]" +
           " [fc:" + (q(cnt) || "-") + "]" +
-          " [fmk:" + new Set(marks.map(m => m.dataset.fh)).size + "/" + st.hits.length + "]" +
+          " [fmk:" + fMarked(g, marks).size + "/" + st.hits.length + "]" +
           " [fcw:" + (q(cur.map(m => m.textContent).join("")) || "-") + "]";
   if (surf) {
     t += " [fsc:" + Math.round(surf.scrollTop) + "]";
@@ -11519,6 +11802,7 @@ function fTok(g) {
       const r = cur[0].getBoundingClientRect(), b = surf.getBoundingClientRect();
       t += " [fvis:" + (r.top >= b.top - 1 && r.bottom <= b.bottom + 1 ? 1 : 0) + "]";
     } else t += " [fvis:-]";
+    t += " [frv:" + fRv + "]";
   }
   return t;
 }

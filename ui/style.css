@@ -620,7 +620,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .editor { flex: 1 1 0; min-width: 0;   /* R22 */ background: var(--bg-base); color: var(--text-chrome); border: 0;
           padding: 16px; resize: none;
           font: 13px/1.6 monospace; outline: none }
-.lp { flex: 1 1 0; min-width: 0; overflow-y: auto; overflow-x: hidden }   /* R22: min-width:0 + no h-scroll */   /* padding + type: R15 block below */
+.lp { flex: 1 1 0; min-width: 0; overflow-y: auto; overflow-x: hidden; overflow-anchor: none }   /* CM6 virtualises against this scroller: browser scroll anchoring would follow a reused line element across a viewport redraw (find reveal 1080 -> 0) — CM6 sets the same on its own .cm-scroller */   /* R22: min-width:0 + no h-scroll */   /* padding + type: R15 block below */
 .lp a.wiki { color: var(--accent-blue) }
 .lp a.wiki-unresolved { color: var(--link-unresolved); font-style: italic }
 /* R8.2: one rendered row per line/block; the raw caret row blends in */
@@ -1034,6 +1034,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .lp .lprow { white-space: pre-wrap; overflow-wrap: anywhere }
 .lp .lprow.lzy { height: calc(var(--line-height-normal, 1.55) * 1em) }   /* audit #10/#12: a lazy row placeholder (Ed.lzy) holds one line of height */
 .lp .mk { display: none }
+.lp:not(.src) .cm-line.blk > .cm-widgetBuffer { display: none }   /* editor.js lpParse .blk: no empty line box above a block embed */
 .lp.src .mk, .lp .mk.rv { display: inline; color: var(--text-chrome-dim) }
 .lp:focus, .lp .lprow:focus { outline: none }
 .lp .tbox { vertical-align: middle }                            /* rendered task checkbox (x offsets: R15.11 below) */
@@ -1711,3 +1712,51 @@ span.is-flashing { background: var(--highlight-yellow) }
 /* stock's missing-file banner is 37 px tall; the R29.4 banner shrunk to match */
 .lp .imgmiss.pdfmiss, .preview .imgmiss.pdfmiss { padding: 8px 16px }
 .lp.src .pdf-embed { display: none }
+/* census C4 make-md: .app-container (ui/index.html) wraps the app chrome for plugins and
+   themes that look it up. goal cp-makemd3: a REAL box, not display:contents — under
+   display:contents the editor scrollers lost their bottom range (srclick R25.13c line-83
+   jump read scrollTop 0, scrollsync's lp clamp moved up to L274). It is body's one flex
+   item, stretched to body's box, and lays the chrome out as body did (a flex row). */
+.app-container { display: flex; flex: 1 1 0; min-width: 0; min-height: 0 }
+/* ==== cp-browser BEGIN: the community plugin browser (ui/plugins/browser.js) on the Community
+   plugins pane. Theme tokens only. ==== */
+.cpb-btn { flex: none; height: 28px; padding: 0 12px; border-radius: 4px; border: 1px solid var(--border);
+           background: var(--bg-surface); color: var(--text-chrome); font: inherit; font-size: 13px; cursor: pointer }
+.cpb-btn:hover { border-color: var(--border-strong) }
+.cpb-btn:focus-visible { outline: 2px solid var(--border-focus-ring); outline-offset: 1px }
+.cpb-btn:disabled { opacity: .6; cursor: default }
+.cpb-btn.cpb-cta { background: var(--bg-button-primary); color: var(--text-on-accent); border-color: var(--bg-button-primary) }
+.cpb-btn.cpb-danger { color: var(--text-error) }
+.cpb-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px }
+.cpb-btn.cpb-back { border: 0; background: none; padding: 0 4px; color: var(--text-chrome-muted) }
+.cpb-btn.cpb-back:hover { color: var(--text-chrome) }
+.cpb-count { flex: 1; text-align: right; color: var(--text-chrome-faint); font-size: 12px }
+.cpb-tools { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap }
+.cpb-q { flex: 1 1 220px; min-width: 0; height: 30px; box-sizing: border-box; padding: 0 10px; border-radius: 4px;
+         border: 1px solid var(--border); background: var(--bg-sidebar); color: var(--text-chrome); font: inherit; font-size: 13px }
+.cpb-q:focus { outline: 2px solid var(--border-focus-ring); outline-offset: -1px }
+.cpb-sort { display: flex; gap: 4px }
+.cpb-btn.cpb-sortb { height: 30px; padding: 0 10px }
+.cpb-btn.cpb-sortb.on { border-color: var(--interactive-accent); color: var(--text-chrome) }
+.cpb-row { cursor: pointer; min-height: 64px }
+.cpb-row:hover { background: var(--bg-surface) }
+.cpb-row .sdesc { overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical }
+.cpb-more { margin: 10px 4px; color: var(--text-chrome-faint); font-size: 12px }
+.cpb-head { margin: 4px 0 12px }
+.cpb-name { font-size: 20px; font-weight: 600; color: var(--text-chrome); margin-bottom: 4px }
+.cpb-desc { margin-top: 8px; color: var(--text-chrome) }
+.cpb-facts { display: flex; flex-wrap: wrap; gap: 6px 24px; margin-bottom: 12px; font-size: 13px }
+.cpb-k { color: var(--text-chrome-faint); margin-right: 6px }
+.cpb-v { color: var(--text-chrome) }
+.cpb-acts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px }
+.cpb-state { color: var(--text-chrome-muted); font-size: 13px }
+.cpb-err { margin: 8px 0; color: var(--text-error); white-space: pre-wrap; word-break: break-word }
+.cpb-note { margin: 8px 0; color: var(--text-chrome-muted) }
+.cpb-readme { border: 1px solid var(--bg-surface); border-radius: 6px; padding: 4px 16px; color: var(--text-chrome);
+              line-height: 1.5; overflow-wrap: anywhere; user-select: text }
+.cpb-readme pre { overflow-x: auto; padding: 8px; border-radius: 4px; background: var(--bg-sidebar) }
+.cpb-readme code { font-family: var(--font-monospace, monospace) }
+.cpb-readme table { border-collapse: collapse }
+.cpb-readme th, .cpb-readme td { border: 1px solid var(--border); padding: 2px 6px }
+.cpb-readme a.cpb-link { color: var(--interactive-accent); text-decoration: underline; cursor: default }
+/* ==== cp-browser END ==== */
