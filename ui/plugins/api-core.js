@@ -130,8 +130,12 @@
        modifier helpers. "Mod" is Meta on macOS and Ctrl elsewhere. */
     const IS_MAC = /Mac/.test(navigator.platform);
     const STACK = new WeakMap();   // Keymap instance -> its scope stack (never on the object)
+    const ROOT = new WeakMap();    // Keymap instance -> its root scope (= app.scope)
     class Keymap {
-      constructor(stack) { STACK.set(this, Array.isArray(stack) ? stack : []); }
+      constructor(stack, root) { STACK.set(this, Array.isArray(stack) ? stack : []); if (root) ROOT.set(this, root); }
+      /* stock: the app's root scope, the same object as app.scope (Excalidraw registers its
+         modifier overrides on it and moves them to the front of keys); null when none */
+      getRootScope() { return ROOT.get(this) || null; }
       pushScope(scope) {
         const st = STACK.get(this); if (!st || !scope) return;
         const i = st.lastIndexOf(scope); if (i >= 0) st.splice(i, 1);
@@ -276,8 +280,8 @@
   });
   reg("core:keymap", function (K) {
     const { host, be } = K;
-    const { Keymap, scopes } = K;
-    const keymap = new Keymap(scopes);   // app.keymap: drives the keydown scope stack (core:notice)
+    const { Keymap, Scope, scopes } = K;
+    const keymap = new Keymap(scopes, new Scope());   // app.keymap: drives the keydown scope stack (core:notice); its root scope is app.scope
     Object.assign(K, { keymap });
   });
   reg("core:commands", function (K) {

@@ -1079,7 +1079,7 @@
       appId: "",
       vault, workspace, metadataCache, metadataTypeManager, fileManager, keymap, commands, plugins, setting,
       renderContext: new RenderContext(), secretStorage: new SecretStorage(ssTok),
-      scope: new Scope(),
+      scope: keymap.getRootScope() || new Scope(),   // stock: app.scope === app.keymap.getRootScope()
       // no core plugin is exposed to plugins (getPluginById is null for every id), so the
       // id -> enabled map over them, config, is empty: stock keeps config[k] === !!getEnabledPluginById(k)
       internalPlugins: { getPluginById() { return null; }, getEnabledPluginById() { return null; }, plugins: {}, config: {} },
