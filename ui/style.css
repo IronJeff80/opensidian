@@ -1164,6 +1164,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .fcands { max-height: 360px; overflow-y: auto; border-top: 1px solid var(--bg-surface) }
 .sbtn { padding: 4px 10px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 4px; white-space: nowrap }
 .sbtn.acc { background: var(--interactive-accent); border-color: var(--interactive-accent); color: var(--bg-ribbon) }
+.supd { margin-top: 4px }
 .sicons { flex: none; display: flex; align-items: center; gap: 19px; color: var(--text-chrome-faint) }
 .sico { width: 16px; height: 16px; display: flex; align-items: center; justify-content: center;
         text-align: center; font-size: 15px; line-height: 16px }

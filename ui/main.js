@@ -10484,7 +10484,40 @@ const SDIS_TITLE = "Not implemented yet";
 const sOpenExt = url => inv("open_external", { url }).catch(err => say("Open: " + String(err && err.message || err)));
 const SACT = {
   help: () => sOpenExt("https://www.opensidian.org"),
+  check_updates: (r, d) => sCheckUpdates(d),
 };
+/* Check for updates (updates.rs update_check): ONE signed-release check per press,
+   never in the background. Rust fetches the GitHub release list + SHA256SUMS(.asc)
+   and verifies the signature against the embedded pinned key; the page only shows
+   the verdict. The result line sits under the row description; a release link is
+   offered ONLY for status "available" (signed), and its URL is the one Rust built
+   from the validated tag, opened through open_external. [upd:<status>:<latest>]
+   is the census token a phase or a drive asserts on. */
+let sUpd = null, sUpdBusy = false;
+function sCheckUpdates(d) {
+  if (sUpdBusy) return;
+  const info = d.parentNode && d.parentNode.querySelector(".sinfo");
+  if (!info) return;
+  let out = info.querySelector(".supd");
+  if (!out) { out = document.createElement("div"); out.className = "sdesc supd"; info.appendChild(out); }
+  out.textContent = "Checking GitHub for a signed release…";
+  sUpdBusy = true; sUpd = { status: "checking", latest: "" }; updateTitle();
+  inv("update_check").then(res => {
+    sUpd = { status: String(res.status), latest: String(res.latest || "") };
+    out.textContent = String(res.text);
+    out.dataset.status = sUpd.status;
+    if (res.status === "available" && res.url) {
+      const a = document.createElement("span"); a.className = "slink supdlink"; a.tabIndex = 0;
+      a.textContent = " View release";
+      a.onclick = ev => { ev.stopPropagation(); sOpenExt(String(res.url)); };
+      out.appendChild(a);
+    }
+  }).catch(err => {
+    sUpd = { status: "error", latest: "" };
+    out.textContent = "Could not check for updates: " + String(err && err.message || err);
+    out.dataset.status = "error";
+  }).finally(() => { sUpdBusy = false; updateTitle(); });
+}
 const sactN = {};
 function sactCtl(r) {
   const d = document.createElement("div");
@@ -10506,7 +10539,8 @@ function sactCtl(r) {
 }
 function sactTok() {
   const k = Object.keys(sactN);
-  return k.length ? " [sact:" + k.map(a => a + ":" + sactN[a]).join(",") + "]" : "";
+  return (k.length ? " [sact:" + k.map(a => a + ":" + sactN[a]).join(",") + "]" : "") +
+         (sUpd ? " [upd:" + sUpd.status + ":" + sUpd.latest + "]" : "");
 }
 /* THE PALETTE CONTROL IS DELETED (themeone item 7 / C1 / R1). A second live
    dropdown used to be built here for Appearance > Current community themes:
@@ -10665,7 +10699,7 @@ function openSnipMenu(anchor) {
 let sRowsShown = 0, sEnabledShown = 0;
 function sctl(r) {                            // the control cell for one row, or null
   const v = r.default_shown === "-" ? "" : r.default_shown;
-  if (r.action && SACT[r.action]) return sactCtl(r);   // goal/settings-general: Help (and later Check for updates)
+  if (r.action && SACT[r.action]) return sactCtl(r);   // goal/settings-general: Help, Check for updates
   /* THE LIVE DROPDOWNS (themefs R5/R3). Everything else in this pane is a
      transcription of Obsidian's pixels with no handler; a row is rendered live
      only when settings.rs BACKED names its real key (cssTheme /

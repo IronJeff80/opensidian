@@ -39,6 +39,16 @@ libc = "=0.2.189"
 sha2 = "=0.10.9"
 url = "=2.5.8"
 
+# goal settings-general — the signed update check (updates.rs) verifies the release
+# SHA256SUMS.asc (OpenPGP, EdDSA) against the embedded pinned key. ONE NEW CRATE:
+#   ed25519-compact 2.4.2 (2026-08-19, MIT, sha256 f05391a5…41da), default
+#   features OFF = zero dependencies (no getrandom, no pem): verify only. Picked as
+#   the smallest Ed25519 verifier (vs ed25519-dalek's curve25519-dalek tree); the
+#   newest release >= 6 weeks before 2026-10-19 (2.5.0/2.6.0 are 2026-09-25, too new).
+#   SHA-512/256 come from the already-locked sha2 above; the OpenPGP packet subset is
+#   hand-parsed in updates.rs (strict: v4, EdDSA, binary sig, pinned fingerprint).
+ed25519-compact = { version = "=2.4.2", default-features = false }
+
 # R33.6b — the POSITIVE session test behind the two-path drag (win_move_proto).
 # Both crates are ALREADY in Cargo.lock as tauri's own transitive deps (tauri ->
 # tao -> gtk/gdk/gdkx11 0.18.2), so naming them here resolves to the versions the

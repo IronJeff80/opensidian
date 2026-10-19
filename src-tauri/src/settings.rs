@@ -157,7 +157,7 @@ pub const REMOVED_ROWS: &[(&str, &str)] = &[
 /// (tab, label) -> action: a row whose control runs an app ACTION rather than
 /// writing a config key. Enabled like a backed row; ui/main.js SACT must carry a
 /// handler for every action named here (`actions_are_all_handled_by_the_ui`).
-const ACTIONS: &[(&str, &str, &str)] = &[("general", "Help", "help")];
+const ACTIONS: &[(&str, &str, &str)] = &[("general", "Help", "help"), ("general", VERSION_LABEL, "check_updates")];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -285,6 +285,9 @@ fn parse_rows() -> Vec<Row> {
         if version_row {
             row.label = VERSION_LABEL;
             row.desc = VERSION_DESC;
+            // Check for updates: an ACTION row (updates.rs update_check), keyed by the NEW label
+            row.action = action_for("general", VERSION_LABEL);
+            row.enabled = row.key.is_some() || row.action.is_some();
         } else if f[0] == "general" && f[2] == "Automatic updates" {
             row.desc = AUTO_UPDATES_DESC;
             row.default_shown = "off"; // drawn off; keyless, so inert
@@ -456,7 +459,9 @@ mod tests {
         // /workspace/goal/fonts/progress.md as R30 requires.
         // 11 -> 12 (goal settings-general): General > Help is an ACTION row that
         // opens https://www.opensidian.org, recorded in /workspace/goal/settings-general/progress.md.
-        assert_eq!(enabled, 12, "enabled-row count changed — say why in progress.md (R30)");
+        // 12 -> 13 (goal settings-general): the General top row's "Check for updates" is an
+        // ACTION row (updates.rs: signed GitHub release check), same progress.md.
+        assert_eq!(enabled, 13, "enabled-row count changed — say why in progress.md (R30)");
     }
 
     /// a key is "real" only if main.rs actually reads or writes it
@@ -556,6 +561,7 @@ mod tests {
         let g: Vec<&Row> = rows().iter().filter(|r| r.tab == "general").collect();
         assert_eq!(g[0].label, format!("Version {}", env!("CARGO_PKG_VERSION")), "top row is not the Opensidian version");
         assert!(!g[0].desc.contains("1.13") && !g[0].desc.contains("Installer"), "stock installer version leaked: {}", g[0].desc);
+        assert_eq!((g[0].action, g[0].enabled, g[0].default_shown), (Some("check_updates"), true, "Check for updates"));
         assert_eq!(g[1].label, format!("Plugin API version {}", crate::plugin_store::COMPAT_APP_VERSION));
         assert_eq!(g[1].label, "Plugin API version 1.14.4");
         assert!(g[1].desc.contains("minAppVersion") && g[1].control == Control::None && !g[1].enabled);
@@ -583,5 +589,6 @@ mod tests {
         }
         assert_eq!(HELP_URL, "https://www.opensidian.org");
         assert!(js.contains(&format!("help: () => sOpenExt(\"{HELP_URL}\")")), "SACT.help does not open HELP_URL");
+        assert!(js.contains("inv(\"update_check\")"), "SACT.check_updates does not call the update_check command");
     }
 }
