@@ -68,9 +68,14 @@
         async setState(state) {
           const p = state && state.file, f = p && d.vault().getAbstractFileByPath(p);
           if (!(f instanceof d.TFile()) || f === this.file) return;
+          try { await this.loadFile(f); } catch (e) { console.error(e); }
+        }
+        /* loadFile: the old file is unloaded, then the new one loaded — setState goes through it, so a view that
+           overrides loadFile and calls super (Kanban drops its board state there) sees every file change */
+        async loadFile(file) {
           if (this.file) try { await this.onUnloadFile(this.file); } catch (e) { console.error(e); }
-          this.file = f;
-          try { await this.onLoadFile(f); } catch (e) { console.error(e); }
+          this.file = file;
+          await this.onLoadFile(file);
         }
         onLoadFile() { return Promise.resolve(); }
         onUnloadFile() { return Promise.resolve(); }
@@ -81,7 +86,8 @@
       /* TextFileView (obsidian.d.ts): the file's text lives in this.data. Opening a file reads it and
          hands it to the subclass with setViewData(data, true) (true = a different file, start clean);
          save() writes the subclass's getViewData() back when it differs from the file on disk;
-         requestSave() is that save, debounced 2s; switching or closing the file saves it first. */
+         requestSave() is that save, debounced 2s; switching or closing the file saves it first, then
+         the view's clear(). The view supplies getViewData / setViewData / clear. */
       class TextFileView extends EditableFileView {
         constructor(leaf) {
           super(leaf); this.data = "";
@@ -94,11 +100,12 @@
           this.setViewData(data, true);
         }
         async onUnloadFile(file) {
-          if (this.requestSave && this.requestSave.cancel) this.requestSave.cancel();
-          if (this.file === file) await this.save();
+          await this.save(false, file);
+          this.clear();
         }
-        async save(clear) {
-          const f = this.file;
+        async save(clear, file) {
+          if (this.requestSave && this.requestSave.cancel) this.requestSave.cancel();
+          const f = file || this.file;
           if (f instanceof d.TFile()) {
             const data = this.getViewData();
             if (typeof data === "string") {
