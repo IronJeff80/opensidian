@@ -455,6 +455,17 @@
       /* ------------------------------------------------ edges */
       renderEdges() {
         const g = this.edgeEl; g.textContent = "";
+        // the layer spans the board's content (WebKit clips an outer <svg> to its box even with overflow: visible),
+        // its viewBox in canvas coordinates so the paths keep the file's numbers
+        let x0 = 0, y0 = 0, x1 = 1, y1 = 1, any = false;
+        for (const n of this.nodes.values()) {
+          const d = n.data; if (!any) { x0 = d.x; y0 = d.y; x1 = d.x + d.width; y1 = d.y + d.height; any = true; }
+          x0 = Math.min(x0, d.x); y0 = Math.min(y0, d.y); x1 = Math.max(x1, d.x + d.width); y1 = Math.max(y1, d.y + d.height);
+        }
+        const P = 400; x0 -= P; y0 -= P; x1 += P; y1 += P;
+        g.setAttribute("viewBox", [x0, y0, x1 - x0, y1 - y0].join(" "));
+        g.setAttribute("width", String(x1 - x0)); g.setAttribute("height", String(y1 - y0));
+        g.style.left = x0 + "px"; g.style.top = y0 + "px";
         for (const e of this.edges.values()) {
           const a = this.nodes.get(e.fromNode), b = this.nodes.get(e.toNode);
           if (!a || !b) continue;
