@@ -198,7 +198,7 @@
       renderContent() {
         if (this.isEditing) return;
         this.contentEl.textContent = "";
-        const t = el("div", "canvas-node-text", this.contentEl);
+        const t = el("div", "canvas-text", this.contentEl);
         t.textContent = this.data.text;        // plain text: a canvas never injects markup
       }
       isEditable() { return true; }
