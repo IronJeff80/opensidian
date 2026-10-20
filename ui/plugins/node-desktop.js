@@ -1188,9 +1188,13 @@
         get json() { if (json === undefined) json = JSON.parse(this.text); return json; },
       };
     });
-    pr.arrayBuffer = pr.then(x => x.arrayBuffer);
-    pr.json = pr.then(x => x.json);
-    pr.text = pr.then(x => x.text);
+    // .arrayBuffer / .json / .text are made on first read: an eager pr.then() per member
+    // is a second promise nobody holds, and when the request fails it rejects unhandled
+    // even though the caller awaited pr inside a try (Copilot's update check)
+    for (const k of ["arrayBuffer", "json", "text"]) {
+      let d = null;
+      Object.defineProperty(pr, k, { enumerable: true, configurable: false, get() { if (!d) d = pr.then(x => x[k]); return d; } });
+    }
     return pr;
   }
   const request = p => httpSend(p).then(r => { if (r.status >= 400) throw httpFail(r); return new TextDecoder("utf-8").decode(r.body); });
