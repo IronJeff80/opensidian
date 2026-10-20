@@ -260,7 +260,7 @@
       const parentNodeOf = x => { const s = S(); return s && typeof findParent === "function" ? findParent(s.root, x) : null; };
       const inLayout = x => { const s = S(); return !!s && (x === s.root || !!parentNodeOf(x)); };
       class WorkspaceItem extends Events {
-        constructor() { super(); hid(this, "_k", null); hid(this, "_n", null); }
+        constructor() { super(); hid(this, "_k", null); hid(this, "_n", null); hid(this, "_fp", null); }
         get parent() { return itemParent(this); }
         get containerEl() { return itemEl(this); }
         getRoot() { let x = this; for (let p = x.parent; p; p = p.parent) x = p; return x; }
@@ -268,7 +268,30 @@
       }
       class WorkspaceParent extends WorkspaceItem { get children() { return itemChildren(this); } }
       class WorkspaceSplit extends WorkspaceParent {
-        get direction() { const n = this._k === "split" ? this._n : this._k === "root" ? (S() || {}).root : null; return n && n.dir === "col" ? "horizontal" : "vertical"; }
+        /* new WorkspaceSplit(workspace, direction) from a plugin: a DETACHED split (not in the app layout) that
+           holds the items a plugin inserts — Excalidraw hosts its canvas leaf in one (CanvasNodeFactory). The app
+           builds its own splits with no arguments and binds them to a layout node (itemOfNode). */
+        constructor(ws, dir) {
+          super();
+          if (arguments.length) {
+            const el = document.createElement("div"), v = dir === "horizontal" ? "horizontal" : "vertical";
+            el.className = "workspace-split mod-" + v;
+            this._k = "free"; this._n = { children: [], el, direction: v };
+          }
+        }
+        insertChild(index, child) {
+          if (this._k !== "free") throw new Error("WorkspaceSplit.insertChild: the app layout changes through workspace.getLeaf / splitActiveLeaf; only a split built with new WorkspaceSplit() takes inserted items");
+          if (!(child instanceof WorkspaceItem)) throw new TypeError("WorkspaceSplit.insertChild: not a workspace item");
+          if (child._fp) child._fp.removeChild(child);
+          const c = this._n.children, i = Math.max(0, Math.min(c.length, Number.isFinite(+index) ? Math.trunc(+index) : c.length));
+          c.splice(i, 0, child); child._fp = this;
+        }
+        removeChild(child) {
+          if (this._k !== "free") throw new Error("WorkspaceSplit.removeChild: only a split built with new WorkspaceSplit() gives up items here");
+          const c = this._n.children, i = c.indexOf(child);
+          if (i >= 0) { c.splice(i, 1); child._fp = null; }
+        }
+        get direction() { if (this._k === "free") return this._n.direction; const n = this._k === "split" ? this._n : this._k === "root" ? (S() || {}).root : null; return n && n.dir === "col" ? "horizontal" : "vertical"; }
       }
       class WorkspaceContainer extends WorkspaceSplit {
         get doc() { const el = this.containerEl; return (el && el.ownerDocument) || document; }
@@ -323,6 +346,7 @@
       let floatItem = null;
       function floating() { if (!floatItem) { floatItem = new WorkspaceFloating(); floatItem._k = "floating"; const el = document.createElement("div"), h = el.appendChild(document.createElement("hr")); h.className = "workspace-leaf-resize-handle"; floatItem._n = { children: [], el }; hid(floatItem, "resizeHandleEl", h); } return floatItem; }
       function itemParent(it) {
+        if (it._fp) return it._fp;      // an item a plugin inserted into its own detached split
         switch (it._k) {
           case "split": case "tabs": { if (!inLayout(it._n)) return null; const p = parentNodeOf(it._n); return p ? itemOfNode(p) : null; }
           case "docktabs": return dock(it._n);
@@ -338,6 +362,7 @@
           case "dock": return [dockTabsOf(it._n)];
           case "docktabs": return sides.filter(r => r.side === it._n).map(r => r.leaf);
           case "floating": return it._n.children;
+          case "free": return it._n.children.slice();
           default: return [];
         }
       }
@@ -348,11 +373,13 @@
           case "tabs": return it._n.pane || null;
           case "dock": case "docktabs": return byId(it._n === "left" ? "side" : "rside");
           case "floating": return it._n.el;
+          case "free": return it._n.el;
           default: return null;
         }
       }
       function rootOf(it) { let x = it; for (let p = x.parent; p; p = p.parent) x = p; return x; }
       function leafParent(l) {
+        if (l._fp) return l._fp;
         if (l._side) return sideRec(l) ? dockTabsOf(l._side) : null;
         if (l._t) { const g = groupOfTab(l._t); return g ? tabsOf(g) : null; }
         if (l._split) return null;      // a pending split: its group does not exist yet
@@ -411,6 +438,7 @@
           const t = this._t;
           if (t) { const r = recs.get(t); if (r) return r.view; if (t.kind === "unk") return emptyView(this); }
           else if (this._nt || this._split) return emptyView(this);
+          else if (!this._g0) return emptyView(this);   // a bare leaf a plugin built (new WorkspaceLeaf): not a tab, not a pane
           return d.leafView(this);
         }
         get containerEl() { return this.view.containerEl; }
@@ -472,6 +500,7 @@
           this.setGroup(g);
         }
         detach() {
+          if (this._fp) { this._fp.removeChild(this); return; }
           if (this._side) return sideDetach(this);
           if (this._t) return closeTabOf(this._t);
           const g = this._g0;               // an empty group's leaf: the empty pane goes (never the last one)
@@ -1244,7 +1273,10 @@
       }
       splitActiveLeaf(dir) { return this.getLeaf("split", dir); }
       createLeafBySplit(leaf, dir) { if (leaf && leaf._grp && typeof focusGroup === "function") try { focusGroup(leaf._grp); } catch (_) {} return this.getLeaf("split", dir); }
-      createLeafInParent() { return this.getLeaf("tab"); }
+      createLeafInParent(parent, index) {
+        if (parent instanceof K.layout.WorkspaceSplit && parent._k === "free") { const l = new WorkspaceLeaf(K.app); parent.insertChild(index, l); return l; }
+        return this.getLeaf("tab");
+      }
       setActiveLeaf(l) { if (l && (l._t || l._side)) { views.reveal(l); return; } if (l && l._grp && typeof focusGroup === "function") try { focusGroup(l._grp); } catch (_) {} }
       revealLeaf(l) { if (l && (l._t || l._side)) return views.reveal(l); this.setActiveLeaf(l); return Promise.resolve(); }
       async openLinkText(lt, src, newLeaf, openState) {

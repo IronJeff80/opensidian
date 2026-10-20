@@ -464,11 +464,11 @@
           const c1 = [p1[0] + NORMAL[fs][0] * k, p1[1] + NORMAL[fs][1] * k], c2 = [p2[0] + NORMAL[ts][0] * k, p2[1] + NORMAL[ts][1] * k];
           const col = colorOf(e.color) || "var(--text-muted, #888)";
           const grp = sv("g", { class: "canvas-edge", "data-edge-id": e.id }, g);
-          sv("path", { d: "M" + p1 + " C" + c1 + " " + c2 + " " + p2, fill: "none", stroke: col, "stroke-width": "2" }, grp);
+          sv("path", { class: "canvas-edge-line", d: "M" + p1 + " C" + c1 + " " + c2 + " " + p2, style: "fill: none; stroke: " + col + "; stroke-width: 2px" }, grp);  // colours in style: var() is not valid in an SVG presentation attribute
           const head = (tip, from) => {
             const dx = tip[0] - from[0], dy = tip[1] - from[1], l = Math.hypot(dx, dy) || 1, ux = dx / l, uy = dy / l;
             const bx = tip[0] - ux * 12, by = tip[1] - uy * 12;
-            sv("polygon", { class: "canvas-edge-arrow", fill: col, points: tip + " " + [bx - uy * 6, by + ux * 6] + " " + [bx + uy * 6, by - ux * 6] }, grp);
+            sv("polygon", { class: "canvas-edge-arrow", style: "fill: " + col, points: tip + " " + [bx - uy * 6, by + ux * 6] + " " + [bx + uy * 6, by - ux * 6] }, grp);
           };
           if ((e.toEnd || "arrow") === "arrow") head(p2, c2);
           if ((e.fromEnd || "none") === "arrow") head(p1, c1);
