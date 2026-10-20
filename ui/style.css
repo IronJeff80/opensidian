@@ -241,6 +241,20 @@ body {
      x=889 y=400 (thumb) / x=884 (track = page). Obsidian's names: themes override them. */
   --scrollbar-bg: transparent;
   --scrollbar-thumb-bg: #323233;
+  /* layers: Obsidian's public z-index variables, which plugin and theme CSS position with
+     (Kanban's new-list form: z-index: var(--layer-popover)). Unset, such a z-index computes auto
+     and the plugin's own later content covers it. Values follow this file's own stack:
+     #modal 50, .ctxmenu 60, #notice 71, #tabghost 99. */
+  --layer-cover: 5;
+  --layer-sidedock: 10;
+  --layer-status-bar: 15;
+  --layer-popover: 30;
+  --layer-slides: 45;
+  --layer-modal: 50;
+  --layer-menu: 60;
+  --layer-notice: 71;
+  --layer-tooltip: 72;
+  --layer-dragged-item: 99;
 }
 /* ---------------------------------------------------------------------------
    LIGHT. Every value below was SAMPLED from a pixel of a running Obsidian
