@@ -600,8 +600,8 @@
     class CanvasView extends X.ItemView {
       constructor(leaf) {
         super(leaf);
-        this.navigation = true; this.icon = "layout-dashboard";
-        this.path = null; this.file = null; this.lastText = null; this.broken = null; this.dirty = false;
+        this.navigation = true; this.icon = "lucide-layout-dashboard";
+        this.path = null; this.kept = {}; this.file = null; this.lastText = null; this.broken = null; this.dirty = false;
         this.contentEl.classList.add("canvas-view");
         this.canvas = new Canvas(this);
         this.contentEl.appendChild(this.canvas.wrapperEl);
@@ -609,9 +609,11 @@
       }
       getViewType() { return "canvas"; }
       getDisplayText() { return this.path ? baseName(this.path) : "Canvas"; }
-      getState() { return this.path ? { file: this.path } : {}; }
+      // the state as given, file first: keys this view does not use (a stock leaf's viewState) go back unchanged
+      getState() { return this.path ? Object.assign({ file: this.path }, this.kept) : {}; }
       async setState(state) {
         const p = state ? pathOf(state.file) : "";
+        if (p && state && typeof state === "object") { const k = {}; for (const key of Object.keys(state)) if (key !== "file") k[key] = state[key]; this.kept = JSON.parse(JSON.stringify(k)); }
         if (!p || p === this.path) return;
         await this.flush();
         await this.loadPath(p);
