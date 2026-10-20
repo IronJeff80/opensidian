@@ -3261,6 +3261,15 @@ fn vfs_sync_answer(root: Option<&Path>, trusted: bool, post: bool, body: &[u8]) 
     let s = |k: &str| a.get(k).and_then(|v| v.as_str());
     let (Some(op), Some(path)) = (s("op"), s("path")) else { return (400, json!({ "err": "EINVAL: op and path are required" })) };
     let recursive = a.get("recursive").and_then(|v| v.as_bool()).unwrap_or(false);
+    // git-chmod: fs.chmod / chmodSync / promises.chmod (node-desktop.js) — only here, on the
+    // trusted sync route; vaultfs::plugin_chmod re-checks trust, confines and masks the mode
+    if op == "chmod" {
+        let Some(mode) = a.get("mode").and_then(|v| v.as_u64()) else { return (400, json!({ "err": "EINVAL: chmod needs an integer mode" })) };
+        return match vaultfs::plugin_chmod(root, trusted, path, (mode & u64::from(vaultfs::PLUGIN_MODE_MASK)) as u32) {
+            Ok(v) => (200, json!({ "ok": v })),
+            Err(e) => (200, json!({ "err": e })),
+        };
+    }
     match vaultfs::plugin_op(root, op, path, s("to"), s("data"), recursive) {
         Ok(v) => (200, json!({ "ok": v })),
         Err(e) => (200, json!({ "err": e })),
@@ -6002,6 +6011,26 @@ mod tests {
         let (s, v) = vfs_sync_answer(Some(&root), true, true, &q("read", "a.md"));
         assert_eq!((s, v["ok"].as_str()), (200, Some("aGk=")));
         let (s, v) = vfs_sync_answer(Some(&root), true, true, &q("read", "/etc/passwd"));
+        assert_eq!(s, 200);
+        assert!(v["err"].as_str().is_some_and(|e| e.starts_with("EPERM")), "{v}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// git-chmod: chmod rides the trusted sync route only, mode masked to 0o777
+    #[test]
+    fn vfs_sync_chmod_is_trusted_masked_and_confined() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tmp_vault("vfssync-chmod");
+        fs::write(root.join("h.sh"), "#!/bin/sh\n").unwrap();
+        fs::set_permissions(root.join("h.sh"), fs::Permissions::from_mode(0o644)).unwrap();
+        let q = |p: &str, m: &str| format!("{{\"op\":\"chmod\",\"path\":\"{p}\",\"mode\":{m}}}").into_bytes();
+        let mode = || fs::metadata(root.join("h.sh")).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(vfs_sync_answer(Some(&root), false, true, &q("h.sh", "493")).0, 403);
+        assert_eq!(mode(), 0o644);
+        assert_eq!(vfs_sync_answer(Some(&root), true, true, &q("h.sh", "\"755\"")).0, 400, "mode must be a number");
+        assert_eq!(vfs_sync_answer(Some(&root), true, true, &q("h.sh", "2541")), (200, serde_json::json!({ "ok": null })));
+        assert_eq!(mode(), 0o755, "0o4755 -> setuid stripped");
+        let (s, v) = vfs_sync_answer(Some(&root), true, true, &q("../x", "493"));
         assert_eq!(s, 200);
         assert!(v["err"].as_str().is_some_and(|e| e.starts_with("EPERM")), "{v}");
         let _ = fs::remove_dir_all(&root);

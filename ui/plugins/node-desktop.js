@@ -1283,8 +1283,26 @@
       if (k === "folder") { rmTreeS(c); vioSync("rmdir", c); } else vioSync("unlink", c);
     }
   }
+  /* git-chmod: fs.chmod / chmodSync / promises.chmod (obsidian-git marks its askpass helper
+     executable). Trusted vault only: it rides the sync route, and Rust (vaultfs plugin_chmod)
+     confines the path, refuses a symlink and masks the mode to 0o777. fchmod / lchmod stay
+     denied (no descriptors, and a link's own mode is never ours to set). Mode as in Node: an
+     integer or an octal string; anything else is ERR_INVALID_ARG_TYPE / ERR_INVALID_ARG_VALUE. */
+  function modeArg(m) {
+    if (typeof m === "string" && /^[0-7]+$/.test(m)) m = parseInt(m, 8);
+    if (typeof m !== "number") { const e = new TypeError('The "mode" argument must be a 32-bit unsigned integer or an octal string'); e.code = "ERR_INVALID_ARG_TYPE"; throw e; }
+    if (!Number.isInteger(m) || m < 0 || m > 0xFFFFFFFF) { const e = new RangeError('The value of "mode" is out of range. Received ' + String(m)); e.code = "ERR_INVALID_ARG_VALUE"; throw e; }
+    return m;
+  }
+  const chmodS = (p, m) => { vioSync("chmod", p, { mode: modeArg(m) }); };
+  const chmodP = (p, m) => { try { return Promise.resolve(chmodS(p, m)); } catch (e) { return Promise.reject(e); } };
+  const chmodCb = function chmod(p, m, cb) {
+    if (typeof cb !== "function") throw new TypeError('The "cb" argument must be of type function');
+    chmodP(p, m).then(() => cb(null), e => cb(e));
+  };
   const fsSync = Object.freeze({
     existsSync(p) { try { return p != null && vioSync("exists", p) === true; } catch (_) { return false; } },
+    chmodSync: chmodS,
     statSync: statS,
     lstatSync: statS,
     accessSync(p) { if (!vioSync("exists", p)) throw noent(p); },
@@ -1323,6 +1341,8 @@
   });
   // the fs facade of node-modules.js (not fs/promises): it has readFile AND a promises member
   const isFsFacade = m => m && typeof m === "object" && typeof m.readFile === "function" && m.promises && typeof m.promises === "object";
+  // fs/promises of node-modules.js: readFile and the chmod stub, no promises member and no *Sync
+  const isFsPromises = m => m && typeof m === "object" && typeof m.readFile === "function" && typeof m.chmod === "function" && !("promises" in m) && !("readFileSync" in m);
 
   /* ------------------------------------------- electron (shell real, Rust desk_shell)
      shell.openExternal / openPath / showItemInFolder go to the OS opener with the user's
@@ -1401,6 +1421,8 @@
         for (const k of Reflect.ownKeys(d)) { d[k].configurable = true; if ("value" in d[k]) d[k].writable = true; }
         // a trusted vault's fs has Node's *Sync calls (the facade's ENOSYS stubs are replaced)
         if (isFsFacade(m)) for (const k of Object.keys(fsSync)) d[k] = { value: fsSync[k], enumerable: true, writable: true, configurable: true };
+        if (isFsFacade(m)) d.chmod = { value: chmodCb, enumerable: true, writable: true, configurable: true };
+        if (isFsPromises(m)) d.chmod = { value: chmodP, enumerable: true, writable: true, configurable: true };
         // as in Node, require("fs").promises is the very object require("fs/promises") returns
         if (isFsFacade(m)) d.promises.value = own(m.promises);
         c = Object.defineProperties(Object.create(Object.getPrototypeOf(m)), d);

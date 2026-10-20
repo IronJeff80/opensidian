@@ -677,6 +677,8 @@ impl Vault {
    which plugin_err turns into the stable "EPERM: vault-escape refused, ..." */
 
 pub const PLUGIN_READ_CAP: u64 = 64 << 20;
+/// plugin chmod sets permission bits only: no setuid, setgid or sticky
+pub const PLUGIN_MODE_MASK: u32 = 0o777;
 const PLUGIN_PATH_MAX: usize = 4096;
 
 /// a plugin-supplied vault-relative path -> checked relative PathBuf ("" = the
@@ -894,6 +896,25 @@ impl Vault {
         let bytes = self.p_read(from, PLUGIN_READ_CAP)?;
         self.p_write(to, &bytes, false)
     }
+
+    /// fs.chmod for plugins (obsidian-git marks its askpass helper executable).
+    /// The leaf is opened O_PATH|O_NOFOLLOW relative to its held parent: on a
+    /// symlink that yields an fd to the LINK itself, whose fstat is S_IFLNK and
+    /// is refused — the target is never reached. Only a regular file or a
+    /// directory is changed, through /proc/self/fd/<fd>, which names exactly the
+    /// inode we hold (fchmod on an O_PATH fd is EBADF), so a swap after the open
+    /// cannot redirect it. setuid/setgid/sticky never get through: mode & 0o777.
+    pub fn p_chmod(&self, rel: &Path, mode: u32) -> io::Result<()> {
+        let (d, leaf) = self.parent(rel, false)?;
+        // SAFETY: valid fd + NUL-terminated name; the fd is owned below
+        let raw = cvt(unsafe { libc::openat(d.fd.as_raw_fd(), leaf.as_ptr(), libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC) })?;
+        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+        pstat_of(rel, &fstat(fd.as_raw_fd())?)?; // symlink, FIFO, device, socket -> refused
+        hook("p_chmod:opened");
+        let via = CString::new(format!("/proc/self/fd/{}", fd.as_raw_fd())).expect("no NUL in a decimal fd");
+        // SAFETY: NUL-terminated path; the magic link resolves to the inode `fd` pins
+        cvt(unsafe { libc::chmod(via.as_ptr(), (mode & PLUGIN_MODE_MASK) as libc::mode_t) }).map(|_| ())
+    }
 }
 
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -942,6 +963,8 @@ pub fn plugin_err(op: &str, path: &str, e: &io::Error) -> String {
         Some(libc::EINVAL) => "EINVAL",
         Some(libc::EACCES) => "EACCES",
         Some(libc::ENAMETOOLONG) => "ENAMETOOLONG",
+        Some(libc::EPERM) => "EPERM",
+        Some(libc::ELOOP) => "ELOOP",
         _ if e.kind() == io::ErrorKind::NotFound => "ENOENT",
         _ if e.kind() == io::ErrorKind::AlreadyExists => "EEXIST",
         _ => "EIO",
@@ -951,7 +974,8 @@ pub fn plugin_err(op: &str, path: &str, e: &io::Error) -> String {
 
 /// the whole plugin fs surface, one op at a time. `data` is base64 (bytes
 /// cross the IPC as text; binary and UTF-8 alike). Ops not named here do not
-/// exist: no fd, stream, watch, chmod, chown, link or realpath.
+/// exist: no fd, stream, watch, chown, link or realpath. chmod is not an op
+/// here either: it is plugin_chmod, which checks the vault's trust itself.
 pub fn plugin_op(root: &Path, op: &str, path: &str, to: Option<&str>, data: Option<&str>, recursive: bool) -> Result<serde_json::Value, String> {
     use serde_json::json;
     let e = |x: io::Error| plugin_err(op, path, &x);
@@ -983,6 +1007,24 @@ pub fn plugin_op(root: &Path, op: &str, path: &str, to: Option<&str>, data: Opti
         "copy" => { need(&rel)?; let t = dest()?; vfs.p_copy(&rel, &t).map(|_| json!(null)).map_err(e) }
         _ => Err(format!("ENOSYS: fs op {op:?} is not available in opensidian")),
     }
+}
+
+/// fs.chmod for plugins — TRUSTED vaults only (operator ruling 2026-10-20).
+/// Refused EPERM (not ENOSYS) in restricted mode, checked here as well as at
+/// the caller; the path is confined exactly like every plugin_op (plugin_rel +
+/// the O_NOFOLLOW fd walk); the vault root itself is refused; the leaf is
+/// changed only if it is a regular file or directory, never through a symlink
+/// (Vault::p_chmod); the mode is masked to 0o777.
+pub fn plugin_chmod(root: &Path, trusted: bool, path: &str, mode: u32) -> Result<serde_json::Value, String> {
+    let e = |x: io::Error| plugin_err("chmod", path, &x);
+    if !trusted {
+        return Err(format!("EPERM: restricted mode, plugin chmod is off, chmod '{}'", path.replace('\0', "\\0")));
+    }
+    let rel = plugin_rel(path).map_err(e)?;
+    if rel.as_os_str().is_empty() {
+        return Err(e(refused(&rel, "the vault root itself")));
+    }
+    Vault::open(root).map_err(e)?.p_chmod(&rel, mode & PLUGIN_MODE_MASK).map(|_| serde_json::Value::Null).map_err(e)
 }
 
 /// one-shot helpers for callers that hold only the root path
@@ -1296,5 +1338,140 @@ mod tests {
             let er = pop(&root, op, "q", None, Some(b"x")).unwrap_err();
             assert!(er.starts_with("EPERM: vault-escape refused"), "{op}: {er}");
         }
+    }
+
+    // ---- git-chmod: plugin fs.chmod (trusted vaults only) ----
+    fn mode_of(p: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        fs::symlink_metadata(p).unwrap().permissions().mode() & 0o7777
+    }
+
+    #[test]
+    fn pchmod_regular_file_mode_round_trips() {
+        let (root, _out) = fresh("pchmod-reg");
+        fs::create_dir_all(root.join("d")).unwrap();
+        fs::write(root.join("d/askpass.sh"), b"#!/bin/sh\n").unwrap();
+        plugin_chmod(&root, true, "d/askpass.sh", 0o755).unwrap();
+        assert_eq!(mode_of(&root.join("d/askpass.sh")), 0o755);
+        plugin_chmod(&root, true, "d/askpass.sh", 0o644).unwrap();
+        assert_eq!(mode_of(&root.join("d/askpass.sh")), 0o644);
+        assert!(plugin_chmod(&root, true, "d/nope.sh", 0o755).unwrap_err().starts_with("ENOENT"));
+    }
+
+    #[test]
+    fn pchmod_setuid_setgid_sticky_stripped() {
+        let (root, _out) = fresh("pchmod-suid");
+        fs::write(root.join("f"), b"x").unwrap();
+        plugin_chmod(&root, true, "f", 0o4755).unwrap();
+        assert_eq!(mode_of(&root.join("f")), 0o755, "setuid stripped");
+        plugin_chmod(&root, true, "f", 0o7777).unwrap();
+        assert_eq!(mode_of(&root.join("f")), 0o777, "setuid/setgid/sticky stripped");
+        plugin_chmod(&root, true, "f", 0o2644 | 0o10000).unwrap();
+        assert_eq!(mode_of(&root.join("f")), 0o644, "setgid + high bits stripped");
+    }
+
+    #[test]
+    fn pchmod_symlink_to_inside_vault_file_refused() {
+        let (root, _out) = fresh("pchmod-lin");
+        fs::write(root.join("real.sh"), b"x").unwrap();
+        fs::set_permissions(root.join("real.sh"), std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+        symlink(root.join("real.sh"), root.join("link.sh")).unwrap();
+        symlink("real.sh", root.join("rel.sh")).unwrap();
+        for p in ["link.sh", "rel.sh"] {
+            let er = plugin_chmod(&root, true, p, 0o777).expect_err(p);
+            assert!(er.starts_with("EPERM: vault-escape refused"), "{p}: {er}");
+        }
+        assert_eq!(mode_of(&root.join("real.sh")), 0o600, "target unchanged");
+    }
+
+    #[test]
+    fn pchmod_symlink_to_outside_vault_file_refused() {
+        let (root, out) = fresh("pchmod-lout");
+        fs::write(out.join("secret"), b"S").unwrap();
+        fs::set_permissions(out.join("secret"), std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+        fs::create_dir_all(root.join("a")).unwrap();
+        symlink(out.join("secret"), root.join("a/leak")).unwrap();
+        symlink(&out, root.join("L")).unwrap();
+        for p in ["a/leak", "L/secret", "L"] {
+            let er = plugin_chmod(&root, true, p, 0o777).expect_err(p);
+            assert!(er.starts_with("EPERM: vault-escape refused"), "{p}: {er}");
+        }
+        assert_eq!(mode_of(&out.join("secret")), 0o600, "outside target mode unchanged");
+        assert!(fs::symlink_metadata(root.join("a/leak")).unwrap().file_type().is_symlink());
+    }
+
+    #[test]
+    fn pchmod_dangling_symlink_refused() {
+        let (root, out) = fresh("pchmod-dang");
+        symlink(out.join("does-not-exist"), root.join("dang")).unwrap();
+        symlink("nowhere", root.join("dang2")).unwrap();
+        for p in ["dang", "dang2"] {
+            let er = plugin_chmod(&root, true, p, 0o755).expect_err(p);
+            assert!(er.starts_with("EPERM: vault-escape refused"), "{p}: {er}");
+        }
+        assert!(!out.join("does-not-exist").exists(), "nothing created through the link");
+    }
+
+    #[test]
+    fn pchmod_dotdot_and_absolute_refused() {
+        let (root, out) = fresh("pchmod-esc");
+        fs::write(out.join("sentinel"), b"S").unwrap();
+        fs::set_permissions(out.join("sentinel"), std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+        let abs = out.join("sentinel").display().to_string();
+        for p in ["../outside/sentinel", "a/../../outside/sentinel", abs.as_str(), "/etc/passwd", "%2e%2e/outside/sentinel", "..\\outside\\sentinel", "./x", "", "/"] {
+            let er = plugin_chmod(&root, true, p, 0o777).expect_err(p);
+            assert!(er.starts_with("EPERM: vault-escape refused"), "{p:?}: {er}");
+        }
+        assert_eq!(mode_of(&out.join("sentinel")), 0o600, "outside file unchanged");
+    }
+
+    #[test]
+    fn pchmod_directory_works() {
+        let (root, _out) = fresh("pchmod-dir");
+        fs::create_dir_all(root.join("d/e")).unwrap();
+        plugin_chmod(&root, true, "d/e", 0o700).unwrap();
+        assert_eq!(mode_of(&root.join("d/e")), 0o700);
+        plugin_chmod(&root, true, "d/e", 0o3755).unwrap();
+        assert_eq!(mode_of(&root.join("d/e")), 0o755, "dir: setgid/sticky stripped");
+        // a FIFO is neither file nor directory: refused
+        let c = CString::new(root.join("q").as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert!(plugin_chmod(&root, true, "q", 0o777).unwrap_err().starts_with("EPERM: vault-escape refused"));
+        assert_eq!(mode_of(&root.join("q")), 0o600);
+    }
+
+    #[test]
+    fn pchmod_untrusted_vault_refused() {
+        let (root, _out) = fresh("pchmod-untr");
+        fs::write(root.join("f"), b"x").unwrap();
+        fs::set_permissions(root.join("f"), std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
+        let er = plugin_chmod(&root, false, "f", 0o755).unwrap_err();
+        assert!(er.starts_with("EPERM: restricted mode"), "{er}");
+        assert!(!er.starts_with("ENOSYS"));
+        assert_eq!(mode_of(&root.join("f")), 0o644, "untrusted: unchanged");
+        // and chmod is not reachable through the trust-agnostic plugin_op
+        assert!(pop(&root, "chmod", "f", None, None).unwrap_err().starts_with("ENOSYS"));
+        assert_eq!(mode_of(&root.join("f")), 0o644);
+    }
+
+    #[test]
+    fn pchmod_parent_swapped_for_symlink_after_open_still_hits_held_inode() {
+        let (root, out) = fresh("pchmod-race");
+        fs::create_dir_all(root.join("d")).unwrap();
+        fs::write(root.join("d/f"), b"x").unwrap();
+        fs::write(out.join("f"), b"S").unwrap();
+        fs::set_permissions(out.join("f"), std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+        let (r2, o2) = (root.clone(), out.clone());
+        set_hook(Some(Box::new(move |at| {
+            if at == "p_chmod:opened" {
+                fs::rename(r2.join("d"), r2.join("d.moved")).unwrap();
+                symlink(&o2, r2.join("d")).unwrap();
+            }
+        })));
+        let r = plugin_chmod(&root, true, "d/f", 0o755);
+        set_hook(None);
+        r.unwrap();
+        assert_eq!(mode_of(&out.join("f")), 0o600, "outside file never touched");
+        assert_eq!(mode_of(&root.join("d.moved/f")), 0o755, "the held inode got the mode");
     }
 }
