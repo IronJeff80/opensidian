@@ -78,7 +78,40 @@
         canAcceptExtension(ext) { return ext === "md"; }
       }
       class EditableFileView extends FileView {}
-      class TextFileView extends EditableFileView { constructor(leaf) { super(leaf); this.data = ""; } }
+      /* TextFileView (obsidian.d.ts): the file's text lives in this.data. Opening a file reads it and
+         hands it to the subclass with setViewData(data, true) (true = a different file, start clean);
+         save() writes the subclass's getViewData() back when it differs from the file on disk;
+         requestSave() is that save, debounced 2s; switching or closing the file saves it first. */
+      class TextFileView extends EditableFileView {
+        constructor(leaf) {
+          super(leaf); this.data = "";
+          this.requestSave = d.debounce(() => { this.save().catch(e => console.error("[plugin] TextFileView save:", e)); }, 2000);
+        }
+        async onLoadFile(file) {
+          const data = await d.vault().read(file);
+          if (this.file !== file) return;              // another file was opened while this one was read
+          this.data = data;
+          this.setViewData(data, true);
+        }
+        async onUnloadFile(file) {
+          if (this.requestSave && this.requestSave.cancel) this.requestSave.cancel();
+          if (this.file === file) await this.save();
+        }
+        async save(clear) {
+          const f = this.file;
+          if (f instanceof d.TFile()) {
+            const data = this.getViewData();
+            if (typeof data === "string") {
+              this.data = data;
+              if (data !== await d.vault().read(f)) await d.vault().modify(f, data);
+            }
+          }
+          if (clear) this.clear();
+        }
+        getViewData() { return this.data; }
+        setViewData(data) { this.data = data; }
+        clear() {}
+      }
 
 
       /* ------------------------------------------------ the view host
@@ -808,7 +841,7 @@
     if (typeof viewsFactory !== "function") { console.error("[plugin] views.js did not load"); return false; }
     const { View, ItemView, FileView, EditableFileView, TextFileView, WorkspaceLeaf, layout, PopoverState, host: views } = viewsFactory({
       Component, Events, installDom, mk, setIcon, app: () => K.app, touch: () => touch(),
-      vault: () => K.vault, TFile: () => K.TFile,
+      vault: () => K.vault, TFile: () => K.TFile, debounce: (cb, ms, reset) => K.debounce(cb, ms, reset),
       leafView: l => K.leafView(l), groupFile: g => K.groupFile(g), openFileIn: (l, f, o) => K.openFileIn(l, f, o),
       groupLeaf: g => K.groupLeaf(g), leafState: l => K.leafState(l), activeLeaf: () => (K.workspace ? K.workspace.activeLeaf : null),
     });
