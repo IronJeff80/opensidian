@@ -95,6 +95,8 @@
       if (typeof onVaultChanged === "function") { try { await onVaultChanged(full); } catch (e) { console.error("[plugin] onVaultChanged:", e); } }
       applyChange(full);
     }
+    // a vault file that is neither a note nor a canvas (an exported .svg, a .json, ...): text I/O over the confined VFS
+    const plainFile = f => f instanceof TFile && noteOf(f.path) == null && !isCanvas(f.path);
     function mdOnly(f, what) {
       const n = f instanceof TFile ? noteOf(f.path) : null;
       if (n == null) throw new Error(what + ": only markdown notes are supported in opensidian M1 (" + (f && f.path) + ")");
@@ -301,6 +303,7 @@
       getAllFolders(includeRoot) { const a = [...files.values()].filter(f => f instanceof TFolder); return includeRoot ? [vroot, ...a] : a; },
       async read(f) {
         if (f instanceof TFile && isCanvas(f.path)) return cio("read", f.path);
+        if (plainFile(f)) return td.decode(await adapter.readBinary(f.path));   // any other vault file: UTF-8 text over the confined VFS
         return inv("read_note", { name: mdOnly(f, "read") });
       },
       async cachedRead(f) { return vault.read(f); },
@@ -309,6 +312,7 @@
           const s = String(data); await cio("write", f.path, s);
           f.stat.mtime = Date.now(); f.stat.size = new TextEncoder().encode(s).byteLength; vault.trigger("modify", f); return;
         }
+        if (plainFile(f)) return vault.modifyBinary(f, te.encode(String(data)));
         const name = mdOnly(f, "modify");
         await inv("write_note", { name, content: String(data) });
         await changed({ modified: [name] });
@@ -325,7 +329,7 @@
           if (typeof refreshTree === "function") try { await refreshTree(); } catch (_) {}
           return f;
         }
-        if (name == null) throw new Error("create: only markdown notes can be created in opensidian M1 (" + p + ")");
+        if (name == null) return vault.createBinary(p, te.encode(String(data == null ? "" : data)));   // other text files: confined VFS
         if (files.has(p)) throw new Error("File already exists.");
         await inv("create_note", { name, content: String(data == null ? "" : data) });
         await changed({ added: [name] });
