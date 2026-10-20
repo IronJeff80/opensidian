@@ -1032,6 +1032,20 @@
        the unsupported error naming the cause: there is no fallback store. Ids are app-wide
        strings (1-64 of a-z, 0-9 and "-"), as stock; any plugin in the
        vault can read any id, which is what SecretComponent's picker relies on. */
+    /* app.internalPlugins: the core plugins plugins reach. plugins[id] is the wrapper ({enabled,
+       _loaded, instance, load(), views}); config is the id -> enabled map over the core plugins that
+       are EXPOSED. A core plugin is exposed by putting its id in config (main.js: canvas); the
+       app's own hooks on plugins (graph, switcher, page-preview) stay unexposed, getPluginById null.
+       stock keeps config[k] === !!getEnabledPluginById(k). */
+    function internalPlugins() {
+      const plugins = {}, config = {};
+      const own = k => typeof k === "string" && Object.prototype.hasOwnProperty.call(config, k) && Object.prototype.hasOwnProperty.call(plugins, k);
+      return {
+        plugins, config,
+        getPluginById(id) { return own(id) ? plugins[id] : null; },
+        getEnabledPluginById(id) { return own(id) && plugins[id].enabled ? plugins[id].instance : null; },
+      };
+    }
     const ssTok = {}, SS_ID = /^[a-z0-9-]{1,64}$/;   // stock 1.13.7, black-box: apioracle cpsecret.ids / .idlen
     let ssVals = null, ssWhy = "secret storage is not loaded (no plugin has started)", ssP = null, ssQ = Promise.resolve();
     function ssLoad() {
@@ -1098,9 +1112,7 @@
       vault, workspace, metadataCache, metadataTypeManager, fileManager, keymap, commands, plugins, setting,
       renderContext: new RenderContext(), secretStorage: new SecretStorage(ssTok),
       scope: keymap.getRootScope() || new Scope(),   // stock: app.scope === app.keymap.getRootScope()
-      // no core plugin is exposed to plugins (getPluginById is null for every id), so the
-      // id -> enabled map over them, config, is empty: stock keeps config[k] === !!getEnabledPluginById(k)
-      internalPlugins: { getPluginById() { return null; }, getEnabledPluginById() { return null; }, plugins: {}, config: {} },
+      internalPlugins: internalPlugins(),
       statusBar: { get containerEl() { return statusBox(); } },
       dom: { get appContainerEl() { return document.body; } },
       lastEvent: null,

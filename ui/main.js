@@ -6950,6 +6950,38 @@ if (PLG) {
     "page-preview": { enabled: false, instance: { id: "page-preview" } },
   });
 }
+/* goal canvas-core: the Canvas core plugin (ui/plugins/canvas.js). Its factory is taken ONCE here and
+   removed from window. It is exposed in app.internalPlugins (config.canvas), on by default; the on/off
+   choice persists app-wide in localStorage. Its file I/O is canvas_io (works in restricted mode). */
+let CANVAS = null;
+{
+  const f = window.__osCanvasFactory;
+  try { delete window.__osCanvasFactory; } catch (_) {}
+  if (PLG && typeof f === "function") {
+    const ip = PLG.app.internalPlugins, KEY = "opensidian.core.canvas";
+    try {
+      CANVAS = f({
+        X: PLG.X, app: PLG.app, config: ip.config,
+        io: (op, path, data) => inv("canvas_io", data == null ? { op, path } : { op, path, data }),
+        readNote: p => inv("read_note", { name: String(p).replace(/\.md$/i, "") }),
+        notify: m => say(m, "canvas"),
+        pref: {
+          get() { try { const v = localStorage.getItem(KEY); return v == null ? null : v === "1"; } catch (_) { return null; } },
+          set(on) { try { localStorage.setItem(KEY, on ? "1" : "0"); } catch (_) {} },
+        },
+      });
+      ip.plugins.canvas = CANVAS.plugin;
+      CANVAS.plugin.load().catch(e => console.error("[canvas] load:", e));
+    } catch (e) { console.error("[canvas] core plugin:", e); CANVAS = null; }
+  }
+}
+// open a .canvas file in a canvas tab of the focused group (the view type must be registered: core plugin on)
+async function openCanvas(path) {
+  if (!CANVAS || !CANVAS.isRegistered()) { say("Canvas is turned off (Settings › Community plugins › Core plugins)", "canvas"); return null; }
+  const leaf = PLG.app.workspace.getLeaf("tab");
+  await leaf.setViewState({ type: "canvas", state: { file: path }, active: true });
+  return leaf;
+}
 /* ---------- R14: command registry = the ONE source of truth for the palette
    (Ctrl+P), the keymap dispatcher and Settings ▸ Hotkeys. Chords are
    normalised "ctrl+alt+shift+<key>" (e.key lowercased, Mod = Ctrl on Linux).

@@ -101,3 +101,37 @@ body.os-has-plugin-status #main .status { bottom: 30px }
 .os-pv > .view-header > .view-header-title { flex: 1 1 auto; min-width: 0 }
 .os-pv > .view-header .view-actions { display: flex; gap: 2px }
 .os-pv > .view-content { flex: 1 1 0; min-height: 0; overflow: auto; padding: 8px 12px }
+
+/* goal canvas-core: the Canvas core plugin's board (ui/plugins/canvas.js) */
+.canvas-view { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; padding: 0 }
+.canvas-wrapper { position: absolute; inset: 0; overflow: hidden; outline: none; cursor: grab; touch-action: none;
+  background-color: var(--background-primary, #1e1e1e);
+  background-image: radial-gradient(var(--background-modifier-border, #444) 1px, transparent 1px); background-size: 20px 20px }
+.canvas-wrapper[hidden] { display: none }
+.canvas { position: absolute; left: 0; top: 0; transform-origin: 0 0 }
+.canvas-edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none }
+.canvas-edge-label { font-size: 14px; fill: var(--text-normal, #ddd); paint-order: stroke; stroke: var(--background-primary, #1e1e1e); stroke-width: 4px }
+.canvas-nodes { position: absolute; left: 0; top: 0 }
+.canvas-node { position: absolute; box-sizing: border-box; display: flex; flex-direction: column; cursor: default;
+  --canvas-color: var(--background-modifier-border, #555) }
+.canvas-node > .canvas-node-container { flex: 1 1 auto; min-height: 0; overflow: auto; border: 2px solid var(--canvas-color);
+  border-radius: 8px; background: var(--background-primary, #1e1e1e); color: var(--text-normal, #ddd) }
+.canvas-node.is-themed > .canvas-node-container { background: color-mix(in srgb, var(--canvas-color) 12%, var(--background-primary, #1e1e1e)) }
+.canvas-node.is-selected > .canvas-node-container { box-shadow: 0 0 0 2px var(--interactive-accent, #7f6df2) }
+.canvas-node-label { position: absolute; bottom: 100%; left: 0; font-size: 12px; color: var(--text-muted, #999); white-space: nowrap; padding-bottom: 2px }
+.canvas-node-label:empty { display: none }
+.canvas-node-text, .canvas-node-placeholder, .canvas-link { padding: 8px 12px; white-space: pre-wrap; word-break: break-word }
+.canvas-link { color: var(--text-accent, #8ab4f8) }
+.canvas-node-placeholder { color: var(--text-muted, #999) }
+.canvas-node-textarea { width: 100%; height: 100%; box-sizing: border-box; resize: none; border: 0; outline: none;
+  padding: 8px 12px; font: inherit; background: transparent; color: inherit }
+.canvas-node-content-blocker { position: absolute; inset: 0 }
+.canvas-node.is-editing > .canvas-node-content-blocker, .canvas-node-content-blocker[hidden] { display: none }
+.canvas-node-resizer { position: absolute; right: -4px; bottom: -4px; width: 12px; height: 12px; cursor: nwse-resize; z-index: 1 }
+.canvas-node-group > .canvas-node-container { background: color-mix(in srgb, var(--canvas-color) 8%, transparent) }
+.canvas-node-group > .canvas-node-label { font-size: 16px }
+.canvas-file-embed { padding: 0 8px }
+.canvas-controls { position: absolute; right: 8px; top: 8px; display: flex; gap: 4px; z-index: 2 }
+.canvas-control { padding: 2px 8px; cursor: pointer }
+.canvas-error { margin: 24px; padding: 16px; border: 1px solid var(--text-error, #e93147); border-radius: 8px; color: var(--text-normal, #ddd) }
+.canvas-error-title { font-weight: 600; color: var(--text-error, #e93147); margin-bottom: 6px }
