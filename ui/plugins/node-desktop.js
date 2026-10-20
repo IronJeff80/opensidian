@@ -205,7 +205,11 @@
     let host = "";
     if (o.host) host = String(o.host);
     else if (o.hostname) host = String(o.hostname) + (o.port ? ":" + o.port : "");
-    const auth = o.auth ? encodeURIComponent(String(o.auth)).replace(/%3A/i, ":") + "@" : "";
+    /* Node's legacy url.format appends auth ("the username and password separated by ':'")
+       with EVERY ':' kept literal (its auth escape set = encodeURIComponent's unreserved set
+       plus ':'), so the pieces between colons are encoded and the colons never are:
+       {auth: "u:p:q"} -> "u:p:q@", {auth: "a@b"} -> "a%40b@". */
+    const auth = o.auth ? String(o.auth).split(":").map(encodeURIComponent).join(":") + "@" : "";
     const slashes = o.slashes || /^(https?|ftp|file|wss?):$/.test(proto) ? "//" : "";
     let search = o.search != null ? String(o.search) : "";
     if (!search && o.query && typeof o.query === "object") { const p = new URLSearchParams(); for (const k of Object.keys(o.query)) for (const v of [].concat(o.query[k])) p.append(k, String(v)); const t = p.toString(); search = t ? "?" + t : ""; }

@@ -136,8 +136,102 @@
     const parseFrontMatterAliases = fm => { const v = parseFrontMatterEntry(fm, /^alias(es)?$/i); return v == null ? null : [].concat(v).map(String); };
     const parseFrontMatterTags = fm => { const v = parseFrontMatterEntry(fm, /^tags?$/i); return v == null ? null : [].concat(v).flatMap(x => String(x).split(/[,\s]+/)).filter(Boolean).map(t => t.startsWith("#") ? t : "#" + t); };
     const requestUrl = () => Promise.reject(new Error("requestUrl is not supported in opensidian yet (M1)"));
-    const htmlToMarkdown = h => String(h).replace(/<[^>]+>/g, "");
-    const sanitizeHTMLToDom = h => { const t = document.createElement("template"); t.innerHTML = String(h); for (const s of t.content.querySelectorAll("script,iframe,object,embed")) s.remove(); return t.content; };
+    /* HTML is parsed into a <template>: its content document has no browsing context, so
+       nothing in it runs or loads. Markdown is built by walking that DOM; every text node is
+       escaped, so no tag can come through from the input as markup (code spans/blocks keep
+       their text verbatim: markdown renders code as text, never as HTML). */
+    const inertParse = h => { const t = document.createElement("template"); t.innerHTML = String(h); return t.content; };
+    const UNSAFE_URL = v => { const s = String(v).replace(/[\u0000- \u007f-\u009f]/g, "").toLowerCase();
+      return /^(javascript|vbscript):/.test(s) || (/^data:/.test(s) && !/^data:image\/(png|gif|jpe?g|webp|bmp|avif)[;,]/.test(s)); };
+    const MD_SKIP = new Set(["script", "style", "noscript", "template", "iframe", "frame", "frameset", "object", "embed", "applet", "head", "title", "meta", "link", "base"]);
+    const MD_BLOCK = new Set(["p", "div", "section", "article", "header", "footer", "main", "nav", "aside", "figure", "figcaption", "address", "details", "summary", "table", "thead", "tbody", "tfoot", "dl", "dt", "dd", "form", "fieldset", "center"]);
+    const mdEsc = s => s.replace(/\\/g, "\\\\").replace(/[*_`[\]]/g, c => "\\" + c).replace(/&(?=#?[A-Za-z0-9]+;)/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const mdWrap = (m, s) => { const t = s.trim(); if (!t) return s; return s.slice(0, s.length - s.trimStart().length) + m + t + m + s.slice(s.trimEnd().length); };
+    const mdTicks = s => { let n = 0; for (const r of s.match(/`+/g) || []) n = Math.max(n, r.length); return n; };
+    const mdTight = s => s.replace(/[ \t]+\n/g, "\n").replace(/\n{2,}/g, "\n").trim();
+    const mdUrl = u => String(u).trim().replace(/[\s()<>]/g, c => "%" + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0"));
+    function mdNode(n) {
+      if (n.nodeType === 3) return mdEsc(n.nodeValue.replace(/\s+/g, " "));
+      if (n.nodeType !== 1 && n.nodeType !== 9 && n.nodeType !== 11) return "";
+      const tag = n.nodeType === 1 ? n.localName.toLowerCase() : "";
+      if (MD_SKIP.has(tag)) return "";
+      const kids = () => Array.from(n.childNodes, mdNode).join("");
+      const h = /^h([1-6])$/.exec(tag);
+      if (h) return "\n\n" + "#".repeat(+h[1]) + " " + mdTight(kids()).replace(/\n/g, " ") + "\n\n";
+      switch (tag) {
+        case "br": return "\n";
+        case "hr": return "\n\n---\n\n";
+        case "strong": case "b": return mdWrap("**", kids());
+        case "em": case "i": return mdWrap("*", kids());
+        case "del": case "s": case "strike": return mdWrap("~~", kids());
+        case "code": {
+          const t = n.textContent; if (!t) return "";
+          const f = "`".repeat(mdTicks(t) + 1), pad = /^`|`$/.test(t) ? " " : "";
+          return f + pad + t.replace(/\n/g, " ") + pad + f;
+        }
+        case "pre": {
+          const t = n.textContent.replace(/\n$/, ""), c = n.querySelector("code");
+          const lang = c && /(?:^|\s)lang(?:uage)?-([\w+-]+)/.exec(c.className || "");
+          const f = "`".repeat(Math.max(3, mdTicks(t) + 1));
+          return "\n\n" + f + (lang ? lang[1] : "") + "\n" + t + "\n" + f + "\n\n";
+        }
+        case "a": {
+          const text = kids(), href = n.getAttribute("href");
+          if (!href || UNSAFE_URL(href) || !text.trim()) return text;
+          return text.slice(0, text.length - text.trimStart().length) + "[" + text.trim() + "](" + mdUrl(href) + ")" + text.slice(text.trimEnd().length);
+        }
+        case "img": {
+          const src = n.getAttribute("src");
+          if (!src || UNSAFE_URL(src)) return "";
+          return "![" + mdEsc((n.getAttribute("alt") || "").replace(/\s+/g, " ")) + "](" + mdUrl(src) + ")";
+        }
+        case "ul": case "ol": {
+          let i = +(n.getAttribute("start") || 1) || 1;
+          const items = [];
+          for (const li of n.children) {
+            if (li.localName !== "li") continue;
+            const mark = tag === "ol" ? (i++) + ". " : "- ";
+            const body = mdTight(Array.from(li.childNodes, mdNode).join(""));
+            items.push(mark + body.replace(/\n/g, "\n" + " ".repeat(mark.length)));
+          }
+          return "\n\n" + items.join("\n") + "\n\n";
+        }
+        case "li": return "\n\n- " + mdTight(kids()) + "\n\n";
+        case "blockquote": return "\n\n" + mdTight(kids()).split("\n").map(l => "> " + l).join("\n") + "\n\n";
+        case "tr": return "\n" + kids().trim() + "\n";
+        case "td": case "th": return " " + kids().trim() + " ";
+      }
+      if (MD_BLOCK.has(tag)) return "\n\n" + kids().trim() + "\n\n";
+      return kids();
+    }
+    const htmlToMarkdown = h => {
+      if (h == null || h === "") return "";
+      const root = typeof Node !== "undefined" && h instanceof Node ? h : inertParse(h);
+      return mdNode(root).split("\n").map(l => l.replace(/\s+$/, "")).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    };
+    /* sanitizeHTMLToDom: an inert fragment with no active content left in it. Dropped elements:
+       script-like/embedding ones, base (re-points every relative URL), meta (refresh/http-equiv),
+       link (stylesheet/preload fetches), form (credential phishing + submit-on-enter), nested
+       template (its content is not walked), SVG animate/set (can rewrite href to javascript:),
+       and style elements that fetch (@import / url()). Plain <style> is kept. On every element:
+       on* handlers, srcdoc, and javascript:/vbscript:/non-image data: URLs in URL attributes go;
+       inline style attributes that fetch (url( / @import / expression() go. */
+    const SAN_DROP = "script,iframe,frame,frameset,object,embed,applet,base,meta,link,form,template,animate,set,animateMotion,animateTransform";
+    const SAN_URL_ATTR = new Set(["href", "src", "action", "formaction", "data", "poster", "background", "lowsrc", "ping", "codebase", "cite", "longdesc", "dynsrc", "xlink:href"]);
+    const sanitizeHTMLToDom = h => {
+      const f = inertParse(h == null ? "" : h);
+      for (const s of f.querySelectorAll(SAN_DROP)) s.remove();
+      for (const s of f.querySelectorAll("style")) if (/@import|url\s*\(/i.test(s.textContent)) s.remove();
+      for (const el of f.querySelectorAll("*")) {
+        for (const a of Array.from(el.attributes)) {
+          const n = a.name.toLowerCase();
+          if (n.startsWith("on") || n === "srcdoc" || (n === "srcset" && /javascript:|vbscript:|data:/i.test(a.value))
+            || ((SAN_URL_ATTR.has(n) || n.endsWith(":href")) && UNSAFE_URL(a.value))
+            || (n === "style" && /url\s*\(|@import|expression\s*\(/i.test(a.value))) el.removeAttribute(a.name);
+        }
+      }
+      return f;
+    };
 
     Object.assign(K, { htmlToMarkdown, parseFrontMatterAliases, parseFrontMatterEntry, parseFrontMatterTags, prepareFuzzySearch, prepareSimpleSearch, renderMatches, requestUrl, sanitizeHTMLToDom });
   });
