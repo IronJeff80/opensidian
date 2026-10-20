@@ -4918,11 +4918,15 @@ const tpType = cs => [cs.fontSize, cs.fontWeight, cs.letterSpacing, cs.lineHeigh
    instead of by a count: one "<tag>.<class>" per child, plus the length. A
    caret surface that became a row changes this token; a count alone would not
    notice a swap. Published whenever a live-preview scroller exists, so the
-   phase can read it with the editor CLOSED and OPEN and diff the two. */
+   phase can read it with the editor CLOSED and OPEN and diff the two.
+   CodeMirror's cm-focused is FOCUS state, not structure, and CM applies it 10 ms
+   after the focus/blur event: an editor focused by the open path (quick
+   switcher) published a closed signature without it and an open one with it.
+   Dropped, so the token answers only "did the row list change". */
 const tpKids = lp => {
   if (!lp) return "-";
   const sig = [...lp.children].map(c => c.tagName.toLowerCase() + "." +
-                (c.className || "-").toString().replace(/[[\]|/~ ]/g, "_")).join(",");
+                ((c.className || "").toString().split(" ").filter(k => k && k !== "cm-focused").join(" ") || "-").replace(/[[\]|/~ ]/g, "_")).join(",");
   return lp.children.length + ":" + tpHash(sig) + ":" + sig.slice(0, 90);
 };
 function tpInstall() {       // the three chords, capture-phase so a focused contenteditable cannot eat them
@@ -6758,8 +6762,10 @@ async function qsOpenHow(n, how) {
 /* A note opened from the switcher takes the keyboard, like stock (Ctrl+O, name,
    Enter, type): closeModal hides #minput, which leaves focus on <body>, and no
    open path (openInTab / rowOpen REQ-4 / navigate / splitWith) focuses the editor.
-   Edit modes only (both render in g.lp); reading view and non-note views keep it. */
+   Edit modes only (both render in g.lp); reading view and non-note views keep it.
+   Never while the inline title is open: the rename surface owns the keyboard. */
 function qsFocusEd() {
+  if (titleEditing()) return;
   const g = state && fg(); const t = g && g.active >= 0 ? g.tabs[g.active] : null;
   if (t && !t.kind && isLp(t.mode) && g.lp && g.lp.isConnected) g.lp.focus({ preventScroll: true });
 }
