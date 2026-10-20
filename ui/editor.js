@@ -1625,8 +1625,15 @@ Object.assign(Ed, {
       CMs.EditorState.transactionExtender.of(tr => tr.docChanged && !tr.isUserEvent("input.type")
         && !tr.isUserEvent("undo") && !tr.isUserEvent("redo") && tr.annotation(CMc.isolateHistory) == null
         ? { annotations: CMc.isolateHistory.of("full") } : null),
+      // the editor's own keys (Ed.onKey) are a keymap `any` binding, not a keydown
+      // handler: CM6 merges every keymap's commands for a key into one run list in
+      // precedence order, so a plugin binding at a higher precedence
+      // (registerEditorExtension(Prec.highest(keymap.of([{key:"Tab", run}])))) runs
+      // first and, when its command returns false, ours still runs. A keydown
+      // handler here ran ahead of the keymap handler and swallowed Tab/Enter/... for
+      // every plugin keymap (Advanced Tables' Tab only indented).
+      CMv.keymap.of([{ any: (view, e) => { Ed.onKey(G(), e); return e.defaultPrevented; } }]),
       CMv.EditorView.domEventHandlers({
-        keydown: (e) => { Ed.onKey(G(), e); return e.defaultPrevented; },
         beforeinput: (e) => {
           const g = G();
           if (g && !v._sp && !e.isComposing && typeof otel !== "undefined" && otel.begin)
