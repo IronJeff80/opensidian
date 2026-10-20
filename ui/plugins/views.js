@@ -1329,7 +1329,11 @@
         if (f instanceof TFile) this.trigger("file-menu", menu, f, "link-context-menu", null);
         return true;
       }
-      openPopoutLeaf() { unsupported("popout windows (Workspace.openPopoutLeaf): one window per vault"); }
+      /* top5-func: one window per vault, so a popout leaf is what getLeaf("window") already is here — a new
+         tab in the focused pane, a real leaf (setViewState/openFile show there, detach closes it). The size and
+         position in `data` describe an OS window that does not exist and are not used. A leaf never given a
+         view leaves no tab behind (it is pending, like getLeaf("tab")'s). */
+      openPopoutLeaf(data) { return this.getLeaf("window"); }
       moveLeafToPopout() { unsupported("popout windows (Workspace.moveLeafToPopout): one window per vault"); }
     }
     const workspace = new Workspace();
