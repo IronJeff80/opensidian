@@ -193,7 +193,42 @@
         safe("view unload " + r.type, () => r.view.unload());
         d.touch();
       }
+      let svsProbe = null, svsSkip = 0;   // top5-func: PV.openAs probe / re-entry guard
       const PV = {
+        /* top5-func: a NATIVE note open (explorer row, quick switcher, wikilink: main.js navigate /
+           openInTab / openNewTab) asks the plugins first, as stock routes every open through
+           WorkspaceLeaf.setViewState. Only when a plugin WRAPPED WorkspaceLeaf.prototype.setViewState
+           (Excalidraw: a note whose frontmatter has excalidraw-plugin opens in its "excalidraw" view):
+           the wrapper chain runs on a detached probe leaf with {type:"markdown", state:{file}}; the
+           type that reaches our own setViewState is the one the plugins picked. "markdown" (or a type
+           nobody registered) -> false, the app opens the note as always. Another type -> the file opens
+           in that plugin view in a new tab of g; how "replace" (a plain open replaces the active tab)
+           then closes the note tab it replaced (not a pinned one, not a special tab). Never re-asked
+           while a plugin's own setViewState/openFile is already opening the file (svsSkip), so a
+           plugin's "open as markdown" stays markdown. */
+        async openAs(g, name, how) {
+          if (svsSkip > 0 || !g || WorkspaceLeaf.prototype.setViewState === baseSVS) return false;
+          const path = name + ".md", f = d.vault().getAbstractFileByPath(path);
+          if (!(f instanceof d.TFile())) return false;
+          const probe = new WorkspaceLeaf(d.app()); let want = "";
+          svsProbe = { leaf: probe, see: vs => { const ty = vs && vs.type; if (ty && (!want || want === "markdown")) want = String(ty); } };
+          try { await probe.setViewState({ type: "markdown", state: { file: path } }); }
+          catch (e) { console.error("[plugin] setViewState (open " + path + "):", e); return false; }
+          finally { svsProbe = null; }
+          if (!want || want === "markdown" || !types.has(want)) return false;
+          for (const [t, r] of recs)        // already showing in this pane (a re-click on its row): go there
+            if (r.type === want && r.view && r.view.file && r.view.file.path === path && g.tabs.indexOf(t) >= 0) {
+              if (typeof switchTab === "function" && g.tabs.indexOf(t) !== g.active) await switchTab(g, g.tabs.indexOf(t));
+              return true;
+            }
+          const old = g.active >= 0 ? g.tabs[g.active] : null;
+          const leaf = new WorkspaceLeaf(d.app()); leaf._g = g; leaf._nt = true;
+          svsSkip++;
+          try { await openTyped(leaf, want, { file: path }, true); } finally { svsSkip--; }
+          if (how === "replace" && old && !old.kind && !old.pinned && old !== leaf._t && g.tabs.indexOf(old) >= 0 && typeof closeTab === "function")
+            try { await closeTab(g, g.tabs.indexOf(old), "plugin-detach", "plugin"); } catch (e) { console.error(e); }
+          return true;
+        },
         mount(g, t) {                   // main.js loadActive: t (active, kind unk) -> true if a plugin view shows it
           if (!isPvTab(t)) return false;
           let r = recs.get(t);
@@ -452,6 +487,7 @@
           return d.leafState(this);
         }
         async setViewState(vs, eState) {
+          if (svsProbe && svsProbe.leaf === this) { svsProbe.see(vs); return; }   // PV.openAs: the type the wrappers picked
           const type = vs && vs.type;
           if (type && types.has(type)) return openTyped(this, type, (vs && vs.state) || {}, vs.active);
           if (this._side && (type === "empty" || !type)) return;
@@ -472,7 +508,8 @@
           if (!type) return this._openFileDirect(file, os);
           return this.setViewState({ type, state: Object.assign({}, os.state, { file: file.path }), active: os.active }, os.eState);
         }
-        _openFileDirect(file, openState) {
+        async _openFileDirect(file, openState) { svsSkip++; try { return await this._openFileDirect0(file, openState); } finally { svsSkip--; } }
+        _openFileDirect0(file, openState) {
           if ((this._t && this._t.kind === "unk") || this._side) {   // a plugin leaf asked to show a note: a new tab in its group (or the focused one)
             const n = new WorkspaceLeaf(this.app); n._g = this._grp || M().fg(); n._nt = true;
             return d.openFileIn(n, file, openState);
@@ -511,7 +548,31 @@
         loadIfDeferred() { return Promise.resolve(); }
         get isDeferred() { return false; }
         onResize() { const v = this.view; try { if (v && v.onResize) v.onResize(); } catch (_) {} }
+        /* rebuildView: the leaf's view is built again from its own view state (Dataview's "Rebuild
+           current view"). A plugin view is closed (onClose/unload) and a fresh instance of its type
+           opened with getState(); a note re-renders its reading pane from scratch (rerender(true))
+           and re-applies the editor/scroll ephemeral state. */
+        async rebuildView() {
+          const es = this.getEphemeralState();
+          const r = this._t ? recs.get(this._t) : sideRec(this);
+          if (r) {
+            let st = {}; try { st = r.view.getState() || {}; } catch (_) {}
+            const type = r.type;
+            if (this._side) { sideClose(r); const n = sideMount(this, type, st); if (n) { await n.opened; sideShow(n); } }
+            else {
+              const t = this._t, g = groupOfTab(t);
+              closeRec(r); const n = makeView(t, type, st); if (!n) return;
+              if (g && activeTab(g) === t && typeof loadActive === "function") await loadActive(g);
+              await n.opened;
+            }
+          } else {
+            const v = this.view, pm = v && v.previewMode;
+            if (pm && typeof pm.rerender === "function") pm.rerender(true);
+          }
+          this.setEphemeralState(es);
+        }
       }
+      const baseSVS = WorkspaceLeaf.prototype.setViewState;   // PV.openAs: unwrapped -> no plugin routes opens
       const emptyOf = new WeakMap();
       function emptyView(leaf) { let v = emptyOf.get(leaf); if (!v) { v = new View(leaf); v.getViewType = () => (leaf._t ? leaf._t.utype : "empty"); emptyOf.set(leaf, v); } return v; }
 

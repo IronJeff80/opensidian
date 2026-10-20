@@ -5509,6 +5509,7 @@ async function switchTab(g, i) {
 
 async function openInTab(name, via = "tab") {   // explorer click -> FOCUSED group (R6.3); via:"boot" = auto-open at startup (already inside the boot span)
   const g = fg();
+  if (via !== "boot" && PVHOST && PVHOST.openAs && await PVHOST.openAs(g, name, "tab")) return;   // top5-func: a plugin view may own this note (views.js PV.openAs)
   const lt = g.active >= 0 ? g.tabs[g.active] : null;
   if (lt && !lt.kind && lt.link != null && lt.name !== name) return navigate(g, name);  // R13.3: a linked member navigates in place
   await act("note_open", { via, tabs: g.tabs.length }, async sp => {
@@ -5530,6 +5531,7 @@ async function openInTab(name, via = "tab") {   // explorer click -> FOCUSED gro
      IMMEDIATELY RIGHT of the active one, focused, never deduped (REQ-6..9,11,14).
    rowOpen is the one seam the two row kinds share. */
 async function openNewTab(name, g = fg()) {   // ggclick: a graph click passes the graph's own group
+  if (PVHOST && PVHOST.openAs && await PVHOST.openAs(g, name, "tab")) return;   // top5-func: PV.openAs
   await act("note_open", { via: "newtab", tabs: g.tabs.length }, async sp => {
     await flushSave(g);
     const at = g.active >= 0 ? g.active + 1 : g.tabs.length;
@@ -5552,6 +5554,7 @@ async function rowOpen(name, ev) {
   return navigate(g, name);                                  // REQ-1/2/3 (+ R13.3 linked members follow)
 }
 async function navigate(g, name, anchor) { // wikilink / graph click: replace g's ACTIVE tab, push history
+  if (PVHOST && PVHOST.openAs && await PVHOST.openAs(g, name, "replace")) return;   // top5-func: PV.openAs (the plugin view replaces the active note tab)
   navInfo = ""; nvRv = "";
   await act("note_open", { via: "link", tabs: g.tabs.length }, async sp => {
     await flushSave(g);

@@ -81,6 +81,15 @@
         this.scope.register([], "ArrowUp", () => { this._move(-1); return false; });
         this.scope.register([], "Enter", e => { this._choose(e); return false; });
       }
+      /* a re-opened SuggestModal starts with an empty query: plugins (Templater) keep one instance and
+         open() it per command, so the last query must not leak into the next run. A value set
+         after the close (a deliberate prefill before open()) is kept; onChooseSuggestion and
+         onClose still read the typed query, since it is only cleared at the NEXT open. */
+      open() {
+        if (!this._open && this._closedQ !== undefined && this.inputEl.value === this._closedQ) this.inputEl.value = "";
+        super.open();
+      }
+      close() { const was = this._open; super.close(); if (was) this._closedQ = this.inputEl.value; }
       setPlaceholder(p) { this.inputEl.setAttribute("placeholder", p); }
       setInstructions(list) { this.instructionsEl.empty(); for (const i of list || []) { const d = this.instructionsEl.createDiv({ cls: "prompt-instruction" }); d.createSpan({ cls: "prompt-instruction-command", text: i.command }); d.createSpan({ text: i.purpose }); } }
       onOpen() { this._update(); this.inputEl.focus(); }

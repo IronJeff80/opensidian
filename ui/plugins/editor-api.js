@@ -702,7 +702,7 @@
     }
     function embedPass(scope, sourcePath, holder, displayMode) {
       const r = K.app && K.app.embedRegistry, mc = K.app && K.app.metadataCache;
-      if (!r || !mc || !scope || !embPluginExts()) return [];
+      if (!r || !mc || !scope || (!embPluginExts() && !MDP.post.length)) return [];
       const pend = [], links = [];
       for (const n of Array.isArray(scope) ? scope : [scope]) {
         if (!n || n.nodeType !== 1) continue;
@@ -715,9 +715,20 @@
         const note = a.dataset.note;
         if (!note || a.closest(".internal-embed")) continue;
         let file = null; try { file = mc.getFirstLinkpathDest(note, sourcePath); } catch (_) {}
-        if (!file || file.extension === "md" || !embOwn(r.embedByExtension, file.extension)) continue;
-        const creator = r.getEmbedCreator(file);
-        if (typeof creator !== "function") continue;
+        const creator = file && file.extension !== "md" && embOwn(r.embedByExtension, file.extension) ? r.getEmbedCreator(file) : null;
+        if (typeof creator !== "function") {
+          /* a note embed the app shows as its link (no transclusion, req 410): still the embed's
+             element for the post processors — span.internal-embed[src][alt] = the linktext around
+             the unchanged "!" + link (Excalidraw draws a drawing embed there). Unresolved ones too,
+             as stock; nothing is wrapped while no plugin registered a post processor. */
+          if (!MDP.post.length) continue;
+          const lt = note + (a.dataset.anchor ? "#" + a.dataset.anchor : "");
+          const w = document.createElement("span");
+          w.setAttribute("alt", lt); w.setAttribute("src", lt); w.className = "internal-embed";
+          a.replaceWith(w);
+          if (bang.data.length > 1) { bang.data = bang.data.slice(0, -1); w.append("!", a); } else w.append(bang, a);
+          continue;
+        }
         const an = a.dataset.anchor, subpath = an ? "#" + an : "", linktext = note + subpath;
         const span = document.createElement("span");
         span.setAttribute("alt", linktext); span.setAttribute("src", linktext); span.className = "internal-embed";
