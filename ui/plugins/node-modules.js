@@ -30,6 +30,43 @@
   const eexist = p => { const e = new Error("EEXIST: file already exists, '" + p + "'"); e.code = "EEXIST"; e.path = String(p); return e; };
   const encOf = o => (typeof o === "string" ? o : o && typeof o === "object" ? o.encoding || null : null);
 
+  /* Node's Buffer encodings for readFile / writeFile / appendFile with an encoding: the bytes are
+     decoded / encoded here (no Buffer in this realm). An unknown name is Node's own TypeError. */
+  const ENCS = new Set(["utf8", "utf-8", "latin1", "binary", "ascii", "base64", "base64url", "hex", "utf16le", "utf-16le", "ucs2", "ucs-2"]);
+  function encName(enc) {
+    const n = String(enc).toLowerCase();
+    if (ENCS.has(n)) return n;
+    const e = new TypeError("The argument 'encoding' is invalid encoding. Received '" + String(enc) + "'"); e.code = "ERR_INVALID_ARG_VALUE"; throw e;
+  }
+  const bin = u => { let s = ""; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return s; };
+  function decodeAs(u, enc) {
+    switch (encName(enc)) {
+      case "utf8": case "utf-8": return V.utf8(u);
+      case "latin1": case "binary": return bin(u);
+      case "ascii": return bin(u.map(b => b & 0x7f));
+      case "base64": return btoa(bin(u));
+      case "base64url": return btoa(bin(u)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      case "hex": return Array.from(u, b => (b < 16 ? "0" : "") + b.toString(16)).join("");
+      default: return new TextDecoder("utf-16le").decode(u);   // utf16le / ucs2
+    }
+  }
+  function encodeAs(s, enc) {
+    s = String(s);
+    switch (encName(enc)) {
+      case "utf8": case "utf-8": return V.toBytes(s);
+      case "latin1": case "binary": case "ascii": return Uint8Array.from(s, c => c.charCodeAt(0) & 0xff);
+      case "base64": case "base64url": {
+        let t = s.replace(/-/g, "+").replace(/_/g, "/").replace(/[^A-Za-z0-9+/]/g, "");
+        if (t.length % 4 === 1) t = t.slice(0, -1);   // Node drops a dangling sextet
+        while (t.length % 4) t += "=";
+        return Uint8Array.from(atob(t), c => c.charCodeAt(0));
+      }
+      case "hex": { const m = s.match(/^(?:[0-9a-fA-F]{2})*/)[0]; const u = new Uint8Array(m.length / 2); for (let i = 0; i < u.length; i++) u[i] = parseInt(m.substr(i * 2, 2), 16); return u; }
+      default: { const u = new Uint8Array(s.length * 2); for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); u[2 * i] = c & 0xff; u[2 * i + 1] = c >> 8; } return u; }
+    }
+  }
+  const dataOf = (d, o) => { const enc = encOf(o); return typeof d === "string" && enc ? encodeAs(d, enc) : d; };
+
   class Stats {
     constructor(s) {
       const t = s.type === "folder";
@@ -65,9 +102,9 @@
     }
   }
   const P = {
-    async readFile(p, o) { const u = await V.read(p), enc = encOf(o); return enc ? (/^utf-?8$/i.test(enc) ? V.utf8(u) : Promise.reject(new Error("readFile: encoding " + enc + " is not supported"))) : u; },
-    async writeFile(p, d) { await V.write(p, d); },
-    async appendFile(p, d) { await V.append(p, d); },
+    async readFile(p, o) { const enc = encOf(o); if (enc) encName(enc); const u = await V.read(p); return enc ? decodeAs(u, enc) : u; },
+    async writeFile(p, d, o) { await V.write(p, dataOf(d, o)); },
+    async appendFile(p, d, o) { await V.append(p, dataOf(d, o)); },
     async stat(p) { return new Stats(await V.stat(p)); },
     async lstat(p) { return new Stats(await V.stat(p)); },        // Rust refuses a symlink: lstat never sees one
     async readdir(p, o) {

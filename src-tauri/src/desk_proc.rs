@@ -64,6 +64,36 @@ pub fn map_arg(root: &Path, a: &str) -> String {
     a.to_string()
 }
 
+/// app.openWithDefaultApp(path): a VAULT path only. "x" / "/vault/x" name a file or folder in
+/// the vault; any other absolute path, any ".." component, a NUL, or a path whose real location
+/// (symlinks resolved) is outside the vault's real root is refused with EPERM. The target must
+/// exist (ENOENT otherwise), so the opener is never handed a name it would guess at.
+pub fn vault_open_target(root: &Path, target: &str) -> Result<PathBuf, String> {
+    let t = target.trim();
+    if t.contains('\0') {
+        return Err(format!("EPERM: vault-escape refused: {target}"));
+    }
+    let rel = if t == VAULT_ALIAS {
+        ""
+    } else if let Some(r) = t.strip_prefix(VAULT_ALIAS).and_then(|r| r.strip_prefix('/')) {
+        r
+    } else if t.starts_with('/') || t.starts_with('\\') || t.starts_with('~') {
+        return Err(format!("EPERM: vault-escape refused: {target}"));
+    } else {
+        t
+    };
+    if rel.split(['/', '\\']).any(|c| c == "..") {
+        return Err(format!("EPERM: vault-escape refused: {target}"));
+    }
+    let real_root = root.canonicalize().map_err(|e| format!("ENOENT: vault root: {e}"))?;
+    let p = real_root.join(rel);
+    let real = p.canonicalize().map_err(|_| format!("ENOENT: no such file or directory, '{target}'"))?;
+    if !real.starts_with(&real_root) {
+        return Err(format!("EPERM: vault-escape refused (symlink out of the vault): {target}"));
+    }
+    Ok(real)
+}
+
 pub fn latin1_to_bytes(s: &str) -> Vec<u8> {
     s.chars().map(|c| c as u32 as u8).collect()
 }
@@ -361,6 +391,31 @@ mod tests {
         assert_eq!(map_cwd(root, Some("/tmp")), PathBuf::from("/tmp"));
         assert_eq!(map_arg(root, "/vault/a.md"), "/home/u/notes/a.md");
         assert_eq!(map_arg(root, "--vault"), "--vault");
+    }
+
+
+    #[test]
+    fn desk_open_target_is_vault_confined_and_symlink_safe() {
+        let base = std::env::temp_dir().join(format!("desk-vot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("vault");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("sub/a.md"), b"a").unwrap();
+        std::fs::write(base.join("outside.txt"), b"o").unwrap();
+        std::os::unix::fs::symlink(base.join("outside.txt"), root.join("link.txt")).unwrap();
+        std::os::unix::fs::symlink(root.join("sub/a.md"), root.join("in.md")).unwrap();
+        let rr = root.canonicalize().unwrap();
+        assert_eq!(vault_open_target(&root, "sub/a.md").unwrap(), rr.join("sub/a.md"));
+        assert_eq!(vault_open_target(&root, "/vault/sub/a.md").unwrap(), rr.join("sub/a.md"));
+        assert_eq!(vault_open_target(&root, "sub").unwrap(), rr.join("sub"));
+        assert_eq!(vault_open_target(&root, "/vault").unwrap(), rr);
+        assert_eq!(vault_open_target(&root, "in.md").unwrap(), rr.join("sub/a.md"));
+        for bad in ["../outside.txt", "sub/../../outside.txt", "/etc/passwd", "/vaultx/a", "~/x", "link.txt", "a\0b"] {
+            let e = vault_open_target(&root, bad).unwrap_err();
+            assert!(e.starts_with("EPERM: vault-escape refused"), "{bad}: {e}");
+        }
+        assert!(vault_open_target(&root, "nope.md").unwrap_err().starts_with("ENOENT"));
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

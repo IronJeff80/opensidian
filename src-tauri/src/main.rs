@@ -3531,7 +3531,9 @@ async fn desk_http_request(v: State<'_, Vault>, req: desk_http::Req) -> Result<d
 /* ---- cp-unrestricted: electron shell for plugins (openExternal / openPath /
    showItemInFolder), trust-gated like the rest. Stock hands these to the OS
    opener with the user's rights; so does this (xdg-open, no shell). "/vault/x"
-   is the vault's real path (getBasePath), as for child_process cwd. */
+   is the vault's real path (getBasePath), as for child_process cwd. op "vault"
+   (top5-func: app.openWithDefaultApp) takes a vault path and is confined to the
+   vault (desk_proc::vault_open_target). */
 #[tauri::command]
 fn desk_shell(v: State<Vault>, op: String, target: String) -> Result<(), String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
@@ -3549,6 +3551,8 @@ fn desk_shell(v: State<Vault>, op: String, target: String) -> Result<(), String>
             std::ffi::OsString::from(&target)
         }
         "path" => desk_proc::map_cwd(&root, Some(&target)).into_os_string(),
+        // app.openWithDefaultApp: vault paths only, symlinks resolved and confined to the vault
+        "vault" => desk_proc::vault_open_target(&root, &target)?.into_os_string(),
         "reveal" => {
             let p = desk_proc::map_cwd(&root, Some(&target));
             p.parent().map(|d| d.to_path_buf()).unwrap_or(p).into_os_string()

@@ -80,8 +80,12 @@
   /* ---- nav: Options > Community plugins, then the per-plugin group ---- */
   function nav(n) {
     for (const d of [...n.querySelectorAll("[data-cp]")]) d.remove();
-    const entry = (pane, text) => {
+    const entry = (pane, text, icon) => {
       const d = el("div", "snavi", text);
+      /* top5-func: a plugin tab that set SettingTab.icon shows it before its name (data-icon = the name) */
+      if (icon != null && icon !== "" && host.api && typeof host.api.setIcon === "function") {
+        const i = el("span", "snavi-icon"); host.api.setIcon(i, String(icon)); d.insertBefore(i, d.firstChild);
+      }
       d.dataset.pane = pane; d.dataset.cp = "1"; d.tabIndex = 0;
       d.onclick = () => showSettingsPage(pane);
       d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); showSettingsPage(pane); } };
@@ -94,7 +98,7 @@
     const h = el("div", "snavh", "Community plugins"); h.dataset.cp = "1";
     n.appendChild(h);
     for (const t of tabs.slice().sort((a, b) => String(a.name).localeCompare(String(b.name))))
-      entry("plg:" + t.id, String(t.name || t.id));
+      entry("plg:" + t.id, String(t.name || t.id), t.icon);
   }
   /* a plugin added/removed a setting tab: the group follows (nav is otherwise built once). A tab
      removed while on screen was hidden by removeSettingTab (activeTab null); like stock, the page

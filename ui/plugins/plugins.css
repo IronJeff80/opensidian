@@ -136,3 +136,6 @@ body.os-has-plugin-status #main .status { bottom: 30px }
 .canvas-control { padding: 2px 8px; cursor: pointer }
 .canvas-error { margin: 24px; padding: 16px; border: 1px solid var(--text-error, #e93147); border-radius: 8px; color: var(--text-normal, #ddd) }
 .canvas-error-title { font-weight: 600; color: var(--text-error, #e93147); margin-bottom: 6px }
+/* top5-func: a plugin setting tab's SettingTab.icon in the Settings sidebar (ui/plugins/settings.js nav) */
+.snavi-icon { display: inline-flex; width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px }
+.snavi-icon > svg { width: 14px; height: 14px }

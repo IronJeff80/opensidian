@@ -560,10 +560,16 @@
       constructor() {
         installDom();
         this.containerEl = mk("div", { cls: "vertical-tab-content" });
-        this.icon = undefined;
+        this._icon = undefined;   // stock default: undefined (apioracle settings-1.13.7); the accessor below
         this.settingItems = [];
         this._dom = null; this._pages = [];
       }
+      /* the settings sidebar icon (d.ts SettingTab.icon, since 1.11). A plugin assigns it in its ctor
+         (obsidian-git "git-pull-request", tasks "list-checks", templater "templater-icon"); the
+         Community plugins group in Settings draws it next to the tab's name (ui/plugins/settings.js),
+         and an assignment after the tab was added redraws that group. */
+      get icon() { return this._icon; }
+      set icon(v) { this._icon = v; if (K.setting && K.setting.pluginTabs.includes(this) && K.settingTabsChanged) K.settingTabsChanged(); }
       getSettingDefinitions() { return []; }
       update() {
         let defs;
@@ -867,7 +873,7 @@
         const i = setting.pluginTabs.indexOf(t); if (i >= 0) { setting.pluginTabs.splice(i, 1); tabsChanged(); }
       },
     };
-    Object.assign(K, { setting });
+    Object.assign(K, { setting, settingTabsChanged: tabsChanged });
   });
   reg("ui:inputsuggest", function (K) {
     const { host, be } = K;

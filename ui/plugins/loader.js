@@ -56,6 +56,21 @@
      ui/plugins/node-desktop.js. A builtin that has no member there yet binds the
      inert stub (throws on use), so a bundle that only binds it at module scope
      still loads. api-core still passes its old guarded flag; it is ignored. */
+  /* top5-func: Obsidian's bundled @codemirror/language carries one export upstream 6.12.4 does
+     not: tokenClassNodeProp, the NodeProp<string> a syntax node's CSS token classes live under
+     (dataview's Live Preview inline queries read node.type.prop(tokenClassNodeProp)). Plugins get
+     the vendored module's own members (the editor's instances) plus that prop, a real
+     @lezer/common NodeProp, one per page. The editor's markdown view builds no lezer syntax
+     tree, so no node carries it today and a lookup answers undefined, as for any untagged node. */
+  let langX = null;
+  function languageX(m) {
+    if (langX && langX.base === m) return langX.mod;
+    const C = window.__osModules && window.__osModules["@lezer/common"];
+    const prop = C && typeof C.NodeProp === "function" ? new C.NodeProp() : undefined;
+    const mod = Object.freeze(Object.assign(Object.create(null), m, prop ? { tokenClassNodeProp: prop } : {}));
+    langX = { base: m, mod };
+    return mod;
+  }
   function makeRequire(id) {
     const dv = host.desktopNode ? host.desktopNode.view(id) : null;
     const require = function require(name) {
@@ -67,7 +82,7 @@
       }
       if (name.startsWith("@codemirror/") || name.startsWith("@lezer/")) {
         const m = window.__osModules && Object.prototype.hasOwnProperty.call(window.__osModules, name) ? window.__osModules[name] : undefined;
-        if (m) return m;
+        if (m) return name === "@codemirror/language" ? languageX(m) : m;
         throw new Error(id + ': require("' + name + '"): editor extensions not supported yet');
       }
       const leaf = NODE && NODE.get(name);   // ui/plugins/node-leaves.js: pure leaves (path)

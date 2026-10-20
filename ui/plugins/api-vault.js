@@ -230,6 +230,11 @@
       getBasePath() { return VROOT; }
       getFullPath(p) { const r = vrel(p); return r ? VROOT + "/" + r : VROOT; }
       getFilePath(p) { return "file://" + this.getFullPath(p); }
+      /* top5-func: stock's desktop adapter carries its fs module (templater reads adapter.fs). Here it
+         is the same vault-confined facade require("fs") gives (ui/plugins/node-modules.js): paths are
+         "/vault/x" = basePath + "/x", and anything outside the vault is refused by Rust (EPERM). */
+      get fs() { const m = host.nodeModules && host.nodeModules.resolve("fs"); return m || undefined; }
+      get fsPromises() { const m = host.nodeModules && host.nodeModules.resolve("fs/promises"); return m || undefined; }
       static async readLocalFile(p) { const u = await core.read(p); return u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength); }
       static async mkdir(p) { await core.mkdir(p, true); }
     }
@@ -247,6 +252,10 @@
     Object.assign(vault, {
       configDir: ".obsidian",
       getName() { return K.st.vaultName; },
+      /* top5-func: templater's tp.file.exists. The adapter's check on the confined core: a vault path
+         is answered true/false; a path that leaves the vault rejects (EPERM vault-escape), never false.
+         `sensitive` is accepted for the typings' shape: the vault's filesystem is case-sensitive. */
+      exists(p, sensitive) { return adapter.exists(p, sensitive); },
       getRoot() { return vroot; },
       getAbstractFileByPath(p) { const n = normalizePath(p); return n === "/" ? vroot : files.get(n) || null; },
       getFileByPath(p) { const f = vault.getAbstractFileByPath(p); return f instanceof TFile ? f : null; },
@@ -1121,6 +1130,18 @@
       foldManager: { load() { return null; }, save() {} },
       loadLocalStorage(k) { try { const v = localStorage.getItem(app.appId + "-" + k); return v == null ? null : JSON.parse(v); } catch (_) { return null; } },
       saveLocalStorage(k, v) { try { if (v == null) localStorage.removeItem(app.appId + "-" + k); else localStorage.setItem(app.appId + "-" + k, JSON.stringify(v)); } catch (_) {} },
+      /* top5-func: a VAULT file or folder in the OS default app (obsidian-git "Open in default app",
+         templater's scripts-folder button). Rust desk_shell op "vault" confines the path to the vault
+         (no "..", no other absolute path, a symlink out of the vault is refused) and refuses in
+         restricted mode. Like electron's shell.openPath it resolves "" on success and the error text
+         otherwise; a refusal is never silent: it raises a Notice and a console warning. */
+      openWithDefaultApp(p) {
+        const why = e => String(e && e.message || e);
+        const shown = e => { const m = why(e); console.warn("[plugin] openWithDefaultApp(" + JSON.stringify(String(p)) + "): " + m); new K.Notice("Open in default app: " + m); return m; };
+        if (!K.st.trusted) return Promise.resolve(shown("EPERM: restricted mode is on"));
+        if (!be) return Promise.resolve(shown("EPERM: no desktop backend"));
+        return be.invoke("desk_shell", { op: "vault", target: String(p == null ? "" : p) }).then(() => "", shown);
+      },
     };
     class App {     // typings expose App as a class; plugins only ever receive `app`
       isDarkMode() { return document.body.classList.contains("theme-dark"); }
