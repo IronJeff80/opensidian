@@ -691,7 +691,8 @@
       enabled: pref.get() !== false,
       _loaded: false,
       instance: { id: "canvas", name: "Canvas", description: "Lay out notes, text and links on a board (JSON Canvas files).", defaultOn: true },
-      views: { canvas: leaf => new CanvasView(leaf) },
+      // the core view factory is tagged so the plugin-view census ([pview:]) counts community views only
+      views: { canvas: Object.defineProperty(leaf => new CanvasView(leaf), Symbol.for("opensidian.coreView"), { value: true }) },
       async load() { this._loaded = true; if (this.enabled) register(); },
       async unload() { unregister(); this._loaded = false; },
       async enable() { this.enabled = true; pref.set(true); sync(); await this.load(); },

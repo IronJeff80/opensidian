@@ -845,11 +845,14 @@
       }
 
       // [pview:<n types>|<type>@<where><+ shown|- hidden>,...] — where: t<pane index> main-area tab, r / l sidebar
+      // <n types> counts plugin view types: a core plugin's own (factory tagged opensidian.coreView) is not one
+      const CORE_VIEW = Symbol.for("opensidian.coreView");
       function censusTok() {
-        if (!types.size && !recs.size && !sides.length) return "";
+        const nt = [...types.values()].filter(t => !(t.factory && t.factory[CORE_VIEW])).length;
+        if (!nt && !recs.size && !sides.length) return "";
         const gs = M().groups(), cs = s => String(s).replace(/[[\]|,@+\s-]+/g, "_").slice(0, 40);
         const one = r => cs(r.type) + "@" + (r.side ? r.side[0] : "t" + gs.indexOf(groupOfTab(r.t))) + (r.view.containerEl.isConnected && !r.view.containerEl.hidden && r.view.containerEl.getClientRects().length ? "+" : "-");
-        return " [pview:" + types.size + "|" + [...recs.values(), ...sides].map(one).join(",") + "]";
+        return " [pview:" + nt + "|" + [...recs.values(), ...sides].map(one).join(",") + "]";
       }
       const host = { PV, sweep, censusTok, registerView, unregisterView, viewRegistry, leavesOfType, iterateLeaves, getLeaf, getSideLeaf,
                      reveal, leafOfGroup, leafOfTab, bindLeaf, activeTab, groupOfTab, typeOfTab, isPvTab, recs, types, sideHide, sideShowing,
