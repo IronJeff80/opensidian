@@ -610,6 +610,7 @@
         let txt; try { txt = await inv("read_note", { name: noteOf(f.path) }); } catch (_) { continue; }
         const c = parseMeta(txt); caches.set(f.path, c); f.stat.size = txt.length;
         metadataCache.trigger("changed", f, txt, c);
+        metadataCache.trigger("resolve", f);   // its links resolve on demand (resolveLink), so they are resolved now: dataview re-indexes a file on "resolve"
       }
       idxT = 0;
       if (idxQ.size) idxT = setTimeout(drainIdx, 0);

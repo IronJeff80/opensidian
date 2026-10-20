@@ -23,6 +23,7 @@
   "use strict";
   const M = window.__osModules || {};
   const S = M["@codemirror/state"], V = M["@codemirror/view"], C = M["@codemirror/commands"];
+  const L = M["@codemirror/language"], LM = M["@codemirror/lang-markdown"];
 
   function install(ctx) {
     const EdG = typeof Ed !== "undefined" ? Ed : null;
@@ -182,9 +183,35 @@
         const top = cm.documentTop - s.getBoundingClientRect().top + s.scrollTop;
         s.scrollTop = y <= 0 ? 0 : top + b.top + (y - n) * b.height;
       }
+      getFoldInfo() { return foldInfo(this.view && this.view._tv); }
+      applyFoldInfo(info) { applyFolds(this.view && this.view._tv, info); }
     }
     protoField(MarkdownEditView, "app", null);
     protoField(MarkdownEditView, "hoverPopover", undefined);   // oracle: undefined until a hover popover is shown
+    /* FoldInfo {folds:[{from,to}], lines}: the CM6 folded ranges of the note's editor as 0-based
+       line numbers (Templater's jump-to-cursor reads it, drops the folds over the jump target and
+       hands the rest back). The note editor folds nothing through CM6 today, so folds is [] — the
+       real state, not a stand-in; applyFoldInfo re-folds exactly the lines it is given. */
+    function foldInfo(v) {
+      const cm = v && v.cm; if (!cm) return null;
+      const d = cm.state.doc, folds = [];
+      if (L && typeof L.foldedRanges === "function")
+        L.foldedRanges(cm.state).between(0, d.length, (from, to) => { folds.push({ from: d.lineAt(from).number - 1, to: d.lineAt(to).number - 1 }); });
+      return { folds, lines: d.lines };
+    }
+    function applyFolds(v, info) {
+      const cm = v && v.cm; if (!cm || !info || !Array.isArray(info.folds) || !L || !L.foldEffect) return;
+      const d = cm.state.doc, fx = [];
+      for (const f of info.folds) {
+        const a = Number(f && f.from), b = Number(f && f.to);
+        if (!Number.isInteger(a) || !Number.isInteger(b) || a < 0 || b < a || b >= d.lines) continue;
+        const from = d.line(a + 1).to, to = d.line(b + 1).to;
+        if (to > from) fx.push(L.foldEffect.of({ from, to }));
+      }
+      if (!fx.length) return;
+      if (cm.state.field(L.foldState, false) === undefined && typeof L.codeFolding === "function") fx.push(S.StateEffect.appendConfig.of(L.codeFolding()));
+      cm.dispatch({ effects: fx });
+    }
     // load / replace the text of one tab view: the shown view takes a fresh state (Ed.setText:
     // new history, rebuilds the plugin compartment) when `clear`, otherwise an ordinary edit
     function setText(v, data, clear) {
@@ -225,6 +252,8 @@
       }
       getScroll() { const P = this.containerEl; return P && P._pvk ? P.scrollTop : null; }
       applyScroll(y) { const P = this.containerEl, n = Number(y); if (P && Number.isFinite(n)) P.scrollTop = n; }
+      getFoldInfo() { return foldInfo(this.view && this.view._tv); }
+      applyFoldInfo(info) { applyFolds(this.view && this.view._tv, info); }
     }
 
     /* ---------------------------------------------------------- MarkdownView
@@ -322,10 +351,47 @@
     }
     EdG.pxExt = function (v) {
       if (!active) return [];
-      const out = [infoField.init(() => infoFor(v)), lpField.init(() => isLp(v)), edField.init(() => v.cm || null), edFill, livePreviewState, hooks(v)];
+      const out = [infoField.init(() => infoFor(v)), lpField.init(() => isLp(v)), edField.init(() => v.cm || null), edFill, livePreviewState, hooks(v), mdLang()];
       for (const x of exts) out.push(x.ext);
       return out;
     };
+    /* the note's syntax tree, for plugins that walk it (syntaxTree(state)): while a plugin is
+       loaded the editor carries a Markdown language (the vendored @lezer/markdown, GFM) — tree
+       only: no keymap, no highlighting, no completion. Inline code parses the way plugins expect
+       from Obsidian's tree: each backtick run is its own node and the code between them is one
+       node, tagged under tokenClassNodeProp ("formatting formatting-code inline-code" /
+       "inline-code") — dataview finds its Live Preview inline queries by that prop and replaces
+       [from-1, to+1] of the code node. */
+    let mdLangExt = null;
+    function mdLang() {
+      if (mdLangExt) return mdLangExt;
+      const prop = typeof ctx.tokenClassNodeProp === "function" ? ctx.tokenClassNodeProp() : undefined;
+      if (!L || typeof L.Language !== "function" || !LM || !LM.markdownLanguage || !prop) return (mdLangExt = []);
+      const BT = 96, code = {
+        defineNodes: [{ name: "OsInlineCode" }, { name: "OsInlineCodeMark" }, { name: "OsInlineCodeText" }],
+        props: [prop.add({ OsInlineCodeMark: "formatting formatting-code inline-code", OsInlineCodeText: "inline-code" })],
+        parseInline: [{ name: "OsInlineCode", before: "InlineCode", parse(cx, next, pos) {
+          if (next !== BT || (pos > cx.offset && cx.char(pos - 1) === BT)) return -1;
+          let s = pos + 1; while (s < cx.end && cx.char(s) === BT) s++;
+          const n = s - pos;
+          for (let i = s; i < cx.end; i++) {
+            if (cx.char(i) !== BT) continue;
+            let j = i + 1; while (j < cx.end && cx.char(j) === BT) j++;
+            if (j - i === n) {
+              const kids = [cx.elt("OsInlineCodeMark", pos, s)];
+              if (i > s) kids.push(cx.elt("OsInlineCodeText", s, i));
+              kids.push(cx.elt("OsInlineCodeMark", i, j));
+              return cx.addElement(cx.elt("OsInlineCode", pos, j, kids));
+            }
+            i = j - 1;
+          }
+          return -1;
+        } }],
+      };
+      try { mdLangExt = new L.Language(L.defineLanguageFacet(), LM.markdownLanguage.parser.configure([code]), [], "markdown").extension; }
+      catch (e) { console.error("[plugin] markdown syntax tree:", e); mdLangExt = []; }
+      return mdLangExt;
+    }
     let bad = 0;
     function reconfigure(v) {
       if (!v.cm || !EdG.PX) return;
@@ -858,6 +924,7 @@
       TextFileView, FileView, MarkdownRenderer, Scope,
       app: () => K.app, groups: () => K.allGroups(), focused: () => K.focusedGroup(), leafFor: g => K.leafFor(g), touch: () => touch(),
       fileOf: name => { const f = K.st.modelOn ? K.files.get(name + ".md") : null; return f instanceof K.TFile ? f : null; },
+      tokenClassNodeProp: () => (host && typeof host.tokenClassNodeProp === "function" ? host.tokenClassNodeProp() : undefined),   // loader.js: the ONE prop require("@codemirror/language") hands out
     }) : null;
     try { delete window.__osEditorApi; } catch (_) {}
     const MarkdownView = EA ? EA.MarkdownView : class extends TextFileView { getViewType() { return "markdown"; } };

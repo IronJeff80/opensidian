@@ -60,13 +60,17 @@
      not: tokenClassNodeProp, the NodeProp<string> a syntax node's CSS token classes live under
      (dataview's Live Preview inline queries read node.type.prop(tokenClassNodeProp)). Plugins get
      the vendored module's own members (the editor's instances) plus that prop, a real
-     @lezer/common NodeProp, one per page. The editor's markdown view builds no lezer syntax
-     tree, so no node carries it today and a lookup answers undefined, as for any untagged node. */
-  let langX = null;
+     @lezer/common NodeProp, one per page. While a plugin is loaded the note editor carries a
+     Markdown syntax tree whose inline-code nodes carry it (editor-api.js mdLang); any other node
+     answers undefined, as for an untagged node. */
+  let langX = null, tokProp = null;
+  function tokenClassNodeProp() {   // one per page: the editor tags its inline-code nodes with this same prop (editor-api.js mdLang)
+    if (tokProp === null) { const C = window.__osModules && window.__osModules["@lezer/common"]; tokProp = C && typeof C.NodeProp === "function" ? new C.NodeProp() : undefined; }
+    return tokProp;
+  }
   function languageX(m) {
     if (langX && langX.base === m) return langX.mod;
-    const C = window.__osModules && window.__osModules["@lezer/common"];
-    const prop = C && typeof C.NodeProp === "function" ? new C.NodeProp() : undefined;
+    const prop = tokenClassNodeProp();
     const mod = Object.freeze(Object.assign(Object.create(null), m, prop ? { tokenClassNodeProp: prop } : {}));
     langX = { base: m, mod };
     return mod;
@@ -129,9 +133,74 @@
      This is defence in depth, not a sandbox: plugins share the page's realm
      (main.js top-level bindings, __TAURI_INTERNALS__). See security.md. */
   let sealed = false;
+  /* top5-func: data: URLs for plugin code, installed once right before the first plugin script
+     (seal), so a restricted page never has it. The page CSP is NOT touched (font-src 'self',
+     connect-src ipc:/self stay). A data: URL carries its bytes inline: decoding it in-page reads
+     nothing from anywhere and grants nothing a plugin cannot already do (atob + new
+     FontFace(name, bytes) is allowed under any CSP). Excalidraw ships its fonts as data: URLs —
+     new FontFace("Virgil", "url(data:font/woff2;base64,...)") and fetch(dataUrl) to subset them
+     into an SVG export — and both were refused ("Failed to load font", "Failed to fetch font
+     family"). So fetch(data:) answers a Response of the decoded bytes (GET only; a malformed URL
+     rejects with a TypeError like the native one), and a FontFace whose first source is
+     url(data:...) is built from those bytes. Every other URL goes to the native fetch / FontFace
+     and its CSP, untouched. */
+  function dataUrlBytes(u) {
+    const m = /^data:([^,]*),([\s\S]*)$/i.exec(String(u));
+    if (!m) throw new TypeError("malformed data: URL");
+    const b64 = /;\s*base64\s*$/i.test(m[1]);
+    const type = (b64 ? m[1].replace(/;\s*base64\s*$/i, "") : m[1]).trim() || "text/plain;charset=US-ASCII";
+    let bytes;
+    if (b64) {
+      const s = atob(m[2].replace(/%([0-9a-f]{2})/gi, (_, h) => String.fromCharCode(parseInt(h, 16))).replace(/\s+/g, ""));
+      bytes = new Uint8Array(s.length);
+      for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i);
+    } else {
+      const out = [], enc = new TextEncoder(), d = m[2];
+      for (let i = 0; i < d.length;) {
+        if (d[i] === "%" && /^[0-9a-f]{2}$/i.test(d.substr(i + 1, 2))) { out.push(parseInt(d.substr(i + 1, 2), 16)); i += 3; continue; }
+        let j = i; while (j < d.length && d[j] !== "%") j++;
+        if (j === i) j = i + 1;
+        for (const b of enc.encode(d.slice(i, j))) out.push(b);
+        i = j;
+      }
+      bytes = Uint8Array.from(out);
+    }
+    return { type, bytes };
+  }
+  function dataUrls() {
+    const nf = window.fetch;
+    if (typeof nf === "function") {
+      const fetch = function fetch(input, init) {
+        const u = typeof input === "string" ? input : input instanceof URL ? input.href : input && typeof input.url === "string" ? input.url : String(input);
+        if (!/^\s*data:/i.test(u)) return nf.apply(window, arguments);
+        const meth = (init && init.method) || (input && typeof input === "object" && input.method) || "GET";
+        if (!/^get$/i.test(String(meth))) return Promise.reject(new TypeError("Failed to fetch: a data: URL answers GET only"));
+        let d;
+        try { d = dataUrlBytes(u.trim()); } catch (e) { return Promise.reject(new TypeError("Failed to fetch: " + (e && e.message || "malformed data: URL"))); }
+        return Promise.resolve(new Response(d.bytes, { status: 200, statusText: "OK", headers: { "Content-Type": d.type } }));
+      };
+      try { window.fetch = fetch; } catch (e) { console.error("[plugin] data: fetch:", e); }
+    }
+    const NF = window.FontFace;
+    if (typeof NF === "function") {
+      const FontFace = class FontFace extends NF {
+        constructor(family, source, descriptors) {
+          let src = source;
+          if (typeof source === "string") {
+            const m = /^\s*url\(\s*(["']?)(data:[^"')]*)\1\s*\)/i.exec(source);
+            if (m) { try { src = dataUrlBytes(m[2]).bytes.buffer; } catch (_) { src = source; } }
+          }
+          super(family, src, descriptors);
+        }
+      };
+      try { window.FontFace = FontFace; } catch (e) { console.error("[plugin] data: FontFace:", e); }
+    }
+  }
+
   function seal() {
     if (sealed) return;
     sealed = true;
+    dataUrls();
     try { delete window.__TAURI__; } catch (_) {}
     if ("__TAURI__" in window) { try { Object.defineProperty(window, "__TAURI__", { value: undefined, writable: false, configurable: false }); } catch (_) {} }
     const facade = Object.freeze({ censusTok: () => (host.censusTok ? host.censusTok() : "") + sealTok() });
@@ -244,6 +313,7 @@
     api: null,
     status,
     makeRequire,
+    tokenClassNodeProp,
     evaluate,
     fail,
     /* ONE call, by ui/plugins/api.js at boot (before any plugin can run): hands

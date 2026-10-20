@@ -1705,9 +1705,11 @@ Object.assign(Ed, {
     if (e.key === "Home" || e.key === "End" || e.key === "ArrowLeft" || e.key === "ArrowRight") Ed.cmStart();
     if (e.key === "Home" || e.key === "End") {
       e.preventDefault();
-      const f = Ed.focusPos(g) || s.b, h = Ed.homeCol(g, f.l);
-      const c = e.key === "End" ? Ed.lines(g)[f.l].length : (f.c === h ? 0 : h);
-      if (e.shiftKey) Ed.extendTo(g, f.l, c); else Ed.place(g, f.l, c);
+      // Ctrl/Cmd+Home/End: document start / end; bare Home/End: the line's (smart) home / end
+      const f = Ed.focusPos(g) || s.b, L = Ed.lines(g), end = e.key === "End";
+      const l = mod ? (end ? L.length - 1 : 0) : f.l;
+      const c = mod ? (end ? L[l].length : 0) : end ? L[l].length : (f.c === Ed.homeCol(g, l) ? 0 : Ed.homeCol(g, l));
+      if (e.shiftKey) Ed.extendTo(g, l, c); else Ed.place(g, l, c);
       return Ed.cmEnd(g);
     }
     if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
