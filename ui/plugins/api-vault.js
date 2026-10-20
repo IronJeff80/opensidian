@@ -29,7 +29,9 @@
     const vroot = new TFolder(); vroot.path = "/"; vroot.name = "";
     let modelP = null, unlisten = null;   // vaultName, modelOn: K.st (api.js)
     const noteOf = p => (p.endsWith(".md") ? p.slice(0, -3) : null);
+    const isCanvas = p => typeof p === "string" && p.endsWith(".canvas");   // JSON Canvas: app-owned canvas_io, not the note commands
     const inv = (c, a) => be.invoke(c, a);
+    const cio = (op, path, data) => inv("canvas_io", data == null ? { op, path } : { op, path, data });
     function attach(f, path) {
       const i = path.lastIndexOf("/"), dir = i < 0 ? "" : path.slice(0, i);
       f.vault = vault; f.path = path; f.name = path.slice(i + 1);
@@ -59,11 +61,12 @@
       if (f instanceof TFolder) for (const c of f.children.slice()) movePath(c, np + c.path.slice(op.length));
     }
     async function buildModel() {
-      const [notes, folders, imgs] = await Promise.all([inv("list_notes"), inv("list_folders"), inv("list_images").catch(() => [])]);
+      const [notes, folders, imgs, cvs] = await Promise.all([inv("list_notes"), inv("list_folders"), inv("list_images").catch(() => []), cio("list").catch(() => [])]);
       const keep = new Set();
       for (const d of folders || []) { ensureFolder(d); keep.add(d); }
       for (const n of notes || []) { ensureFile(n + ".md"); keep.add(n + ".md"); }
       for (const p of imgs || []) { ensureFile(p); keep.add(p); }
+      for (const p of cvs || []) { ensureFile(p); keep.add(p); }
       for (const [p, f] of [...files]) if (!keep.has(p) && files.get(p) === f) removeTree(f);
     }
     async function syncFolders() {
@@ -252,9 +255,16 @@
       getMarkdownFiles() { return [...files.values()].filter(f => f instanceof TFile && f.extension === "md"); },
       getAllLoadedFiles() { return [vroot, ...files.values()]; },
       getAllFolders(includeRoot) { const a = [...files.values()].filter(f => f instanceof TFolder); return includeRoot ? [vroot, ...a] : a; },
-      async read(f) { return inv("read_note", { name: mdOnly(f, "read") }); },
+      async read(f) {
+        if (f instanceof TFile && isCanvas(f.path)) return cio("read", f.path);
+        return inv("read_note", { name: mdOnly(f, "read") });
+      },
       async cachedRead(f) { return vault.read(f); },
       async modify(f, data) {
+        if (f instanceof TFile && isCanvas(f.path)) {
+          const s = String(data); await cio("write", f.path, s);
+          f.stat.mtime = Date.now(); f.stat.size = new TextEncoder().encode(s).byteLength; vault.trigger("modify", f); return;
+        }
         const name = mdOnly(f, "modify");
         await inv("write_note", { name, content: String(data) });
         await changed({ modified: [name] });
@@ -263,6 +273,14 @@
       async process(f, fn) { const s = await vault.read(f); const out = fn(s); await vault.modify(f, out); return out; },
       async create(path, data) {
         const p = normalizePath(path), name = noteOf(p);
+        if (isCanvas(p)) {
+          if (files.has(p)) throw new Error("File already exists.");
+          const s = String(data == null ? "" : data); await cio("create", p, s);
+          const [f, made] = ensureFile(p); f.stat.size = new TextEncoder().encode(s).byteLength;
+          if (made) vault.trigger("create", f);
+          if (typeof refreshTree === "function") try { await refreshTree(); } catch (_) {}
+          return f;
+        }
         if (name == null) throw new Error("create: only markdown notes can be created in opensidian M1 (" + p + ")");
         if (files.has(p)) throw new Error("File already exists.");
         await inv("create_note", { name, content: String(data == null ? "" : data) });
