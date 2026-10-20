@@ -11,6 +11,8 @@ const TAURI = window.__TAURI__;   // plugin-loader item 7: captured at load; ui/
 // cp-hover-editor: the plugin host's app + "obsidian" module, captured at load like TAURI (the seal narrows the
 // host before any plugin runs); main.js fills the core-plugin hooks plugins read (see QuickSwitcherModal)
 const PLG = window.__osPluginHost && __osPluginHost.app && __osPluginHost.api ? { app: __osPluginHost.app, X: __osPluginHost.api } : null;
+// the app's own note writes reach the plugin vault through this (api-vault host.noteWritten), captured before the seal
+const PLGNW = window.__osPluginHost && typeof __osPluginHost.noteWritten === "function" ? __osPluginHost.noteWritten : null;
 const inv = (c, a) => { const x = otel.ctx(); return TAURI.core.invoke(c, x ? Object.assign({ otel: x }, a) : a); };
 /* perf-spans shim over otel: mark(name, t0, extra) = a span that started at
    t0 and ends now; push(name, ms, extra) = an already-measured span (graph
@@ -2170,6 +2172,7 @@ async function afterWrite(name) {           // bookkeeping shared by write + cre
   markStale(name);                          // R20: inactive tabs on this note re-read on activation
   const fresh = !notesCache.includes(name);
   if (fresh) await refreshTree();           // R20: a NEW note is the only save that changes the tree
+  if (PLGNW) try { PLGNW(name, fresh); } catch (e) { console.error("[plugin] noteWritten:", e); }   // plugins: create / modify + re-index, like stock
   for (const g of groups()) if (g.graphOn && g.graphRefresh) await g.graphRefresh();
   /* perfhunt P9: the Backlinks tab of note X lists OTHER notes only (linked
      mentions skip self-links, unlinked_in skips X itself), so saving X — an

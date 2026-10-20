@@ -89,6 +89,18 @@
       for (const n of c.removed || []) { const f = files.get(n + ".md"); if (f) { removeTree(f); metadataCache.trigger("deleted", f, null); vault.trigger("delete", f); } }
       syncFolders();
     }
+    /* the app's OWN note save (main.js afterWrite: editor autosave, ctrl+s, a note the app created). The
+       watcher reports only external changes, so without this a plugin never saw its vault's "modify" for a
+       note typed in the editor and the metadata cache kept the text from before the edit (Advanced Tables:
+       acceptsTableEdit found no cached section covering the line just typed, so its Tab declined). Like stock:
+       "create" for a new note, else "modify", then the file is re-indexed. No folder sync, no events before
+       the plugin runtime is on. main.js captures host before the seal; plugins never see it. */
+    host.noteWritten = (name, fresh) => {
+      if (!K.st.modelOn || typeof name !== "string" || !name) return;
+      if (fresh) { const [f, made] = ensureFile(name + ".md"); if (made) vault.trigger("create", f); indexFile(f); return; }
+      const f = files.get(name + ".md");
+      if (f instanceof TFile) { f.stat.mtime = Date.now(); vault.trigger("modify", f); indexFile(f); }
+    };
     // an API mutation: tell main.js first (tabs, tree, bookmarks), then the plugins
     async function changed(c) {
       const full = Object.assign({ added: [], removed: [], modified: [], renamed: [] }, c);
