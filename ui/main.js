@@ -6204,6 +6204,12 @@ function treePlgDrop(pd, ev) {
 }
 function treeDragStart(e, nm) {
   if (e.button !== 0) return;
+  // top5-func: the press is this machine's, not WebKit's. Without this the travel selected text
+  // across the panes, and the NEXT press on that selection started a native text drag that
+  // swallowed the release (dragManager.draggable stayed set, the plugin view never got a drop).
+  const own = ev => ev.preventDefault();
+  document.addEventListener("selectstart", own, true);
+  document.addEventListener("dragstart", own, true);
   const sx = e.clientX, sy = e.clientY;
   const base = nm.split("/").pop();
   const par = nm.includes("/") ? nm.slice(0, nm.lastIndexOf("/")) : "";
@@ -6254,6 +6260,8 @@ function treeDragStart(e, nm) {
   const up = async ev => {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
+    document.removeEventListener("selectstart", own, true);
+    document.removeEventListener("dragstart", own, true);
     if (raf) { cancelAnimationFrame(raf); raf = 0; if (last) step(); }
     const t = target;
     if (ghost) ghost.remove();
