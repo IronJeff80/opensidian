@@ -7036,6 +7036,12 @@ if (PLG) {
              views: { graph: leaf => new GraphView(leaf, "graph"), localgraph: leaf => new GraphView(leaf, "localgraph") } },
     switcher: { enabled: true, instance: { id: "switcher", QuickSwitcherModal } },
     "page-preview": { enabled: false, instance: { id: "page-preview" } },
+    // templates / daily-notes: no Templates (template folder, insert template) or Daily notes core plugin here, so
+    // neither is enabled. Present anyway, as every core plugin is in stock enabled or not: plugins read .enabled
+    // and instance.options (empty: no folder / format set, so a plugin falls back to its own defaults); Kanban's
+    // settings tab threw on plugins.templates.enabled
+    templates: { enabled: false, instance: { id: "templates", options: {} } },
+    "daily-notes": { enabled: false, instance: { id: "daily-notes", options: {} } },
   });
 }
 /* goal canvas-core: the Canvas core plugin (ui/plugins/canvas.js). Its factory is taken ONCE here and
