@@ -210,6 +210,15 @@
           const keep = recs.get(t);
           for (const x of g.content.querySelectorAll(":scope > .os-pv")) if (!keep || x !== keep.view.containerEl) x.hidden = true;
         },
+        /* main.js cmdSave ("Save current file"): when g's active tab is a plugin view with a file and a
+           save(), that save runs (a TextFileView writes its getViewData()) -> true; else false and the
+           app saves its own note buffer as before. */
+        async save(g, t) {
+          const r = isPvTab(t) ? recs.get(t) : null, v = r && r.view;
+          if (!v || !v.file || typeof v.save !== "function") return false;
+          await v.save();
+          return true;
+        },
         sideHide(side) { sideHide(side); },        // main.js setRTab / setPane: a built-in sidebar tab shows
         sideShowing(side) { return sideShowing(side); },   // main.js cmdToggleRight: a plugin pane is what reopens
       };

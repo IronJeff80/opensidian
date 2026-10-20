@@ -6598,6 +6598,11 @@ async function cmdNewNote() {                // new note in a NEW tab of the foc
 async function cmdSave() {                   // force save, no debounce
   if (!state) return;
   const g = fg();
+  const t = g.active >= 0 ? g.tabs[g.active] : null;
+  if (t && t.kind === "unk") {               // a plugin view's tab: its own save() (TextFileView), never the note buffer
+    if (PVHOST && PVHOST.save) try { await PVHOST.save(g, t); } catch (e) { console.error("[plugin] save current file:", e); }
+    return;
+  }
   lpCommit(g);
   const n = curOf(g);
   if (!n) return;
