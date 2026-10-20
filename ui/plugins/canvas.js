@@ -144,6 +144,8 @@
     const vaultFile = p => {
       try { const f = app.vault.getAbstractFileByPath(p); return f instanceof X.TFile ? f : null; } catch (_) { return null; }
     };
+    // the vault model is loaded (a trusted vault with plugins running): a path missing from it is missing
+    const modelOn = () => { try { return app.vault.getAllLoadedFiles().length > 1; } catch (_) { return false; } };
     const pathOf = f => (typeof f === "string" ? f : f && typeof f.path === "string" ? f.path : "");
 
     /* ---------------------------------------------------------- nodes
@@ -267,9 +269,9 @@
           return;
         }
         const ph = el("div", "canvas-node-placeholder", this.contentEl);
-        if (/\.md$/i.test(p) && typeof deps.readNote === "function") {   // no vault model (restricted mode): the note's text, read-only
+        if (!f && !modelOn() && /\.md$/i.test(p) && typeof deps.readNote === "function") {   // no vault model (restricted mode): the note's text, read-only
           ph.classList.add("canvas-file-text");
-          deps.readNote(p).then(t => { if (this.data.file === p && !this.child) ph.textContent = t || "(empty note)"; }, () => { ph.textContent = p + " — not found"; });
+          deps.readNote(p).then(t => { if (this.data.file === p && !this.child) ph.textContent = t || p + " — empty or not found"; }, () => { ph.textContent = p + " — not found"; });
         } else ph.textContent = f ? p : p + " — not found";
       }
       editorApi() {
@@ -365,7 +367,7 @@
         btn("mod-zoom-out", "Zoom out", "−", () => this.zoomBy(0.8));
         btn("mod-zoom-fit", "Zoom to fit", "Fit", () => this.zoomToFit());
         this._saveSoon = debounced(() => { if (this.view && this.view.save) this.view.save().catch(e => console.error("[canvas] save:", e)); }, 400);
-        this.requestSave = () => { if (this.readonly) return; this.dirty = true; this._saveSoon(); };
+        this.requestSave = () => { if (this.readonly) return; if (this.view) this.view.dirty = true; this._saveSoon(); };
         this.wire();
         this.applyTransform();
         // a view opens hidden (0x0): fit the board the first time it has a size
