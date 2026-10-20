@@ -6684,10 +6684,12 @@ function edSelRestore(r) {
   if (r.anc.l !== r.foc.l || r.anc.c !== r.foc.c) Ed.extendTo(g, r.foc.l, r.foc.c);
 }
 async function mdRun(it, e) {
-  const r = mdEdSel; mdEdSel = null;
+  const r = mdEdSel, k = modalKind; mdEdSel = null;
   closeModal();
   edSelRestore(r);
-  return await it.run(e);
+  const v = await it.run(e);
+  if (k === "qs") qsFocusEd();
+  return v;
 }
 function openModal(kind, src) {
   mdEdSel = kind === "cp" ? edSelSnap() : null;   // BEFORE minput.focus() takes the selection
@@ -6747,10 +6749,19 @@ let mdNew = "";
    (Ctrl[+Shift]+Enter), "right" = a new split to the right (Ctrl+Alt+Enter). */
 let qsCreateOff = false;   // negctl-qscreate seam: true = the pre-goal root-only, Shift-only create
 async function qsOpenHow(n, how) {
-  if (how === "right") return await splitWith(fg(), "row", mkTab(n));
-  if (how === "tab") return await openNewTab(n);
-  if (qsCreateOff) return await openInTab(n);
-  await rowOpen(n);                     // stock c03: Enter REPLACES the current tab (pinned -> new tab)
+  if (how === "right") await splitWith(fg(), "row", mkTab(n));
+  else if (how === "tab") await openNewTab(n);
+  else if (qsCreateOff) await openInTab(n);
+  else await rowOpen(n);                // stock c03: Enter REPLACES the current tab (pinned -> new tab)
+  qsFocusEd();
+}
+/* A note opened from the switcher takes the keyboard, like stock (Ctrl+O, name,
+   Enter, type): closeModal hides #minput, which leaves focus on <body>, and no
+   open path (openInTab / rowOpen REQ-4 / navigate / splitWith) focuses the editor.
+   Edit modes only (both render in g.lp); reading view and non-note views keep it. */
+function qsFocusEd() {
+  const g = state && fg(); const t = g && g.active >= 0 ? g.tabs[g.active] : null;
+  if (t && !t.kind && isLp(t.mode) && g.lp && g.lp.isConnected) g.lp.focus({ preventScroll: true });
 }
 function qsActiveNote() {
   const g = state && fg(); const t = g && g.active >= 0 ? g.tabs[g.active] : null;
@@ -6840,7 +6851,7 @@ $("minput").onkeydown = async e => {
     const it = mdItems[mdSel];
     if (e.shiftKey && q) { closeModal(); return await qsCreateNote(q, how); }
     if (it) {
-      if (how === "right") { closeModal(); return await splitWith(fg(), "row", mkTab(it.label)); }
+      if (how === "right") { closeModal(); await splitWith(fg(), "row", mkTab(it.label)); return qsFocusEd(); }
       return await mdRun(it, e);
     }
     if (!mdNew) return;
