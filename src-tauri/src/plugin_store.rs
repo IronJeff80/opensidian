@@ -312,10 +312,35 @@ fn release(fetch: Fetch, repo: &str) -> Result<Release, String> {
             return Ok(r.clone());
         }
     }
-    let b = fetch(&format!("https://api.github.com/repos/{repo}/releases/latest"), MAX_API_JSON, "latest release")?;
-    let r = parse_release(&b)?;
+    // the store version is the one the repo's default-branch manifest.json names, served by the
+    // release tagged with it -- "latest" can be a pre-release under another id (calendar's 2.0.0
+    // beta is "calendar-beta"). No readable HEAD manifest, or no such release: the latest release.
+    let r = match head_version(fetch, repo).and_then(|v| tagged_release(fetch, repo, &v)) {
+        Some(r) => r,
+        None => parse_release(&fetch(&format!("https://api.github.com/repos/{repo}/releases/latest"), MAX_API_JSON, "latest release")?)?,
+    };
     RELEASES.lock().unwrap().get_or_insert_with(HashMap::new).insert(repo.to_string(), (Instant::now(), r.clone()));
     Ok(r)
+}
+
+/// a version string safe to put in a release-tag URL path
+fn valid_tag(v: &str) -> bool {
+    !v.is_empty() && v.len() <= 64 && v.chars().all(|c| c.is_ascii_alphanumeric() || ".-+_".contains(c))
+}
+
+/// the version in the repo's default-branch manifest.json
+fn head_version(fetch: Fetch, repo: &str) -> Option<String> {
+    let b = fetch(&format!("https://raw.githubusercontent.com/{repo}/HEAD/manifest.json"), MAX_MANIFEST, "manifest.json").ok()?;
+    let v = s(&serde_json::from_slice::<Value>(&b).ok()?, "version");
+    valid_tag(&v).then_some(v)
+}
+
+/// the release tagged <v> (or v<v>), if it carries a main.js and a manifest.json
+fn tagged_release(fetch: Fetch, repo: &str, v: &str) -> Option<Release> {
+    [v.to_string(), format!("v{v}")].iter().find_map(|t| {
+        let b = fetch(&format!("https://api.github.com/repos/{repo}/releases/tags/{t}"), MAX_API_JSON, "release").ok()?;
+        parse_release(&b).ok().filter(|r| r.assets.contains_key("main.js") && r.assets.contains_key("manifest.json"))
+    })
 }
 
 /// "1.10.2" > "1.9" — numeric dotted compare; a non-numeric tail is ignored
@@ -420,7 +445,7 @@ fn html_esc(t: &str) -> String {
     t.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
-/// install or update <id> from its repo's latest release. Nothing is written
+/// install or update <id> from its store release (see release()). Nothing is written
 /// until every asset URL passed the allowlist and every file passed its check.
 pub fn install(fetch: Fetch, root: &Path, id: &str) -> Result<Value, String> {
     let e = entry(fetch, id)?;
@@ -644,6 +669,9 @@ mod tests {
         }
     }
 
+    // the store caches are process-global: tests that use them take this lock
+    static STORE_TEST: Mutex<()> = Mutex::new(());
+
     fn reset() {
         *LIST.lock().unwrap() = None;
         *RELEASES.lock().unwrap() = None;
@@ -652,6 +680,7 @@ mod tests {
     // the caches are process-global: the install cases run in ONE test, in order
     #[test]
     fn install_update_uninstall_and_refusals() {
+        let _g = STORE_TEST.lock().unwrap_or_else(|e| e.into_inner());
         let root = vault("inst");
         reset();
         let f = net("good-plug", "good-plug", 23, "github.com");
@@ -684,6 +713,48 @@ mod tests {
         let f = net("big", "big", plugins::MAX_MAIN_JS + 1, "github.com");
         assert!(install(&f, &root, "big").unwrap_err().contains("over the"));
         assert!(!root.join(".obsidian/plugins/big").exists());
+        reset();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // a repo whose "latest" release is a beta under another id, while its HEAD manifest names
+    // the store version: install + detail follow the HEAD version's tagged release
+    fn beta_net(head: bool) -> impl Fn(&str, u64, &str) -> Result<Vec<u8>, String> {
+        move |u: &str, _cap: u64, what: &str| {
+            check_url(u)?;
+            let rel = |tag: &str| format!(r#"{{"tag_name":"{tag}","published_at":"2026-01-01T00:00:00Z","assets":[
+                {{"name":"main.js","size":23,"browser_download_url":"https://github.com/o/cal/releases/download/{tag}/main.js"}},
+                {{"name":"manifest.json","size":50,"browser_download_url":"https://github.com/o/cal/releases/download/{tag}/manifest.json"}}]}}"#);
+            let man = |id: &str, v: &str| format!(r#"{{"id":"{id}","name":"P","version":"{v}","minAppVersion":"0.15.0"}}"#);
+            Ok(match u {
+                _ if u.ends_with("community-plugins.json") => r#"[{"id":"cal","name":"P","author":"me","description":"d","repo":"o/cal"}]"#.into(),
+                _ if u.ends_with("community-plugin-stats.json") => "{}".into(),
+                "https://raw.githubusercontent.com/o/cal/HEAD/manifest.json" if head => man("cal", "1.5.10"),
+                "https://api.github.com/repos/o/cal/releases/latest" => rel("2.0.0-beta"),
+                "https://api.github.com/repos/o/cal/releases/tags/1.5.10" => rel("1.5.10"),
+                "https://github.com/o/cal/releases/download/1.5.10/manifest.json" => man("cal", "1.5.10"),
+                "https://github.com/o/cal/releases/download/2.0.0-beta/manifest.json" => man("cal-beta", "2.0.0"),
+                _ if u.ends_with("/main.js") => "module.exports=class{};".into(),
+                _ => return Err(format!("{what}: 404")),
+            }.into_bytes())
+        }
+    }
+
+    #[test]
+    fn install_follows_the_head_manifest_version_not_latest() {
+        let _g = STORE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+        let root = vault("headver");
+        reset();
+        let f = beta_net(true);
+        let rec = install(&f, &root, "cal").unwrap();
+        assert_eq!(rec["version"], "1.5.10");
+        assert_eq!(rec["tag"], "1.5.10");
+        assert_eq!(detail(&f, Some(&root), "cal").unwrap()["latest"]["version"], "1.5.10");
+        // no HEAD manifest: the latest release, still checked against the list id
+        reset();
+        let f = beta_net(false);
+        assert!(install(&f, &root, "cal").unwrap_err().contains("does not match the list id"));
+        assert!(!valid_tag("1.0/../x") && !valid_tag("") && valid_tag("1.5.10") && valid_tag("v2.0.0-beta+1"));
         reset();
         let _ = fs::remove_dir_all(&root);
     }
