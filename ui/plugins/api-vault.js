@@ -225,6 +225,35 @@
       async rename(a, b) { await core.rename(a, b); }
       async copy(a, b) { await core.copy(a, b); }
     }
+    const nodeErr = (Ctor, code, msg) => { const e = new Ctor(msg); e.code = code; return e; };
+    const posixResolve = p => {
+      const parts = [];
+      for (const s of (p.startsWith("/") ? p : VROOT + "/" + p).split("/")) {
+        if (!s || s === ".") continue;
+        if (s === "..") parts.pop(); else parts.push(s);
+      }
+      return "/" + parts.join("/");
+    };
+    const URL_MOD = Object.freeze({
+      URL, URLSearchParams,
+      pathToFileURL(p) {
+        if (typeof p !== "string") throw nodeErr(TypeError, "ERR_INVALID_ARG_TYPE", 'The "path" argument must be of type string. Received ' + (p === null ? "null" : typeof p));
+        let r = posixResolve(p);
+        if (p.endsWith("/") && r !== "/") r += "/";     // Node keeps a trailing slash
+        const u = new URL("file://");
+        u.pathname = r.replace(/%/g, "%25").replace(/\\/g, "%5C").replace(/\n/g, "%0A").replace(/\r/g, "%0D").replace(/\t/g, "%09").replace(/#/g, "%23").replace(/\?/g, "%3F");
+        return u;
+      },
+      fileURLToPath(u) {
+        let url = u;
+        if (typeof u === "string") url = new URL(u);
+        else if (!(u instanceof URL)) throw nodeErr(TypeError, "ERR_INVALID_ARG_TYPE", 'The "path" argument must be of type string or an instance of URL. Received ' + (u === null ? "null" : typeof u));
+        if (url.protocol !== "file:") throw nodeErr(TypeError, "ERR_INVALID_URL_SCHEME", "The URL must be of scheme file");
+        if (url.hostname !== "" && url.hostname !== "localhost") throw nodeErr(TypeError, "ERR_INVALID_FILE_URL_HOST", 'File URL host must be "localhost" or empty on linux');
+        if (/%2f/i.test(url.pathname)) throw nodeErr(TypeError, "ERR_INVALID_FILE_URL_PATH", "File URL path must not include encoded / characters");
+        return decodeURIComponent(url.pathname);
+      },
+    });
     class FileSystemAdapter extends DataAdapter {
       get basePath() { return VROOT; }
       getBasePath() { return VROOT; }
@@ -235,6 +264,12 @@
          "/vault/x" = basePath + "/x", and anything outside the vault is refused by Rust (EPERM). */
       get fs() { const m = host.nodeModules && host.nodeModules.resolve("fs"); return m || undefined; }
       get fsPromises() { const m = host.nodeModules && host.nodeModules.resolve("fs/promises"); return m || undefined; }
+      /* top5-func: stock's desktop adapter carries Node's url module (Excalidraw: VAULT_BASE_URL =
+         url.pathToFileURL(basePath), and a dropped path is "inside the vault" when its file URL starts
+         with that). Pure string conversion with Node's rules, over the same "/vault" root basePath
+         answers, so the two always agree; it opens nothing and reads nothing. A relative path resolves
+         against basePath (the plugin's view of the cwd). */
+      get url() { return URL_MOD; }
       static async readLocalFile(p) { const u = await core.read(p); return u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength); }
       static async mkdir(p) { await core.mkdir(p, true); }
     }
@@ -666,7 +701,47 @@
         return out;
       }
     }
+    /* top5-func: metadataCache.blockCache (undocumented; Excalidraw's heading/block link suggesters,
+       its section reader for transclusions and its back-of-note writer). getForFile(ctx, file) parses
+       the note's CURRENT text (read now, not the sweep cache, which a just-saved file can be ahead of)
+       into one entry per top-level body section: { display: the section's source text, node: { type,
+       position, depth (heading), children: [the heading's title as a text node with its own position]
+       (heading), id (a block that ends in " ^id") } }. Section types are getFileCache's own (heading,
+       paragraph, list, code, blockquote, callout, comment, math, table, thematicBreak); frontmatter is
+       not a block. ctx.isCancelled() true before or after the read -> resolves null. A non-markdown
+       file has no blocks; something that is not a vault file rejects with a TypeError. */
+    class BlockCache {
+      async getForFile(ctx, file) {
+        if (!(file instanceof TFile) || files.get(file.path) !== file) throw new TypeError("blockCache.getForFile: not a vault file (" + (file && file.path) + ")");
+        const cancelled = () => !!(ctx && typeof ctx.isCancelled === "function" && ctx.isCancelled());
+        if (cancelled()) return null;
+        if (file.extension !== "md") return { blocks: [] };
+        const text = await vault.cachedRead(file);
+        if (cancelled()) return null;
+        const meta = parseMeta(text), blocks = [];
+        const at = (line, col, offset) => ({ line, col, offset });
+        for (const s of meta.sections || []) {
+          if (s.type === "yaml") continue;
+          const p = s.position, src = text.slice(p.start.offset, p.end.offset);
+          const node = { type: s.type, position: { start: at(p.start.line, p.start.col, p.start.offset), end: at(p.end.line, p.end.col, p.end.offset) } };
+          if (s.type === "heading") {
+            const m = src.match(/^(#{1,6})([ \t]+)(.*?)(?:[ \t]+#+)?[ \t]*$/);
+            node.depth = m ? m[1].length : 1;
+            if (m && m[3]) {
+              const c = m[1].length + m[2].length, o = p.start.offset + c, l = p.start.line;
+              node.children = [{ type: "text", value: m[3], position: { start: at(l, c, o), end: at(l, c + m[3].length, o + m[3].length) } }];
+            }
+          } else if (s.type !== "code" && s.type !== "comment" && s.type !== "math") {
+            const id = src.match(/(?:^|[ \t])\^([A-Za-z0-9-]+)[ \t]*$/);
+            if (id) node.id = id[1];
+          }
+          blocks.push({ display: src, node });
+        }
+        return { blocks };
+      }
+    }
     const metadataCache = theCache = new MetadataCache();
+    metadataCache.blockCache = new BlockCache();
     K.exportClasses.MetadataCache = MetadataCache;
 
     /* ------------------------------------- property types (part vint)
@@ -996,6 +1071,43 @@
         else if (typeof refreshTree === "function") try { await refreshTree(); } catch (_) {}
       }
       promptForDeletion(file) { return prompt(file); }
+      /* top5-func: promptForFileRename (undocumented; Excalidraw asks for a name right after it creates
+         a drawing). A modal with the name (its last extension kept aside, selected) and Cancel / Save;
+         Enter saves. The rename is renameFile's own, so its refusals hold: a taken name or a name with
+         a path separator / reserved character is refused VISIBLY (a Notice; the modal stays open on the
+         old name, nothing moves). Resolves once the modal closes (renamed or not). */
+      promptForFileRename(file) {
+        if (!(file instanceof TAbstractFile) || files.get(file.path) !== file) return Promise.reject(new TypeError("promptForFileRename: not a vault file (" + (file && file.path) + ")"));
+        return new Promise(resolve => {
+          const { Modal, ButtonComponent, Notice } = K;
+          const isF = file instanceof TFile, ext = isF && file.extension ? "." + file.extension : "";
+          const stem = isF ? file.name.slice(0, file.name.length - ext.length) : file.name;
+          const m = new Modal(K.app);
+          m.setTitle(isF ? "Rename file" : "Rename folder");
+          m.modalEl.addClass("mod-file-rename");
+          const inp = m.contentEl.createEl("input", { type: "text", cls: "rename-textarea" });
+          inp.value = stem; inp.spellcheck = false;
+          let busy = false;
+          const save = async () => {
+            if (busy) return;
+            const nm = inp.value.trim();
+            if (!nm || nm === stem) { m.close(); return; }
+            if (/[\\/:]/.test(nm) || nm.startsWith(".")) { new Notice("File name cannot contain any of the following characters: \\ / : (or start with a dot)"); return; }
+            const par = file.parent && !file.parent.isRoot() ? file.parent.path + "/" : "";
+            busy = true;
+            try { await fileManager.renameFile(file, par + nm + ext); m.close(); }
+            catch (e) { new Notice("Rename failed: " + String(e && e.message || e)); console.warn("[plugin] promptForFileRename:", e); }
+            finally { busy = false; }
+          };
+          inp.addEventListener("keydown", e => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); save(); } });
+          const row = m.modalEl.createDiv({ cls: "modal-button-container" });
+          new ButtonComponent(row).setButtonText("Cancel").setClass("mod-cancel").onClick(() => m.close());
+          new ButtonComponent(row).setButtonText("Save").setCta().onClick(save);
+          m.onClose = () => resolve();
+          m.open();
+          setTimeout(() => { inp.focus(); inp.select(); }, 0);
+        });
+      }
       /* createNewMarkdownFile (undocumented, part vint): a new note in `folder`
          (null/undefined: the root) named `name` ("Untitled" when absent or blank;
          trimmed; a trailing .md dropped) at the first free "name", "name 1", ...
@@ -1141,6 +1253,25 @@
         if (!K.st.trusted) return Promise.resolve(shown("EPERM: restricted mode is on"));
         if (!be) return Promise.resolve(shown("EPERM: no desktop backend"));
         return be.invoke("desk_shell", { op: "vault", target: String(p == null ? "" : p) }).then(() => "", shown);
+      },
+      /* top5-func: getAccentColor (undocumented; Excalidraw derives its element palette from it). The
+         accent the theme paints with RIGHT NOW (--interactive-accent, resolved by the engine, so a
+         theme or light/dark switch is followed), as "#rrggbb". */
+      getAccentColor() {
+        const el = document.createElement("span");
+        el.style.cssText = "position:absolute;visibility:hidden;color:var(--interactive-accent)";
+        (document.body || document.documentElement).appendChild(el);
+        const c = getComputedStyle(el).color; el.remove();
+        const m = String(c).match(/^rgba?\(\s*([\d.]+)[ ,]+([\d.]+)[ ,]+([\d.]+)/);
+        if (!m) return c;
+        return "#" + [m[1], m[2], m[3]].map(v => Math.max(0, Math.min(255, Math.round(+v))).toString(16).padStart(2, "0")).join("");
+      },
+      /* top5-func: getObsidianUrl(file) (undocumented; Excalidraw rewrites a drawing's internal links to it
+         on export). The same obsidian://open URL the drag payloads carry (views.js), so a link a plugin
+         builds and one the explorer drags are one string. Not a vault file -> TypeError. */
+      getObsidianUrl(f) {
+        if (!(f instanceof K.TFile) || vault.getAbstractFileByPath(f.path) !== f) throw new TypeError("getObsidianUrl: not a vault file (" + (f && f.path) + ")");
+        return K.obsidianUrl(f);
       },
     };
     class App {     // typings expose App as a class; plugins only ever receive `app`

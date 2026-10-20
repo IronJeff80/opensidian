@@ -6160,6 +6160,48 @@ function treeClickEaten() {              // a completed drag must not also open/
   treeEat = 0;                           // one click only, and stale marks expire by time:
   return !!t && performance.now() - t < 400;   // a drop on a FOLDER row generates no row click
 }
+/* top5-func: the explorer drag and the plugins. Stock drags a note with an HTML5
+   drag whose payload is app.dragManager.draggable for as long as the drag is up
+   (Excalidraw reads draggable.type/.title/.files in its dragover/drop). This
+   mouse machine stays the only drag here; while its chip is up the payload is
+   dragManager.dragFile's own (same obsidian:// URL in a DataTransfer) and is
+   cleared on release. A release that is no folder target over a PLUGIN view
+   (.workspace-leaf-content) is offered to it as dragenter + dragover on the
+   element under the cursor; only a view that ACCEPTS (cancels dragover, the
+   HTML5 contract) gets the drop — anything else is the old "dropped on
+   nothing", and the app's own panes never see a synthetic DOM drag. */
+let treePlgDrag = null;
+function treePlgDragStart(nm) {
+  if (!PLG || !PLG.app.dragManager) return null;
+  const f = PLG.app.vault.getAbstractFileByPath(wsPathOut(nm));
+  if (!(f instanceof PLG.X.TFile)) return null;
+  let dt;
+  try { dt = new DataTransfer(); } catch (_) { return null; }
+  const dm = PLG.app.dragManager;
+  let data;
+  try { data = dm.dragFile({ dataTransfer: dt }, f, "file-explorer"); } catch (_) { return null; }
+  dm.draggable = data;
+  return { dt, data, end() { if (dm.draggable === data) dm.draggable = null; } };
+}
+function treePlgDrop(pd, ev) {
+  try {
+    if (!ev) return false;
+    const el = document.elementFromPoint(ev.clientX, ev.clientY);
+    if (!el || !el.closest(".workspace-leaf-content")) return false;
+    const ini = { bubbles: true, cancelable: true, composed: true, clientX: ev.clientX, clientY: ev.clientY, screenX: ev.screenX, screenY: ev.screenY, dataTransfer: pd.dt };
+    const fire = type => {
+      const d = new DragEvent(type, ini);
+      if (d.dataTransfer !== pd.dt) Object.defineProperty(d, "dataTransfer", { value: pd.dt });
+      el.dispatchEvent(d);
+      return d;
+    };
+    fire("dragenter");
+    if (!fire("dragover").defaultPrevented) { fire("dragleave"); return false; }
+    fire("drop");
+    return true;
+  } catch (e) { console.warn("[tree] plugin drop:", e); return false; }
+  finally { pd.end(); }
+}
 function treeDragStart(e, nm) {
   if (e.button !== 0) return;
   const sx = e.clientX, sy = e.clientY;
@@ -6177,6 +6219,7 @@ function treeDragStart(e, nm) {
       ghost.textContent = base;
       document.body.appendChild(ghost);
       dragTok = "-:" + base;             // a drag is UP with no destination yet
+      treePlgDrag = treePlgDragStart(nm);
       updateTitle();
       // rects cached ONCE (R20): a per-frame getBoundingClientRect over every
       // folder row is a layout read per mousemove on a 500-row explorer.
@@ -6208,7 +6251,7 @@ function treeDragStart(e, nm) {
     }
   };
   const move = ev => { last = ev; if (!raf) raf = requestAnimationFrame(step); };
-  const up = async () => {
+  const up = async ev => {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
     if (raf) { cancelAnimationFrame(raf); raf = 0; if (last) step(); }
@@ -6216,6 +6259,9 @@ function treeDragStart(e, nm) {
     if (ghost) ghost.remove();
     clearHl();
     dragTok = "";
+    const pd = treePlgDrag; treePlgDrag = null;
+    if (ghost && !t && pd && treePlgDrop(pd, ev)) { treeEat = 1; updateTitle(); return; }   // a plugin view took it
+    if (pd) pd.end();
     if (!ghost || !t) { updateTitle(); return; }   // plain click, or dropped on nothing
     treeEat = 1;                                   // the mouseup's click is not an "open this note"
     await moveNoteTo(nm, t.f);

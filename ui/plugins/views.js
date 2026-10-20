@@ -1058,6 +1058,7 @@
                                                        dragManager: { value: new DragManager(), writable: true },
                                                        // the mobile toolbar exists only on mobile: null on desktop, as stock
                                                        mobileToolbar: { value: null, writable: true, enumerable: true } });
+    K.obsidianUrl = obsUrl;            // app.getObsidianUrl (api-vault.js vault:app) builds the same URL
     Object.assign(K.exportClasses, layout);
     K.exportValues.PopoverState = PopoverState;
   });
