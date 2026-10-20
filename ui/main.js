@@ -6120,7 +6120,7 @@ function renderNode(node, prefix, depth, out) {
 
 function canvasRow(p, depth) {
   const row = document.createElement("div");
-  row.className = "trow canvas";
+  row.className = "trow cvfile";   // NOT "canvas": that is the board element's class (plugins.css .canvas = absolute)
   row.innerHTML = treeGuides(depth) + '<span class="tc"></span><span class="tn"></span><span class="ttag">CANVAS</span>';
   row.querySelector(".tn").textContent = p.split("/").pop().replace(/\.canvas$/i, "");   // names never hit innerHTML
   row.dataset.canvas = p;
@@ -7056,7 +7056,7 @@ function canvasTok() {
   const c = e => { const r = e.getBoundingClientRect(); return Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2); };
   const rc = e => { const r = e.getBoundingClientRect(); return [r.x, r.y, r.width, r.height].map(Math.round).join(","); };
   let t = "";
-  const rows = [...document.querySelectorAll("#tree .trow.canvas")].filter(vis);
+  const rows = [...document.querySelectorAll("#tree .trow.cvfile")].filter(vis);
   if (rows.length) t += " [cvrow:" + rows.map(r => esc(r.dataset.canvas) + "@" + c(r)).join("|") + "]";
   const dirs = [...document.querySelectorAll("#tree .trow.folder")].filter(vis).slice(0, 8);   // where "New canvas" (folder menu) is right-clicked
   if (rows.length && dirs.length) t += " [cvdir:" + dirs.map(r => esc(r.dataset.folder) + "@" + c(r)).join("|") + "]";
