@@ -128,7 +128,8 @@ body.os-has-plugin-status #main .status { bottom: 30px }
 .canvas-node-content-blocker { position: absolute; inset: 0 }
 .canvas-node.is-editing > .canvas-node-content-blocker, .canvas-node-content-blocker[hidden] { display: none }
 .canvas-node-resizer { position: absolute; right: -4px; bottom: -4px; width: 12px; height: 12px; cursor: nwse-resize; z-index: 1 }
-.canvas-node-group > .canvas-node-container { background: color-mix(in srgb, var(--canvas-color) 8%, transparent) }
+.canvas-node.canvas-node-group > .canvas-node-container, .canvas-node.canvas-node-group.is-themed > .canvas-node-container {
+  background: color-mix(in srgb, var(--canvas-color) 8%, transparent) }  /* translucent even when coloured (.is-themed alone is opaque) */
 .canvas-node-group > .canvas-node-label { font-size: 16px }
 .canvas-file-embed { padding: 0 8px }
 .canvas-controls { position: absolute; right: 8px; top: 8px; display: flex; gap: 4px; z-index: 2 }

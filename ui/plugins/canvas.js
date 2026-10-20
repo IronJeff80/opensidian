@@ -343,7 +343,7 @@
 
     /* ---------------------------------------------------------- the board
        wrapperEl (viewport, pointer + wheel + keys) > canvasEl (translated and
-       scaled) > the edge layer (svg) + the node layer. */
+       scaled) > the group layer, the edge layer (svg), the node layer — in paint order. */
     class Canvas {
       constructor(view) {
         this.view = view; this.app = app;
@@ -354,6 +354,8 @@
         this.wrapperEl = el("div", "canvas-wrapper");
         this.wrapperEl.tabIndex = 0;
         this.canvasEl = el("div", "canvas", this.wrapperEl);
+        // groups sit under the edges (a group's fill must never hide an edge that crosses it), the other nodes over them
+        this.groupEl = el("div", "canvas-nodes canvas-groups", this.canvasEl);
         this.edgeEl = sv("svg", { class: "canvas-edges", width: "1", height: "1" }, this.canvasEl);
         this.nodeEl = el("div", "canvas-nodes", this.canvasEl);
         this.controlsEl = el("div", "canvas-controls", this.wrapperEl);
@@ -405,7 +407,7 @@
       ids() { return new Set([...this.nodes.keys(), ...this.edges.keys()]); }
       addNode(node) {
         this.nodes.set(node.id, node);
-        if (node.data.type === "group") this.nodeEl.prepend(node.containerEl); else this.nodeEl.appendChild(node.containerEl);
+        if (node.data.type === "group") this.groupEl.appendChild(node.containerEl); else this.nodeEl.appendChild(node.containerEl);
         node.load();
         node.render();
         return node;
