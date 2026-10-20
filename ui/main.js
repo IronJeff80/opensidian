@@ -6031,12 +6031,12 @@ async function lsLoad() {
   }
 }
 
-function buildTree(folders, notes) {
-  const root = { dirs: new Map(), notes: [] };
+function buildTree(folders, notes, canvases) {
+  const root = { dirs: new Map(), notes: [], canvases: [] };
   const dirAt = path => {
     let n = root;
     for (const part of path.split("/")) {
-      if (!n.dirs.has(part)) n.dirs.set(part, { dirs: new Map(), notes: [] });
+      if (!n.dirs.has(part)) n.dirs.set(part, { dirs: new Map(), notes: [], canvases: [] });
       n = n.dirs.get(part);
     }
     return n;
@@ -6045,6 +6045,10 @@ function buildTree(folders, notes) {
   for (const nm of notes) {
     const i = nm.lastIndexOf("/");
     (i < 0 ? root : dirAt(nm.slice(0, i))).notes.push(nm);
+  }
+  for (const p of canvases || []) {        // goal canvas-core: "sub/Board.canvas", listed beside the notes
+    const i = p.lastIndexOf("/");
+    (i < 0 ? root : dirAt(p.slice(0, i))).canvases.push(p);
   }
   return root;
 }
@@ -6076,6 +6080,7 @@ function renderNode(node, prefix, depth, out) {
     // .collapsed on the box (+ .open on the row) — zero IPC, no tree rebuild.
     // The tree DOM is rebuilt only when the note/folder list changes (refreshTree).
     row.dataset.folder = full;                  // R24.6: the drop target's identity, off the DOM
+    row.oncontextmenu = e => folderMenu(e, full);   // goal canvas-core: New canvas in this folder
     const kids = document.createElement("div");
     kids.className = "tkids" + (open ? "" : " collapsed");
     row.onclick = () => act("folder_toggle", { depth: full.split("/").length, open: !unfold.has(full), notes: node.dirs.get(d).notes.length, rows: kids.childElementCount }, () => {
@@ -6090,7 +6095,14 @@ function renderNode(node, prefix, depth, out) {
     renderNode(node.dirs.get(d), full, depth + 1, kids);
     out.appendChild(kids);
   }
-  for (const nm of [...node.notes].sort()) {
+  /* goal canvas-core: .canvas files sort in among the notes by their name without the extension
+     (the notes keep exactly their old order; a tie puts the note first); a canvas row opens the canvas view, carries data-canvas
+     (never data-note: no note verb addresses it) and a CANVAS tag after its name */
+  const files = [...node.notes.map(n => [n, 0]), ...(node.canvases || []).map(p => [p, 1])]
+    .map(([n, c]) => [n, c, c ? n.replace(/\.canvas$/i, "") : n])
+    .sort((a, b) => a[2] < b[2] ? -1 : a[2] > b[2] ? 1 : a[1] - b[1]);
+  for (const [nm, isCanvas] of files) {
+    if (isCanvas) { out.appendChild(canvasRow(nm, depth)); continue; }
     const row = document.createElement("div");
     row.className = "trow note";                // .active: treeHighlight()
     row.innerHTML = treeGuides(depth) + '<span class="tc"></span>' +
@@ -6104,6 +6116,18 @@ function renderNode(node, prefix, depth, out) {
     treeRows.set(nm, row);
     out.appendChild(row);
   }
+}
+
+function canvasRow(p, depth) {
+  const row = document.createElement("div");
+  row.className = "trow canvas";
+  row.innerHTML = treeGuides(depth) + '<span class="tc"></span><span class="tn"></span><span class="ttag">CANVAS</span>';
+  row.querySelector(".tn").textContent = p.split("/").pop().replace(/\.canvas$/i, "");   // names never hit innerHTML
+  row.dataset.canvas = p;
+  row.onclick = () => openCanvas(p);
+  row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); openCanvas(p); } };
+  row.oncontextmenu = e => canvasFileMenu(e, p);
+  return row;
 }
 
 /* ---------- R24.6: DRAG A NOTE ONTO A FOLDER ROW TO MOVE IT ----------------
@@ -6245,11 +6269,15 @@ async function refreshTree() {
   notesCache = notes;
   imgsCache = imgs;                                     // R29: LP resolves image embeds against this
   const tree = $("tree");
-  const sig = folders.join("\n") + "\0" + notes.join("\n");
+  // goal canvas-core: .canvas files are listed only while the Canvas core plugin has the extension
+  // registered (off = no view opens them, as a file type nothing handles is not listed)
+  let canvases = [];
+  if (CANVAS && CANVAS.isRegistered()) { try { canvases = await inv("canvas_io", { op: "list", path: "" }); } catch (_) { canvases = []; } }
+  const sig = folders.join("\n") + "\0" + notes.join("\n") + "\0" + canvases.join("\n");
   if (sig === treeSig && tree.childElementCount) { treeHighlight(); return; }
   treeSig = sig; treeRows = new Map(); treeActive = null;
   tree.innerHTML = "";
-  renderNode(buildTree(folders, notes), "", 0, tree);
+  renderNode(buildTree(folders, notes, canvases), "", 0, tree);
   treeHighlight();
 }
 
@@ -6965,6 +6993,7 @@ let CANVAS = null;
         io: (op, path, data) => inv("canvas_io", data == null ? { op, path } : { op, path, data }),
         readNote: p => inv("read_note", { name: String(p).replace(/\.md$/i, "") }),
         notify: m => say(m, "canvas"),
+        changed: () => updateTitle(),
         pref: {
           get() { try { const v = localStorage.getItem(KEY); return v == null ? null : v === "1"; } catch (_) { return null; } },
           set(on) { try { localStorage.setItem(KEY, on ? "1" : "0"); } catch (_) {} },
@@ -6981,6 +7010,79 @@ async function openCanvas(path) {
   const leaf = PLG.app.workspace.getLeaf("tab");
   await leaf.setViewState({ type: "canvas", state: { file: path }, active: true });
   return leaf;
+}
+/* goal canvas-core: "Create new canvas" (command) and "New canvas" (explorer menus). The file is made
+   through canvas_io create (O_EXCL: an existing name is never overwritten — the next free
+   "Untitled N.canvas" is taken instead), holds an empty JSON Canvas document, and opens in a canvas tab.
+   `folder` = vault-relative folder ("" = the vault root). Off (view type unregistered) -> nothing created. */
+async function cmdNewCanvas(folder) {
+  if (!state) return null;
+  if (!CANVAS || !CANVAS.isRegistered()) { say("Canvas is turned off (Settings › Community plugins › Core plugins)", "canvas"); return null; }
+  const dir = folder ? String(folder).replace(/\/+$/, "") + "/" : "";
+  const body = CANVAS.model.serializeCanvas({ nodes: [], edges: [] });
+  for (let i = 0; i < 100; i++) {
+    const p = dir + "Untitled" + (i ? " " + i : "") + ".canvas";
+    try { await inv("canvas_io", { op: "create", path: p, data: body }); }
+    catch (e) { if (/EEXIST/.test(String(e && e.message || e))) continue; say(String(e && e.message || e), "canvas"); return null; }
+    await refreshTree();
+    await openCanvas(p);
+    return p;
+  }
+  say("Could not find a free name for the new canvas", "canvas");
+  return null;
+}
+function canvasFileMenu(e, p) {             // right-click a .canvas row in the explorer
+  e.preventDefault();
+  e.stopPropagation();
+  closeMenu();
+  const m = document.createElement("div");
+  m.className = "ctxmenu";
+  const { item, sep } = bmMenuItems(m);
+  item("Open in new tab", () => openCanvas(p));
+  sep();
+  item("New canvas", () => cmdNewCanvas(p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : ""));
+  m.dataset.mt = "canvas:" + p.replace(/[|\]]/g, "");
+  placeMenu(m, e.clientX, e.clientY);
+}
+/* goal canvas-core census: [cvrow:<path>@x,y|...] the painted .canvas rows of the explorer;
+   [cvdir:<folder>@x,y|...] the painted folder rows (only while a .canvas row is listed, at most 8);
+   for the first canvas view on screen [cv:<path>|n=<nodes>|e=<edges>|err=0|1|dirty=0|1|saves=<n>|on=0|1],
+   [cvn:<id>@x,y,w,h|...] its painted node rects (client px, at most 16), [cvadd:x,y] its "+ Text" button
+   and [cvw:x,y,w,h] the board. A phase clicks and drags what it measured, never a literal. */
+function canvasTok() {
+  if (!CANVAS || !PLG) return "";
+  const esc = s => String(s).replace(/[[\]|@]/g, "_");
+  const vis = e => !!e && e.getClientRects().length > 0;
+  const c = e => { const r = e.getBoundingClientRect(); return Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2); };
+  const rc = e => { const r = e.getBoundingClientRect(); return [r.x, r.y, r.width, r.height].map(Math.round).join(","); };
+  let t = "";
+  const rows = [...document.querySelectorAll("#tree .trow.canvas")].filter(vis);
+  if (rows.length) t += " [cvrow:" + rows.map(r => esc(r.dataset.canvas) + "@" + c(r)).join("|") + "]";
+  const dirs = [...document.querySelectorAll("#tree .trow.folder")].filter(vis).slice(0, 8);   // where "New canvas" (folder menu) is right-clicked
+  if (rows.length && dirs.length) t += " [cvdir:" + dirs.map(r => esc(r.dataset.folder) + "@" + c(r)).join("|") + "]";
+  let v = null;
+  try { v = PLG.app.workspace.getLeavesOfType("canvas").map(l => l.view).find(x => x && vis(x.containerEl)) || null; } catch (_) {}
+  if (!v) return t;
+  t += " [cv:" + esc(v.path || "-") + "|n=" + v.canvas.nodes.size + "|e=" + v.canvas.edges.size + "|err=" + (v.broken ? 1 : 0) +
+       "|dirty=" + (v.dirty ? 1 : 0) + "|saves=" + (v.saves || 0) + "|on=" + (CANVAS.isRegistered() ? 1 : 0) + "]";
+  const ns = [...v.containerEl.querySelectorAll(".canvas-node[data-node-id]")].filter(vis).slice(0, 16);
+  if (ns.length) t += " [cvn:" + ns.map(n => esc(n.dataset.nodeId) + "@" + rc(n)).join("|") + "]";
+  const a = v.containerEl.querySelector(".canvas-control.mod-add-text");
+  if (vis(a)) t += " [cvadd:" + c(a) + "]";
+  if (vis(v.canvas.wrapperEl)) t += " [cvw:" + rc(v.canvas.wrapperEl) + "]";
+  return t;
+}
+function folderMenu(e, f) {                 // right-click an explorer folder row: New canvas in that folder
+  if (!CANVAS || !CANVAS.isRegistered()) return;   // no row to offer -> the browser's own (suppressed) menu stays as before
+  e.preventDefault();
+  e.stopPropagation();
+  closeMenu();
+  const m = document.createElement("div");
+  m.className = "ctxmenu";
+  const { item } = bmMenuItems(m);
+  item("New canvas", () => cmdNewCanvas(f));
+  m.dataset.mt = "folder:" + String(f).replace(/[|\]]/g, "");
+  placeMenu(m, e.clientX, e.clientY);
 }
 /* ---------- R14: command registry = the ONE source of truth for the palette
    (Ctrl+P), the keymap dispatcher and Settings ▸ Hotkeys. Chords are
@@ -8018,6 +8120,7 @@ const CMDS = [
   ["file-explorer:new-file",   "Create new note",                     ["ctrl+n"],               cmdNewNote],
   ["file-explorer:new-file-in-new-pane", "Create note to the right",  ["ctrl+shift+n"],         async () => { await splitWith(fg(), "row", null); await cmdNewNote(); }],
   ["file-explorer:new-folder", "Create new folder",                   [],                       () => { $("fnew").hidden = false; $("fname").value = ""; $("fname").focus(); }],
+  ["canvas:new-file",          "Create new canvas",                   [],                       () => cmdNewCanvas("")],
   ["editor:delete-paragraph",  "Delete paragraph",                    ["ctrl+d"],               () => edLine(() => null)],
   ["editor:insert-attachment", "Insert attachment",                   [],                       cmdAttach],
   ["editor:follow-link",       "Follow link under cursor",            ["alt+enter"],            () => { const n = linkAtCaret(); if (n) navigate(fg(), n); }],

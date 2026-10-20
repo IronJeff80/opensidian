@@ -219,14 +219,37 @@
       const r = row(c2, String(m.name || id), desc, ctls, restricted);
       r.dataset.plugin = id;
     }
-    sRowsShown = 1 + (browser ? 1 : 0) + ids.length;
-    sEnabledShown = (restricted ? 0 : ids.length) + 1 + (browser ? 1 : 0);
+    /* goal canvas-core: the "Core plugins" section (the Core plugins nav entry stays removed,
+       goal/noplugins): one row per core plugin this app implements — today Canvas. Its toggle is
+       the plugin's enable()/disable(): the canvas view type + .canvas extension come and go with it,
+       and the choice persists app-wide. Not gated by restricted mode: it is app code, not a plugin. */
+    const core = coreList();
+    if (core.length) {
+      pg.appendChild(el("div", "ssec", "Core plugins"));
+      const c3 = el("div", "scard"); pg.appendChild(c3);
+      for (const [cid, p, name, desc] of core) {
+        const on = !!p.enabled;
+        const t = toggle(on, () => act(() => (on ? p.disable() : p.enable())));
+        t.dataset.core = cid;
+        const r = row(c3, name, desc, [t]);
+        r.dataset.core = cid;
+      }
+    }
+    sRowsShown = 1 + (browser ? 1 : 0) + ids.length + core.length;
+    sEnabledShown = (restricted ? 0 : ids.length) + 1 + (browser ? 1 : 0) + core.length;
+  }
+  const CORE_DESC = { canvas: ["Canvas", "Open and edit .canvas files (JSON Canvas): text, note, link and group cards on a board."] };
+  function coreList() {
+    const ip = host.app.internalPlugins, ps = ip && ip.plugins || {};
+    return Object.keys(CORE_DESC).filter(id => ps[id] && typeof ps[id].enable === "function")
+      .map(id => [id, ps[id], CORE_DESC[id][0], CORE_DESC[id][1]]);
   }
   async function act(f) {
     if (busy) return; busy = true;
     try { await f(); } catch (e) { console.error("[plugin] settings:", e); }
     busy = false;
     if (settingsOpen && sPane === "community") rebuild();
+    if (typeof refreshTree === "function") refreshTree().catch(() => {});   // canvas on/off: .canvas rows follow
     const n = document.getElementById("snav"); if (n && n.dataset.built === "1") nav(n);
   }
   /* ---- census ---- */
@@ -248,6 +271,10 @@
         const id = row.dataset.plugin, tg = row.querySelector(".toggle"), g = row.querySelector(".cpgear");
         t += " [cpt=" + id + ":" + ctr(tg) + "," + (tg.classList.contains("on") ? 1 : 0) + "," +
              (s.loaded.includes(id) ? 1 : 0) + "," + (g ? ctr(g).split(",")[0] : 0) + "]";
+      }
+      for (const tg of document.querySelectorAll("#spage .toggle[data-core]")) {
+        const p = (host.app.internalPlugins.plugins || {})[tg.dataset.core];
+        t += " [cpc=" + tg.dataset.core + ":" + ctr(tg) + "," + (tg.classList.contains("on") ? 1 : 0) + "," + (p && p._loaded ? 1 : 0) + "]";
       }
     } else if (String(sPane).startsWith("plg:") && setting.activeTab && setting.activeTab.containerEl.isConnected) {
       const ce = setting.activeTab.containerEl;

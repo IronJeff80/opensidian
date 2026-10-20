@@ -482,6 +482,8 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
              color: var(--text-chrome-muted) }
 .trow .tfi svg { width: 14px; height: 14px }
 .trow.folder { font-weight: 500 }
+.trow .ttag { flex: 0 0 auto; margin-left: 6px; padding: 0 4px; border-radius: 3px;   /* goal canvas-core: the CANVAS tag on a .canvas row */
+             font-size: 0.7em; letter-spacing: .04em; color: var(--text-chrome-dim); background: var(--bg-surface) }
 #vswitch { padding: 6px 12px; border-top: 1px solid var(--bg-surface); color: var(--text-chrome-muted);
            cursor: pointer; font-size: 12px; white-space: nowrap;
            overflow: hidden; text-overflow: ellipsis }

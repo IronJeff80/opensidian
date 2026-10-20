@@ -138,9 +138,11 @@
      deps (main.js, once): X (the "obsidian" module), app, io(op, path, data) ->
      the canvas_io command, readNote(path) -> a note's text (restricted mode has
      no vault model), notify(msg), pref {get() -> bool|null, set(bool)},
-     config (app.internalPlugins.config: the id -> enabled map). */
+     config (app.internalPlugins.config: the id -> enabled map).
+     changed() (optional): the board, the file or the error changed — the host republishes its census. */
   function canvasFactory(deps) {
     const { X, app, io } = deps;
+    const changed = () => { if (typeof deps.changed === "function") try { deps.changed(); } catch (_) {} };
     const vaultFile = p => {
       try { const f = app.vault.getAbstractFileByPath(p); return f instanceof X.TFile ? f : null; } catch (_) { return null; }
     };
@@ -367,7 +369,7 @@
         btn("mod-zoom-out", "Zoom out", "−", () => this.zoomBy(0.8));
         btn("mod-zoom-fit", "Zoom to fit", "Fit", () => this.zoomToFit());
         this._saveSoon = debounced(() => { if (this.view && this.view.save) this.view.save().catch(e => console.error("[canvas] save:", e)); }, 400);
-        this.requestSave = () => { if (this.readonly) return; if (this.view) this.view.dirty = true; this._saveSoon(); };
+        this.requestSave = () => { if (this.readonly) return; if (this.view) this.view.dirty = true; this._saveSoon(); changed(); };
         this.wire();
         this.applyTransform();
         // a view opens hidden (0x0): fit the board the first time it has a size
@@ -613,8 +615,9 @@
         this.lastText = text;
         this.canvas.importData(doc);
         this.canvas.fitted = false;
-        requestAnimationFrame(() => { const c = this.canvas; if (this.path === p && c && c.wrapperEl.getBoundingClientRect().width) { c.fitted = true; c.zoomToFit(); } });
+        requestAnimationFrame(() => { const c = this.canvas; if (this.path === p && c && c.wrapperEl.getBoundingClientRect().width) { c.fitted = true; c.zoomToFit(); } changed(); });
         try { if (this.leaf && this.leaf.updateHeader) this.leaf.updateHeader(); } catch (_) {}
+        changed();
       }
       setError(msg) {
         this.broken = msg;
@@ -626,6 +629,7 @@
         el("div", "canvas-error-title", box).textContent = "Canvas error";
         el("div", "canvas-error-message", box).textContent = msg;
         this.errorEl = box;
+        changed();
       }
       async save() {
         const p = this.path;
@@ -639,6 +643,8 @@
         try { if (f) await app.vault.modify(f, text); else await io("write", p, text); }
         catch (e) { this.dirty = true; if (deps.notify) deps.notify("Canvas not saved — " + errText(e)); throw e; }
         this.lastText = text;
+        this.saves = (this.saves || 0) + 1;    // a write that reached the file (census: [cv:...|saves=])
+        changed();
       }
       async flush() { this.canvas._saveSoon.cancel(); for (const n of this.canvas.nodes.values()) if (n.isEditing) try { n.stopEditing(); } catch (_) {} await this.save(); }
       async onClose() { try { await this.flush(); } catch (e) { console.error(e); } this.canvas.destroy(); }
