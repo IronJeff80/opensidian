@@ -255,6 +255,21 @@ body {
   --layer-notice: 71;
   --layer-tooltip: 72;
   --layer-dragged-item: 99;
+  /* toggles: Obsidian's public toggle geometry variables. Plugin switches size themselves from
+     them (Copilot 4.0.15's SettingSwitch: height calc(var(--toggle-s-thumb-height) + 2 x
+     --toggle-s-border-width)); unset, that height is invalid, the switch box collapses to 0px
+     tall and a click on its centre lands on nothing. */
+  --toggle-border-width: 2px;
+  --toggle-width: 40px;
+  --toggle-radius: 18px;
+  --toggle-thumb-radius: 18px;
+  --toggle-thumb-height: 18px;
+  --toggle-thumb-width: 18px;
+  --toggle-s-border-width: 2px;
+  --toggle-s-width: 34px;
+  --toggle-s-thumb-height: 15px;
+  --toggle-s-thumb-width: 15px;
+  --toggle-thumb-color: #ffffff;
 }
 /* ---------------------------------------------------------------------------
    LIGHT. Every value below was SAMPLED from a pixel of a running Obsidian
