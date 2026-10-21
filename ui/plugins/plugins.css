@@ -101,6 +101,13 @@ body.os-has-plugin-status #main .status { bottom: 30px }
 .os-pv > .view-header > .view-header-title { flex: 1 1 auto; min-width: 0 }
 .os-pv > .view-header .view-actions { display: flex; gap: 2px }
 .os-pv > .view-content { flex: 1 1 0; min-height: 0; overflow: auto; padding: 8px 12px }
+/* a plugin View in a sidebar pane (.spane, a bounded flex column) fills it the same way:
+   Obsidian's leaf content is a height-bounded flex column whose .view-content scrolls. Left
+   unbounded, the view grew with its content, and a view that sizes a child from its own
+   scroller's clientHeight (Copilot's chat: last turn min-height = clientHeight - the user
+   message) fed back into itself and grew without end, pushing its input off the sidebar. */
+.spane > .workspace-leaf-content.os-pv { flex: 1 1 0; display: flex; flex-direction: column;
+  min-width: 0; min-height: 0; overflow: hidden; color: var(--text-normal) }
 
 /* goal canvas-core: the Canvas core plugin's board (ui/plugins/canvas.js) */
 .canvas-view { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; padding: 0 }
