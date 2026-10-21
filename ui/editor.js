@@ -1775,32 +1775,43 @@ Ed.geom = function (g) {
    stamped BEFORE the last mousedown arrived after it. It is typed where the
    caret was when that mousedown came (mapped through every change since),
    never at the click point; consecutive overtaken keys follow each other.
-   Census [kro:<keys re-placed>/<ms the last keydown waited>]. */
-Ed.kro = { md: null, n: 0, lag: 0 };
+   The recorded position belongs to ONE document: a note load swaps the state
+   (setState, no transaction, so onUpdate never sees it) and the position is
+   then an offset into a different, maybe shorter doc. mapPos past a changeset's
+   length throws a RangeError, and thrown from the top of onUpdate it skipped
+   the model sync of EVERY later edit (srclick R25.13m: a search-hit click
+   recorded ZC-Click's caret, the hit loaded ZC-Second, and 18 of 19
+   BackSpaces were lost). So the record carries its doc and is dropped the
+   moment the editor's doc is not that doc any more.
+   Census [kro:<keys re-placed>/<ms the last keydown waited>/<stale records dropped>]. */
+Ed.kro = { md: null, n: 0, lag: 0, st: 0 };
 Ed.kroView = function () {
   const a = document.activeElement, h = a && a.closest ? a.closest(".cm-editor") : null;
   return h && CMv && CMv.EditorView.findFromDOM ? CMv.EditorView.findFromDOM(h) : null;
 };
 Ed.kroMap = function (u) {                  // keep the pre-click position on the text it pointed at
-  const m = Ed.kro.md; if (m && u.docChanged && m.cm === u.view) m.pos = u.changes.mapPos(m.pos, 1);
+  const m = Ed.kro.md; if (!m || m.cm !== u.view || !u.docChanged) return;
+  if (u.startState.doc !== m.doc || m.pos > u.startState.doc.length) { Ed.kro.md = null; Ed.kro.st++; return; }   // another doc: stale
+  m.pos = u.changes.mapPos(m.pos, 1); m.doc = u.state.doc;
 };
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {   // a headless loader (tests/listtoggle.rs) has no event target
 window.addEventListener("mousedown", e => {
   const cm = e.button === 0 ? Ed.kroView() : null, r = cm && cm.state.selection.main;
-  Ed.kro.md = r && r.empty && typeof e.timeStamp === "number" && e.timeStamp > 0 ? { t: e.timeStamp, cm, pos: r.head } : null;
+  Ed.kro.md = r && r.empty && typeof e.timeStamp === "number" && e.timeStamp > 0 ? { t: e.timeStamp, cm, pos: r.head, doc: cm.state.doc } : null;
 }, true);
 window.addEventListener("keydown", e => {
   const now = performance.now(), m = Ed.kro.md;
   if (typeof e.timeStamp === "number" && e.timeStamp > 0 && e.timeStamp <= now + 1) Ed.kro.lag = Math.round(now - e.timeStamp);
   if (!m || !(e.timeStamp > 0 && e.timeStamp < m.t) || e.isComposing || e.ctrlKey || e.metaKey || e.altKey
       || typeof e.key !== "string" || [...e.key].length !== 1 || !m.cm.dom.isConnected) return;
+  if (m.cm.state.doc !== m.doc) { Ed.kro.md = null; Ed.kro.st++; return; }   // the doc was swapped (a note load) since that mousedown
   e.preventDefault(); e.stopImmediatePropagation();
   const p = Math.min(m.pos, m.cm.state.doc.length);
   m.cm.dispatch({ changes: { from: p, insert: e.key }, annotations: [CMs.Transaction.userEvent.of("input.type")] });
-  m.pos = p + e.key.length; Ed.kro.n++;
+  m.pos = p + e.key.length; m.doc = m.cm.state.doc; Ed.kro.n++;
 }, true);
 }
-Ed.kroTok = function () { return " [kro:" + Ed.kro.n + "/" + Ed.kro.lag + "]"; };
+Ed.kroTok = function () { return " [kro:" + Ed.kro.n + "/" + Ed.kro.lag + "/" + Ed.kro.st + "]"; };
 Ed.caretXY = function (g) {               // caret rect relative to the pane box
   const cm = Ed.cm(g), pr = g.pane.getBoundingClientRect();
   const c = cm && cm.coordsAtPos(cm.state.selection.main.head);
