@@ -1784,6 +1784,7 @@ Ed.kroView = function () {
 Ed.kroMap = function (u) {                  // keep the pre-click position on the text it pointed at
   const m = Ed.kro.md; if (m && u.docChanged && m.cm === u.view) m.pos = u.changes.mapPos(m.pos, 1);
 };
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {   // a headless loader (tests/listtoggle.rs) has no event target
 window.addEventListener("mousedown", e => {
   const cm = e.button === 0 ? Ed.kroView() : null, r = cm && cm.state.selection.main;
   Ed.kro.md = r && r.empty && typeof e.timeStamp === "number" && e.timeStamp > 0 ? { t: e.timeStamp, cm, pos: r.head } : null;
@@ -1798,6 +1799,7 @@ window.addEventListener("keydown", e => {
   m.cm.dispatch({ changes: { from: p, insert: e.key }, annotations: [CMs.Transaction.userEvent.of("input.type")] });
   m.pos = p + e.key.length; Ed.kro.n++;
 }, true);
+}
 Ed.kroTok = function () { return " [kro:" + Ed.kro.n + "/" + Ed.kro.lag + "]"; };
 Ed.caretXY = function (g) {               // caret rect relative to the pane box
   const cm = Ed.cm(g), pr = g.pane.getBoundingClientRect();
