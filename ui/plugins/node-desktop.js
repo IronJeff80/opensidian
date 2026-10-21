@@ -223,7 +223,10 @@
     try { r = new URL(String(to), new URL(String(from), B + "/")); } catch (_) { return String(to); }
     return r.origin === B ? r.pathname + r.search + r.hash : r.href;
   }
-  const urlMod = Object.freeze({ Url: LegacyUrl, parse: urlParse, format: urlFormat, resolve: urlResolve, URL, URLSearchParams });
+  // fileURLToPath / pathToFileURL are api-vault.js URL_MOD (adapter.url), looked up at call time
+  const vaultUrl = n => { const m = host.vfsUrl; if (!m) { const e = new Error("url." + n + ": the vault url module is not loaded"); e.code = "ERR_INVALID_STATE"; throw e; } return m; };
+  const urlMod = Object.freeze({ Url: LegacyUrl, parse: urlParse, format: urlFormat, resolve: urlResolve, URL, URLSearchParams,
+    fileURLToPath: u => vaultUrl("fileURLToPath").fileURLToPath(u), pathToFileURL: p => vaultUrl("pathToFileURL").pathToFileURL(p) });
 
   /* http data members (Node 18 values, data only). Bundled express builds app[method] for
      every entry of http.METHODS at module scope, then app.del = depd.function(app.delete):
@@ -1109,12 +1112,15 @@
     METHODS: HTTP_METHODS, STATUS_CODES: HTTP_STATUS,
     Server: HttpServer, IncomingMessage, ServerResponse,
     createServer: (o, f) => new HttpServer(o, f),
+    // the client (top10-func): ClientRequest over desk_http, made at call time (defined further down)
+    request: (a, b, c) => clientRequest("http")(a, b, c), get: (a, b, c) => clientGet("http")(a, b, c),
     maxHeaderSize: 16384,
   };
   const httpsOwn = {
     METHODS: HTTP_METHODS, STATUS_CODES: HTTP_STATUS,
     Server: HttpsServer,
     createServer: (o, f) => new HttpsServer(o, f),
+    request: (a, b, c) => clientRequest("https")(a, b, c), get: (a, b, c) => clientGet("https")(a, b, c),
   };
 
   /* ------------------------------------------------------ the view */
@@ -1348,6 +1354,562 @@
   // fs/promises of node-modules.js: readFile and the chmod stub, no promises member and no *Sync
   const isFsPromises = m => m && typeof m === "object" && typeof m.readFile === "function" && typeof m.chmod === "function" && !("promises" in m) && !("readFileSync" in m);
 
+
+  /* ------------------------------------------- top10-func (Copilot's rows, coverage.json)
+     fs descriptors (openSync / readSync / writeSync / closeSync / fstatSync, their callback forms and
+     fs.promises.open's FileHandle), realpath, readlink, read / write streams, the stream module, zlib
+     over the page's CompressionStream / DecompressionStream, and worker_threads' main-thread view.
+     All over the SAME confined core as the facade: a descriptor is a vault path + flags + a position
+     held here (no host descriptor exists), every read / write is one vault op that Rust confines and
+     refuses on a symlink. Link creation (symlink / link) is REFUSED BY POLICY (operator ruling: fs
+     access vault-confined and symlink-safe): a symlink's target is a host path the vault cannot
+     confine, and a hard link aliases a vault file's inode, so a write through the vault name lands
+     in a file whose other name may be (or later move) outside the vault. */
+  const sysE = (code, msg, p, syscall) => { const e = new Error(code + ": " + msg + (p != null ? ", " + (syscall ? syscall + " " : "") + "'" + p + "'" : "")); e.code = code; if (p != null) e.path = String(p); if (syscall) e.syscall = syscall; e.errno = -1; return e; };
+  const pathArg = p => {
+    if (p instanceof URL) { if (!host.vfsUrl) throw sysE("EINVAL", "no vault url module", String(p)); return host.vfsUrl.fileURLToPath(p); }
+    if (ArrayBuffer.isView(p)) return new TextDecoder().decode(p);
+    if (typeof p !== "string") { const e = new TypeError('The "path" argument must be of type string or an instance of Buffer or URL. Received ' + (p === null ? "null" : typeof p)); e.code = "ERR_INVALID_ARG_TYPE"; throw e; }
+    return p;
+  };
+  const policyLink = n => function () {
+    const e = new Error("EPERM: fs." + n + " is refused by policy in opensidian: plugins may not create links in a symlink-safe, vault-confined fs");
+    e.code = "EPERM"; e.syscall = n.replace(/Sync$/, ""); e.errno = -1;
+    if (/Sync$/.test(n)) throw e;
+    const cb = arguments[arguments.length - 1];
+    if (typeof cb === "function") { later(() => cb(e)); return undefined; }
+    return Promise.reject(e);
+  };
+  // the canonical vault path: "/vault" + the vault-relative path, no "." / empty segments
+  function realS(p) {
+    p = pathArg(p);
+    vioSync("stat", p);                     // ENOENT when missing, EPERM outside the vault or on a symlink
+    const r = host.vfs.vrel(p).split("/").filter(s => s && s !== ".").join("/");
+    return r ? host.vfs.VROOT + "/" + r : host.vfs.VROOT;
+  }
+  function realpathSync(p) { return realS(p); }
+  realpathSync.native = realpathSync;
+  // nothing reachable through the confined fs is a link (Rust refuses a symlink path EPERM): an
+  // existing vault path is "not a symbolic link" -> EINVAL, as Node says for a regular file
+  function readlinkS(p) { p = pathArg(p); vioSync("stat", p); throw sysE("EINVAL", "invalid argument", p, "readlink"); }
+  const cbOf = a => { const cb = a[a.length - 1]; if (typeof cb !== "function") throw new TypeError('The "cb" argument must be of type function'); return cb; };
+  const asCb = f => function (...a) { const cb = cbOf(a); a.pop(); let v; try { v = f(...a); } catch (e) { later(() => cb(e)); return; } later(() => cb(null, v)); };
+  const asP = f => (...a) => { try { return Promise.resolve(f(...a)); } catch (e) { return Promise.reject(e); } };
+
+  /* descriptors: flags as Node's ("r" "r+" "w" "wx" "w+" "a" "ax" "a+" ..., or O_* bits) */
+  const fds = new Map();
+  let fdNext = 20;
+  function flagsOf(f) {
+    if (f == null) f = "r";
+    if (typeof f === "number") {
+      const acc = f & 3;
+      return { rd: acc !== 1, wr: acc !== 0, create: !!(f & 64), excl: !!(f & 128), trunc: !!(f & 512), append: !!(f & 1024) };
+    }
+    const m = /^(r|rs|sr|w|a)(x?)(\+?)(x?)$/.exec(String(f).replace(/s(?=\+)/, ""));
+    if (!m) { const e = new TypeError("The value \"" + String(f) + "\" is invalid for option \"flags\""); e.code = "ERR_INVALID_ARG_VALUE"; throw e; }
+    const k = m[1][0] === "s" ? "r" : m[1][0], plus = !!m[3], x = !!(m[2] || m[4]);
+    if (k === "r") return { rd: true, wr: plus, create: false, excl: false, trunc: false, append: false };
+    if (k === "w") return { rd: plus, wr: true, create: true, excl: x, trunc: true, append: false };
+    return { rd: plus, wr: true, create: true, excl: x, trunc: false, append: true };
+  }
+  function openS(p, flags, mode) {
+    p = pathArg(p);
+    const fl = flagsOf(flags);
+    const there = vioSync("exists", p) === true;
+    if (there && fl.excl) throw sysE("EEXIST", "file already exists", p, "open");
+    if (there) {
+      const s = vioSync("stat", p);
+      if (s.type === "folder" && fl.wr) throw sysE("EISDIR", "illegal operation on a directory", p, "open");
+      if (fl.trunc) vioSync("write", p, { data: "" });
+    } else {
+      if (!fl.create) vioSync("stat", p);   // throws ENOENT (or EPERM outside the vault)
+      vioSync("write", p, { data: "" });
+      if (mode != null) vioSync("chmod", p, { mode: modeArg(mode) & 0o777 });
+    }
+    const fd = fdNext++;
+    fds.set(fd, { path: p, fl, pos: 0 });
+    return fd;
+  }
+  const fdOf = (fd, syscall) => { const d = fds.get(fd); if (!d) throw sysE("EBADF", "bad file descriptor", null, syscall); return d; };
+  const fileBytes = p => b64bytes(vioSync("read", p));
+  function readS(fd, buf, off, len, pos) {
+    const d = fdOf(fd, "read");
+    if (!d.fl.rd) throw sysE("EBADF", "bad file descriptor", null, "read");
+    if (!ArrayBuffer.isView(buf)) { const e = new TypeError('The "buffer" argument must be an instance of Buffer, TypedArray, or DataView'); e.code = "ERR_INVALID_ARG_TYPE"; throw e; }
+    if (off && typeof off === "object") ({ offset: off, length: len, position: pos } = off);
+    off = off == null ? 0 : off | 0;
+    const view = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+    len = len == null ? view.length - off : len | 0;
+    if (off < 0 || len < 0 || off + len > view.length) { const e = new RangeError('The value of "length" is out of range'); e.code = "ERR_OUT_OF_RANGE"; throw e; }
+    const at = pos == null || pos === -1 || pos === -1n ? d.pos : Number(pos);
+    const all = fileBytes(d.path);
+    const part = all.subarray(Math.min(at, all.length), Math.min(at + len, all.length));
+    view.set(part, off);
+    if (pos == null || pos === -1) d.pos = at + part.length;
+    return part.length;
+  }
+  function writeS(fd, data, a, b, c) {
+    const d = fdOf(fd, "write");
+    if (!d.fl.wr) throw sysE("EBADF", "bad file descriptor", null, "write");
+    let bytes, pos;
+    if (typeof data === "string") { bytes = Buffer.from(data, typeof b === "string" ? b : "utf8"); pos = a; }
+    else if (ArrayBuffer.isView(data)) {
+      const u = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+      if (a && typeof a === "object") ({ offset: a, length: b, position: c } = a);
+      const off = a == null ? 0 : a | 0, len = b == null ? u.length - off : b | 0;
+      bytes = u.subarray(off, off + len); pos = c;
+    } else { const e = new TypeError('The "buffer" argument must be of type string or an instance of Buffer, TypedArray, or DataView'); e.code = "ERR_INVALID_ARG_TYPE"; throw e; }
+    if (d.fl.append) { vioSync("append", d.path, { data: bytesB64(bytes) }); return bytes.length; }
+    const at = pos == null ? d.pos : Number(pos), cur = fileBytes(d.path);
+    const out = new Uint8Array(Math.max(cur.length, at + bytes.length));
+    out.set(cur); out.set(bytes, at);
+    vioSync("write", d.path, { data: bytesB64(out) });
+    if (pos == null) d.pos = at + bytes.length;
+    return bytes.length;
+  }
+  function closeS(fd) { fdOf(fd, "close"); fds.delete(fd); }
+  function fstatS(fd) { return statS(fdOf(fd, "fstat").path); }
+  // readFileSync / writeFileSync / appendFileSync accept a descriptor as well as a path
+  const fdOrPath = (pf, ff) => function (p, ...a) { return typeof p === "number" ? ff(p, ...a) : pf(p, ...a); };
+  const readFileFd = (fd, o) => { const d = fdOf(fd, "read"), u = fileBytes(d.path).subarray(d.pos); d.pos += u.length; const enc = encArg(o), b = Buffer.from(u); return enc ? b.toString(enc) : b; };
+  const writeFileFd = (fd, data, o) => { writeS(fd, typeof data === "string" ? Buffer.from(data, encArg(o) || "utf8") : data); };
+  class FileHandle extends EmitterBase {
+    constructor(fd) { super(); this.fd = fd; }
+    async read(buf, off, len, pos) { if (buf == null) buf = Buffer.alloc(16384); return { bytesRead: readS(this.fd, buf, off, len, pos), buffer: buf }; }
+    async write(data, a, b, c) { return { bytesWritten: writeS(this.fd, data, a, b, c), buffer: data }; }
+    async readFile(o) { return readFileFd(this.fd, o); }
+    async writeFile(data, o) { writeFileFd(this.fd, data, o); }
+    async appendFile(data, o) { writeFileFd(this.fd, data, o); }
+    async stat() { return fstatS(this.fd); }
+    async truncate(n) { const d = fdOf(this.fd, "ftruncate"), u = fileBytes(d.path), out = new Uint8Array(n | 0); out.set(u.subarray(0, n | 0)); vioSync("write", d.path, { data: bytesB64(out) }); }
+    async sync() { fdOf(this.fd, "fsync"); }
+    async close() { if (fds.has(this.fd)) { closeS(this.fd); this.emit("close"); } }
+  }
+
+  /* ------------------------------------------- stream (Readable / Writable / Duplex / Transform /
+     PassThrough, pipe, pipeline, finished, async iteration). Push-driven and in-page; the
+     buffer is unbounded (write() reports backpressure past highWaterMark, a Readable is not
+     throttled by its consumer's pace). */
+  const tick = f => Promise.resolve().then(f);
+  const sErr = (code, msg) => { const e = new Error(msg); e.code = code; return e; };
+  const abortErr = () => { const e = new Error("The operation was aborted"); e.name = "AbortError"; e.code = "ABORT_ERR"; return e; };
+  const chunkLen = (s, c) => (s.objectMode ? 1 : c && c.length != null ? c.length : 1);
+  function destroyS(self, err, cb) {
+    if (self.destroyed) { if (cb) cb(err); return self; }
+    self.destroyed = true;
+    const fin = e => { tick(() => { if (e) { self.errored = e; self.emit("error", e); } self.closed = true; self.emit("close"); if (cb) cb(e); }); };
+    if (typeof self._destroy === "function") { try { self._destroy(err || null, e => fin(e || err)); } catch (e) { fin(e); } } else fin(err);
+    return self;
+  }
+  function initR(self, o) {
+    self._rs = { buf: [], flowing: null, ended: false, endEmitted: false, sched: false, reading: false,
+      objectMode: !!(o.objectMode || o.readableObjectMode), enc: o.encoding || null };
+    if (typeof o.read === "function") self._read = o.read;
+    if (typeof o.destroy === "function") self._destroy = o.destroy;
+    self.readable = true; self.readableEnded = false;
+  }
+  function initW(self, o) {
+    self._ws = { q: [], writing: false, ending: false, finishing: false, len: 0, needDrain: false,
+      objectMode: !!(o.objectMode || o.writableObjectMode), decode: o.decodeStrings !== false, hwm: o.highWaterMark != null ? o.highWaterMark : (o.objectMode ? 16 : 16384) };
+    if (typeof o.write === "function") self._write = o.write;
+    if (typeof o.final === "function") self._final = o.final;
+    if (typeof o.destroy === "function") self._destroy = o.destroy;
+    self.writable = true; self.writableEnded = false; self.writableFinished = false;
+  }
+  function abortOn(self, sig) { if (!sig) return; const f = () => destroyS(self, abortErr()); if (sig.aborted) tick(f); else sig.addEventListener("abort", f, { once: true }); }
+  class Stream extends EmitterBase {
+    constructor() { super(); this.destroyed = false; }
+  }
+  class Readable extends Stream {
+    constructor(o) { super(); o = o || {}; initR(this, o); abortOn(this, o.signal); }
+    static from(it, o) {
+      const r = new Readable(Object.assign({ objectMode: true }, o || {}));
+      if (typeof it === "string" || ArrayBuffer.isView(it)) { r.push(it); r.push(null); return r; }
+      (async () => { for await (const x of it) { if (r.destroyed) return; r.push(x); } r.push(null); })().catch(e => destroyS(r, e));
+      return r;
+    }
+    _read() {}
+    push(c, enc) {
+      const s = this._rs;
+      if (c === null) { s.ended = true; this._kick(); return false; }
+      if (this.destroyed || s.ended) return false;
+      if (!s.objectMode && typeof c === "string") c = Buffer.from(c, enc || "utf8");
+      else if (!s.objectMode && ArrayBuffer.isView(c) && !(c instanceof Buffer)) c = Buffer.from(c);
+      if (s.enc && !s.objectMode) c = Buffer.from(c).toString(s.enc);
+      s.buf.push(c); s.reading = false;
+      this._kick();
+      return true;
+    }
+    unshift(c) { this._rs.buf.unshift(c); this._kick(); }
+    _kick() { const s = this._rs; if (s.sched) return; s.sched = true; tick(() => { s.sched = false; this._drain(); }); }
+    _drain() {
+      const s = this._rs;
+      if (this.destroyed) return;
+      while (s.flowing && s.buf.length && !this.destroyed) this.emit("data", s.buf.shift());
+      if (!s.buf.length && s.ended && !s.endEmitted) {
+        s.endEmitted = true; this.readableEnded = true; this.readable = false;
+        this.emit("end");
+        if (!this._ws && this._autoClose !== false) tick(() => { if (!this.destroyed) { this.destroyed = true; this.closed = true; this.emit("close"); } });
+        return;
+      }
+      if (s.flowing && !s.buf.length && !s.ended && !s.reading) { s.reading = true; try { this._read(16384); } catch (e) { destroyS(this, e); } }
+    }
+    on(n, f) { super.on(n, f); if (n === "data" && this._rs.flowing !== false) this.resume(); return this; }
+    addListener(n, f) { return this.on(n, f); }
+    resume() { this._rs.flowing = true; this._rs.reading = false; this._kick(); return this; }
+    pause() { this._rs.flowing = false; return this; }
+    isPaused() { return this._rs.flowing === false; }
+    setEncoding(e) { this._rs.enc = e; return this; }
+    read() {
+      const s = this._rs;
+      if (s.buf.length) return s.buf.shift();
+      if (!s.ended && !s.reading) { s.reading = true; try { this._read(16384); } catch (e) { destroyS(this, e); } }
+      if (s.ended) this._kick();
+      return null;
+    }
+    pipe(dest, o) {
+      this.on("data", c => { if (dest.write(c) === false) { this.pause(); dest.once("drain", () => this.resume()); } });
+      if (!o || o.end !== false) this.once("end", () => dest.end());
+      if (typeof dest.emit === "function") dest.emit("pipe", this);
+      return dest;
+    }
+    unpipe() { this.removeAllListeners("data"); this.pause(); return this; }
+    destroy(err, cb) { return destroyS(this, err, cb); }
+    [Symbol.asyncIterator]() {
+      const self = this, q = [], waiters = [];
+      let done = false, err = null;
+      const settle = () => {
+        while (waiters.length && (q.length || done || err)) {
+          const w = waiters.shift();
+          if (q.length) w.res({ value: q.shift(), done: false });
+          else if (err) w.rej(err);
+          else w.res({ value: undefined, done: true });
+        }
+        if (waiters.length && !q.length && !done && !err) self.resume();
+      };
+      this.on("data", c => { q.push(c); self.pause(); settle(); });
+      this.once("end", () => { done = true; settle(); });
+      this.once("error", e => { err = e; settle(); });
+      this.once("close", () => { done = true; settle(); });
+      this.pause();
+      return {
+        next() { return new Promise((res, rej) => { waiters.push({ res, rej }); settle(); }); },
+        return() { destroyS(self); return Promise.resolve({ value: undefined, done: true }); },
+        [Symbol.asyncIterator]() { return this; },
+      };
+    }
+  }
+  const W = {
+    write(c, enc, cb) {
+      const s = this._ws;
+      if (typeof enc === "function") { cb = enc; enc = null; }
+      if (s.ending || this.destroyed) {
+        const e = sErr("ERR_STREAM_WRITE_AFTER_END", "write after end");
+        tick(() => { if (cb) cb(e); this.emit("error", e); });
+        return false;
+      }
+      if (!s.objectMode && typeof c === "string" && s.decode) { c = Buffer.from(c, enc || "utf8"); enc = "buffer"; }
+      s.q.push({ c, enc: enc || (typeof c === "string" ? "utf8" : "buffer"), cb });
+      s.len += chunkLen(s, c);
+      this._pump();
+      if (s.len >= s.hwm) { s.needDrain = true; return false; }
+      return true;
+    },
+    _pump() {
+      const s = this._ws;
+      if (s.writing || this.destroyed) return;
+      const it = s.q.shift();
+      if (!it) {
+        if (s.needDrain) { s.needDrain = false; tick(() => this.emit("drain")); }
+        if (s.ending && !s.finishing) this._finishW();
+        return;
+      }
+      s.writing = true;
+      let sync = true;
+      const done = e => {
+        const go = () => {
+          s.writing = false; s.len -= chunkLen(s, it.c);
+          if (it.cb) it.cb(e || null);
+          if (e) { destroyS(this, e); return; }
+          this._pump();
+        };
+        if (sync) tick(go); else go();
+      };
+      try { this._write(it.c, it.enc, done); } catch (e) { done(e); }
+      sync = false;
+    },
+    _write(c, enc, cb) { cb(sErr("ERR_METHOD_NOT_IMPLEMENTED", "The _write() method is not implemented")); },
+    end(c, enc, cb) {
+      if (typeof c === "function") { cb = c; c = null; } else if (typeof enc === "function") { cb = enc; enc = null; }
+      const s = this._ws;
+      if (c != null) this.write(c, enc);
+      if (cb) { this.once("finish", () => cb()); this.once("error", e => cb(e)); }
+      if (s.ending) return this;
+      s.ending = true; this.writableEnded = true;
+      this._pump();
+      return this;
+    },
+    _finishW() {
+      const s = this._ws;
+      s.finishing = true;
+      const fin = e => {
+        if (e) { destroyS(this, e); return; }
+        this.writableFinished = true; this.writable = false;
+        this.emit("finish");
+        if (!this._rs && this._autoClose !== false) tick(() => { if (!this.destroyed) { this.destroyed = true; this.closed = true; this.emit("close"); } });
+      };
+      if (typeof this._final === "function") { try { this._final(e => tick(() => fin(e))); } catch (e) { fin(e); } } else tick(() => fin());
+    },
+    cork() {}, uncork() {},
+    setDefaultEncoding() { return this; },
+    destroy(err, cb) { return destroyS(this, err, cb); },
+  };
+  class Writable extends Stream {
+    constructor(o) { super(); o = o || {}; initW(this, o); abortOn(this, o.signal); }
+  }
+  for (const k of Object.keys(W)) Object.defineProperty(Writable.prototype, k, { value: W[k], writable: true, configurable: true });
+  class Duplex extends Readable {
+    constructor(o) { super(o); initW(this, o || {}); }
+  }
+  for (const k of Object.keys(W)) if (k !== "destroy") Object.defineProperty(Duplex.prototype, k, { value: W[k], writable: true, configurable: true });
+  class Transform extends Duplex {
+    constructor(o) {
+      super(o); o = o || {};
+      if (typeof o.transform === "function") this._transform = o.transform;
+      if (typeof o.flush === "function") this._flush = o.flush;
+    }
+    _transform(c, enc, cb) { cb(sErr("ERR_METHOD_NOT_IMPLEMENTED", "The _transform() method is not implemented")); }
+    _write(c, enc, cb) { this._transform(c, enc, (e, data) => { if (e) { cb(e); return; } if (data != null) this.push(data); cb(); }); }
+    _final(cb) {
+      const end = (e, data) => { if (e) { cb(e); return; } if (data != null) this.push(data); this.push(null); cb(); };
+      if (typeof this._flush === "function") this._flush(end); else end();
+    }
+  }
+  class PassThrough extends Transform { _transform(c, enc, cb) { cb(null, c); } }
+  const isWritable = s => s && typeof s.write === "function";
+  function finished(s, o, cb) {
+    if (typeof o === "function") { cb = o; o = {}; }
+    let done = false;
+    const fin = e => { if (!done) { done = true; cb(e || undefined); } };
+    s.once("error", fin);
+    s.once(isWritable(s) && !s._rs ? "finish" : "end", () => fin());
+    s.once("close", () => fin(s.readableEnded || s.writableFinished ? undefined : sErr("ERR_STREAM_PREMATURE_CLOSE", "Premature close")));
+    return () => { done = true; };
+  }
+  function pipelineP(list, o) {
+    return new Promise((res, rej) => {
+      if (list.length < 2) { rej(sErr("ERR_MISSING_ARGS", 'The "streams" argument must be specified')); return; }
+      let done = false;
+      const fin = e => {
+        if (done) return; done = true;
+        if (e) { for (const s of list) if (s && typeof s.destroy === "function" && !s.destroyed) s.destroy(); rej(e); } else res();
+      };
+      const sig = o && o.signal;
+      if (sig) { if (sig.aborted) { fin(abortErr()); return; } sig.addEventListener("abort", () => fin(abortErr()), { once: true }); }
+      for (const s of list) s.on("error", fin);
+      for (let i = 0; i < list.length - 1; i++) list[i].pipe(list[i + 1]);
+      const last = list[list.length - 1];
+      finished(last, e => fin(e));
+    });
+  }
+  const splitPipe = a => {
+    let o = null;
+    const t = a[a.length - 1];
+    if (t && typeof t === "object" && typeof t.pipe !== "function" && typeof t.write !== "function" && typeof t.on !== "function") { o = t; a = a.slice(0, -1); }
+    return [Array.isArray(a[0]) && a.length === 1 ? a[0] : a, o];
+  };
+  function pipeline(...a) {
+    const cb = typeof a[a.length - 1] === "function" ? a.pop() : null;
+    const [list, o] = splitPipe(a);
+    const p = pipelineP(list, o);
+    if (cb) p.then(() => cb(), e => cb(e)); else p.catch(() => {});
+    return list[list.length - 1];
+  }
+  const streamPromises = Object.freeze({ pipeline: (...a) => { const [list, o] = splitPipe(a); return pipelineP(list, o); }, finished: (s, o) => new Promise((res, rej) => finished(s, o || {}, e => (e ? rej(e) : res()))) });
+  const streamOwn = { Stream, Readable, Writable, Duplex, Transform, PassThrough, pipeline, finished, promises: streamPromises,
+    addAbortSignal: (sig, s) => { abortOn(s, sig); return s; } };
+
+  /* fs read / write streams: one vault read (the bytes are sliced into highWaterMark chunks) /
+     a vault write that opens (creates, truncates, refuses for "wx") at construction and appends per chunk */
+  class ReadStream extends Readable {
+    constructor(p, o) {
+      if (typeof o === "string") o = { encoding: o };
+      o = o || {};
+      super({ encoding: o.encoding, signal: o.signal });
+      this.path = pathArg(p); this.bytesRead = 0; this.pending = true;
+      this._hwm = o.highWaterMark > 0 ? o.highWaterMark : 65536;
+      this._pos = o.start > 0 ? o.start | 0 : 0; this._end = o.end != null ? Number(o.end) : Infinity;
+      this._data = null; this._busy = false;
+    }
+    _read() {
+      if (this._busy) return;
+      this._busy = true;
+      const got = this._data ? Promise.resolve() : host.vfs.read(this.path).then(u => { this._data = u; this.pending = false; this.emit("open", 0); this.emit("ready"); });
+      got.then(() => {
+        this._busy = false;
+        const u = this._data, end = Math.min(u.length, this._end + 1);
+        if (this._pos >= end) { this.push(null); return; }
+        const n = Math.min(this._hwm, end - this._pos), c = Buffer.from(u.subarray(this._pos, this._pos + n));
+        this._pos += n; this.bytesRead += n;
+        this.push(c);
+      }, e => { this._busy = false; destroyS(this, e); });
+    }
+    close(cb) { destroyS(this, null, cb); }
+  }
+  class WriteStream extends Writable {
+    constructor(p, o) {
+      if (typeof o === "string") o = { encoding: o };
+      o = o || {};
+      super({ signal: o.signal, decodeStrings: true });
+      this.path = pathArg(p); this.bytesWritten = 0; this.pending = true;
+      const fl = flagsOf(o.flags || "w"), V = host.vfs;
+      this._open = (async () => {
+        const there = await V.exists(this.path);
+        if (there && fl.excl) throw sysE("EEXIST", "file already exists", this.path, "open");
+        if (!there || fl.trunc) await V.write(this.path, new Uint8Array(0));
+        this.pending = false; this.emit("open", 0); this.emit("ready");
+      })();
+      this._open.catch(e => destroyS(this, e));
+    }
+    _write(c, enc, cb) {
+      const b = typeof c === "string" ? Buffer.from(c, enc) : c;
+      this._open.then(() => host.vfs.append(this.path, b)).then(() => { this.bytesWritten += b.length; cb(); }, cb);
+    }
+    _final(cb) { this._open.then(() => cb(), cb); }
+    close(cb) { if (cb) this.once("close", () => cb()); this.end(); }
+  }
+
+  const fsMore = Object.freeze({
+    realpathSync, realpath: Object.assign(asCb(realS), { native: asCb(realS) }),
+    readlinkSync: readlinkS, readlink: asCb(readlinkS),
+    openSync: openS, open: asCb(openS),
+    readSync: readS, read: function (fd, buf, ...a) { const cb = cbOf(a); a.pop(); let n; try { n = readS(fd, buf, ...a); } catch (e) { later(() => cb(e)); return; } later(() => cb(null, n, buf)); },
+    writeSync: writeS, write: function (fd, data, ...a) { const cb = cbOf(a); a.pop(); let n; try { n = writeS(fd, data, ...a); } catch (e) { later(() => cb(e)); return; } later(() => cb(null, n, data)); },
+    closeSync: closeS, close: function (fd, cb) { let e = null; try { closeS(fd); } catch (x) { e = x; } if (typeof cb === "function") later(() => cb(e)); },
+    fstatSync: fstatS, fstat: asCb(fstatS),
+    readFileSync: fdOrPath(fsSync.readFileSync, readFileFd),
+    writeFileSync: fdOrPath(fsSync.writeFileSync, writeFileFd),
+    appendFileSync: fdOrPath(fsSync.appendFileSync, writeFileFd),
+    createReadStream: (p, o) => new ReadStream(p, o),
+    createWriteStream: (p, o) => new WriteStream(p, o),
+    ReadStream, WriteStream,
+    symlinkSync: policyLink("symlinkSync"), symlink: policyLink("symlink"),
+    linkSync: policyLink("linkSync"), link: policyLink("link"),
+  });
+  const fsPromisesMore = Object.freeze({
+    realpath: asP(realS), readlink: asP(readlinkS),
+    open: (p, f, m) => { try { return Promise.resolve(new FileHandle(openS(p, f, m))); } catch (e) { return Promise.reject(e); } },
+    symlink: policyLink("symlink"), link: policyLink("link"),
+  });
+
+  /* zlib: gzip / deflate (zlib) / deflate-raw streams over the page's CompressionStream and
+     DecompressionStream (the browser's own zlib). Corrupt input is an "error" with Node's code
+     Z_DATA_ERROR; the one-shot callback forms collect a stream. */
+  const ZFMT = { gzip: "gzip", deflate: "deflate", raw: "deflate-raw" };
+  function webZ(inflate, fmt) {
+    const C = inflate ? window.DecompressionStream : window.CompressionStream;
+    if (typeof C !== "function") throw sErr("ERR_ZLIB_INITIALIZATION_FAILED", "Initialization failed: this page has no " + (inflate ? "DecompressionStream" : "CompressionStream"));
+    const cs = new C(fmt), w = cs.writable.getWriter(), r = cs.readable.getReader();
+    const zerr = e => { if (e && e.code) return e; const x = new Error(inflate ? "incorrect header check" : String(e && e.message || e)); x.code = inflate ? "Z_DATA_ERROR" : "Z_STREAM_ERROR"; x.errno = inflate ? -3 : -2; return x; };
+    for (const p of [w.closed, w.ready, r.closed]) p.catch(() => {});
+    let failed = null;
+    const t = new Transform({
+      transform(c, enc, cb) { if (failed) { cb(failed); return; } w.write(new Uint8Array(c.buffer, c.byteOffset, c.byteLength).slice()).then(() => cb(), e => cb(failed || zerr(e))); },
+      flush(cb) { if (failed) { cb(failed); return; } w.close().then(() => pump).then(() => cb(), e => cb(failed || zerr(e))); },
+    });
+    const pump = (async () => { for (;;) { const { value, done } = await r.read(); if (done) return; t.push(Buffer.from(value)); } })();
+    pump.catch(e => { failed = zerr(e); destroyS(t, failed); });
+    t.bytesWritten = 0;
+    return t;
+  }
+  const zOne = (inflate, fmt) => (buf, o, cb) => {
+    if (typeof o === "function") cb = o;
+    const out = [];
+    let z;
+    try { z = webZ(inflate, fmt); } catch (e) { later(() => cb(e)); return; }
+    z.on("data", c => out.push(c));
+    z.once("error", e => cb(e));
+    z.once("end", () => cb(null, Buffer.concat(out)));
+    z.end(typeof buf === "string" ? Buffer.from(buf) : buf);
+  };
+  const zlibOwn = {
+    createGunzip: () => webZ(true, ZFMT.gzip), createGzip: () => webZ(false, ZFMT.gzip),
+    createInflate: () => webZ(true, ZFMT.deflate), createDeflate: () => webZ(false, ZFMT.deflate),
+    createInflateRaw: () => webZ(true, ZFMT.raw), createDeflateRaw: () => webZ(false, ZFMT.raw),
+    gunzip: zOne(true, ZFMT.gzip), gzip: zOne(false, ZFMT.gzip), inflate: zOne(true, ZFMT.deflate), deflate: zOne(false, ZFMT.deflate),
+    inflateRaw: zOne(true, ZFMT.raw), deflateRaw: zOne(false, ZFMT.raw),
+    constants: Object.freeze({ Z_NO_FLUSH: 0, Z_FINISH: 4, Z_OK: 0, Z_STREAM_END: 1, Z_DATA_ERROR: -3, Z_DEFAULT_COMPRESSION: -1 }),
+  };
+
+
+  /* http(s).get / http(s).request: a Node client request over the SAME Rust desk_http path as
+     requestUrl (no new network surface: same backend, same refusals — an https:// URL fails there
+     until the app has a TLS client, and the failure reaches the request's "error"). The response is
+     a Readable (statusCode, statusMessage, headers lower-cased) holding the whole body; a redirect is
+     returned as is (Node does not follow one). setTimeout / destroy / abort / options.signal work. */
+  class ClientRequest extends Writable {
+    constructor(scheme, a, b, c) {
+      super({});
+      let url = null, o = {}, cb = null;
+      for (const x of [a, b, c]) {
+        if (typeof x === "function") cb = x;
+        else if (typeof x === "string" || x instanceof URL) url = String(x);
+        else if (x && typeof x === "object") o = x;
+      }
+      if (!url) {
+        const host_ = o.hostname || o.host || "localhost", port = o.port ? ":" + o.port : "";
+        url = (o.protocol || scheme + ":") + "//" + host_ + port + (o.path || "/");
+      }
+      let u;
+      try { u = new URL(url); } catch (_) { const e = new TypeError("Invalid URL: " + url); e.code = "ERR_INVALID_URL"; throw e; }
+      if (u.protocol !== scheme + ":") { const e = new TypeError('Protocol "' + u.protocol + '" not supported. Expected "' + scheme + ':"'); e.code = "ERR_INVALID_PROTOCOL"; throw e; }
+      this.method = String(o.method || "GET").toUpperCase(); this.path = u.pathname + u.search; this.host = u.hostname; this.protocol = u.protocol;
+      this.aborted = false; this.reusedSocket = false; this._autoClose = false;   // "close" comes after the response (or the error), not at end()
+      this._url = u.href; this._hdr = Object.assign({}, o.headers || {}); this._body = []; this._tm = null; this._sent = false;
+      if (cb) this.once("response", cb);
+      const sig = o.signal;
+      if (sig) { if (sig.aborted) tick(() => this.destroy(abortErr())); else sig.addEventListener("abort", () => this.destroy(abortErr()), { once: true }); }
+    }
+    setHeader(k, v) { this._hdr[k] = v; return this; }
+    getHeader(k) { const f = Object.keys(this._hdr).find(x => x.toLowerCase() === String(k).toLowerCase()); return f ? this._hdr[f] : undefined; }
+    removeHeader(k) { for (const x of Object.keys(this._hdr)) if (x.toLowerCase() === String(k).toLowerCase()) delete this._hdr[x]; }
+    _write(c, enc, cb) { this._body.push(typeof c === "string" ? Buffer.from(c, enc) : Buffer.from(c)); cb(); }
+    _final(cb) { cb(); this._send(); }
+    setTimeout(ms, f) {
+      if (f) this.once("timeout", f);
+      window.clearTimeout(this._tm);
+      if (ms > 0) this._tm = window.setTimeout(() => { if (!this.destroyed && !this._res) this.emit("timeout"); }, ms);
+      return this;
+    }
+    abort() { if (!this.aborted) { this.aborted = true; this.emit("abort"); this.destroy(); } }
+    destroy(err, cb) { window.clearTimeout(this._tm); if (this._res && !this._res.destroyed) destroyS(this._res, err || null); return destroyS(this, err, cb); }
+    _send() {
+      if (this._sent || this.destroyed) return;
+      this._sent = true;
+      const body = this._body.length ? Buffer.concat(this._body) : null;
+      httpSend({ url: this._url, method: this.method, headers: this._hdr, body }).then(r => {
+        window.clearTimeout(this._tm);
+        if (this.destroyed) return;
+        const res = new Readable({});
+        res.statusCode = r.status; res.statusMessage = HTTP_STATUS[r.status] || "";
+        res.headers = {}; res.rawHeaders = [];
+        for (const k of Object.keys(r.headers)) { res.headers[k.toLowerCase()] = r.headers[k]; res.rawHeaders.push(k, r.headers[k]); }
+        res.httpVersion = "1.1"; res.complete = false; res.req = this;
+        res.once("end", () => { res.complete = true; tick(() => { if (!this.destroyed) { this.destroyed = true; this.closed = true; this.emit("close"); } }); });
+        this._res = res;
+        if (r.body.length) res.push(Buffer.from(r.body));
+        res.push(null);
+        if (this.listenerCount("response")) this.emit("response", res); else res.resume();
+      }, e => { window.clearTimeout(this._tm); if (!this.destroyed) destroyS(this, Object.assign(e, { code: e.code || "ECONNREFUSED" })); });
+    }
+  }
+  const clientRequest = scheme => (a, b, c) => new ClientRequest(scheme, a, b, c);
+  const clientGet = scheme => (a, b, c) => { const r = new ClientRequest(scheme, a, b, c); r.end(); return r; };
+  /* worker_threads: a plugin runs on the page's main thread. isMainThread, no parentPort (null in
+     Node's main thread too), no workerData; a Worker (a Node thread) stays the deny stub. */
+  const workerOwn = { isMainThread: true, parentPort: null, workerData: null, threadId: 0, resourceLimits: Object.freeze({}),
+    SHARE_ENV: Symbol.for("nodejs.worker_threads.SHARE_ENV") };
+
   /* ------------------------------------------- electron (shell real, Rust desk_shell)
      shell.openExternal / openPath / showItemInFolder go to the OS opener with the user's
      rights, as stock's do. remote / ipcRenderer: just enough for bundles that look up the
@@ -1411,6 +1973,10 @@
       ["http", (deny, n) => mod(n, deny, httpOwn)],
       ["https", (deny, n) => mod(n, deny, httpsOwn)],
       ["electron", (deny, n) => mod(n, deny, electronOwn)],
+      ["stream", (deny, n) => mod(n, deny, streamOwn)],
+      ["stream/promises", () => streamPromises],
+      ["zlib", (deny, n) => mod(n, deny, zlibOwn)],
+      ["worker_threads", (deny, n) => mod(n, deny, workerOwn)],
     ]);
     /* the vault fs facade (node-modules.js) is one frozen object shared by every plugin;
        graceful-fs defines a queue symbol on require("fs") and reassigns close/closeSync at
@@ -1426,7 +1992,10 @@
         // a trusted vault's fs has Node's *Sync calls (the facade's ENOSYS stubs are replaced)
         if (isFsFacade(m)) for (const k of Object.keys(fsSync)) d[k] = { value: fsSync[k], enumerable: true, writable: true, configurable: true };
         if (isFsFacade(m)) d.chmod = { value: chmodCb, enumerable: true, writable: true, configurable: true };
+        // top10-func: descriptors, realpath / readlink, read / write streams, link refusal
+        if (isFsFacade(m)) for (const k of Object.keys(fsMore)) d[k] = { value: fsMore[k], enumerable: true, writable: true, configurable: true };
         if (isFsPromises(m)) d.chmod = { value: chmodP, enumerable: true, writable: true, configurable: true };
+        if (isFsPromises(m)) for (const k of Object.keys(fsPromisesMore)) d[k] = { value: fsPromisesMore[k], enumerable: true, writable: true, configurable: true };
         // as in Node, require("fs").promises is the very object require("fs/promises") returns
         if (isFsFacade(m)) d.promises.value = own(m.promises);
         c = Object.defineProperties(Object.create(Object.getPrototypeOf(m)), d);
