@@ -751,9 +751,25 @@ fn decode_ident(raw: &[u8]) -> Option<String> {
 }
 
 /// Property name of a candidate declaration segment: bytes before the first
-/// `:`, trimmed, escape-decoded, lower-cased. None if the segment has no `:`.
+/// UNESCAPED `:`, trimmed, escape-decoded, lower-cased. None if the segment
+/// has no unescaped `:`. An escaped colon (`\:`) is identifier content, as in
+/// CSS tokenization — never the name/value delimiter. Tailwind writes every
+/// variant selector that way (`.hover\:tw-x:hover`); taking that `\:` as the
+/// delimiter left a dangling `\` in the "name" and refused the whole file.
 fn segment_prop(seg: &[u8]) -> Result<Option<String>, String> {
-    let ci = match seg.iter().position(|&c| c == b':') {
+    let mut ci = None;
+    let mut k = 0;
+    while k < seg.len() {
+        match seg[k] {
+            b'\\' => k += 2, // the escaped byte (a `:` too) belongs to the ident
+            b':' => {
+                ci = Some(k);
+                break;
+            }
+            _ => k += 1,
+        }
+    }
+    let ci = match ci {
         Some(ci) => ci,
         None => return Ok(None),
     };
@@ -1296,6 +1312,27 @@ mod tests {
         assert_eq!(s.stripped, 0);
         let s = ok(".a { \\6D\\61\\73\\6B: url(x) }"); // fully hex-escaped "mask"
         assert_eq!(s.stripped, 1);
+    }
+
+    #[test]
+    fn themefs_sanitize_escaped_colon_is_ident_not_delimiter() {
+        // Tailwind variant selectors (a plugin's styles.css): accepted verbatim
+        let src = ".hover\\:tw-bg-x:hover{color:red}.focus-visible\\:tw-ring-2:focus-visible{outline:0}\
+                   .tw-h-\\[calc\\(var\\(--a\\)_\\+_2px\\)\\]{height:calc(var(--a) + 2px)}";
+        let s = ok(src);
+        assert_eq!((s.stripped, s.css.as_str()), (0, src));
+        // an escaped colon cannot smuggle a mask: the real delimiter is found,
+        // the decoded name is checked as before
+        let s = ok(".a\\:b:hover { m\\61 sk: url(x); color: red }");
+        assert_eq!(s.stripped, 1);
+        assert!(s.css.contains("color: red"));
+        // `mask\:` is an ident "mask:" with no delimiter: a browser drops it,
+        // the sanitizer leaves it (nothing applies)
+        let s = ok(".a { mask\\: url(x); color: red }");
+        assert_eq!(s.stripped, 0);
+        // an escaped backslash before a real colon: the colon is the delimiter
+        let s = ok(".a { mask\\\\: url(x) }");
+        assert_eq!(s.stripped, 0, "name decodes to 'mask\\\\', not mask");
     }
 
     #[test]
