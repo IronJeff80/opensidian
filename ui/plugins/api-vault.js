@@ -268,6 +268,7 @@
         return decodeURIComponent(url.pathname);
       },
     });
+    host.vfsUrl = URL_MOD;           // node-desktop.js url.fileURLToPath / pathToFileURL (trusted view), before the seal
     class FileSystemAdapter extends DataAdapter {
       get basePath() { return VROOT; }
       getBasePath() { return VROOT; }
@@ -416,6 +417,16 @@
         let p = b + e;
         for (let i = 1; vault.getAbstractFileByPathInsensitive(p); i++) p = b + " " + i + e;
         return p;
+      },
+      /* top10-func: the older attachment-path call (Kanban pastes / drops an image into a card):
+         basename + extension (no dot) for the note sourceFile, by the same rule as
+         fileManager.getAvailablePathForAttachment (attachment folder setting, "name 1.ext" on a
+         collision, the folder made if missing). A non-string basename is a TypeError. */
+      getAvailablePathForAttachments(basename, extension, sourceFile) {
+        if (typeof basename !== "string" || !basename) return Promise.reject(new TypeError("getAvailablePathForAttachments: basename must be a non-empty string"));
+        const ext = extension == null || extension === "" ? "" : "." + String(extension).replace(/^\./, "");
+        const src = sourceFile && typeof sourceFile === "object" && typeof sourceFile.path === "string" ? sourceFile.path : sourceFile == null ? null : String(sourceFile);
+        return fileManager.getAvailablePathForAttachment(basename + ext, src);
       },
       adapter,
     });
@@ -1089,6 +1100,12 @@
         else if (typeof refreshTree === "function") try { await refreshTree(); } catch (_) {}
       }
       promptForDeletion(file) { return prompt(file); }
+      /* top10-func: the older name of the same prompt (Calendar's day-note context menu "Delete").
+         Same modal, same refusals: a non-vault file is a TypeError, Cancel / Escape trash nothing. */
+      promptForFileDeletion(file) {
+        if (!(file instanceof TAbstractFile) || files.get(file.path) !== file) return Promise.reject(new TypeError("promptForFileDeletion: not a vault file (" + (file && file.path) + ")"));
+        return prompt(file);
+      }
       /* top5-func: promptForFileRename (undocumented; Excalidraw asks for a name right after it creates
          a drawing). A modal with the name (its last extension kept aside, selected) and Cancel / Save;
          Enter saves. The rename is renameFile's own, so its refusals hold: a taken name or a name with
