@@ -1739,20 +1739,23 @@
       this.path = pathArg(p); this.bytesRead = 0; this.pending = true;
       this._hwm = o.highWaterMark > 0 ? o.highWaterMark : 65536;
       this._pos = o.start > 0 ? o.start | 0 : 0; this._end = o.end != null ? Number(o.end) : Infinity;
-      this._data = null; this._busy = false;
+      this._data = null;
+      // opened at construction, as Node's: a missing / refused path is an "error" even if nobody reads
+      this._got = host.vfs.read(this.path).then(u => {
+        if (this.destroyed) return;
+        this._data = u; this.pending = false; this.emit("open", 0); this.emit("ready");
+      }, e => { destroyS(this, e); });
     }
     _read() {
-      if (this._busy) return;
-      this._busy = true;
-      const got = this._data ? Promise.resolve() : host.vfs.read(this.path).then(u => { this._data = u; this.pending = false; this.emit("open", 0); this.emit("ready"); });
-      got.then(() => {
-        this._busy = false;
-        const u = this._data, end = Math.min(u.length, this._end + 1);
+      this._got.then(() => {
+        const u = this._data;
+        if (!u || this.destroyed) return;
+        const end = Math.min(u.length, this._end + 1);
         if (this._pos >= end) { this.push(null); return; }
         const n = Math.min(this._hwm, end - this._pos), c = Buffer.from(u.subarray(this._pos, this._pos + n));
         this._pos += n; this.bytesRead += n;
         this.push(c);
-      }, e => { this._busy = false; destroyS(this, e); });
+      });
     }
     close(cb) { destroyS(this, null, cb); }
   }
