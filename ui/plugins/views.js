@@ -93,6 +93,23 @@
           super(leaf); this.data = "";
           this.requestSave = d.debounce(() => { this.save().catch(e => console.error("[plugin] TextFileView save:", e)); }, 2000);
         }
+        /* an outside change to the open file (the watcher's "modify": another program, a sync tool) reaches the
+           view as stock does it: the new text, when it differs from this.data, goes to setViewData(data, false)
+           (false = same file, keep the view's state). The view's own save sets this.data before it writes, so its
+           own "modify" reads back equal and is a no-op. Armed once, on the first file (Kanban's loadFile calls super). */
+        async loadFile(file) {
+          if (!this._modRef) {
+            this._modRef = d.vault().on("modify", f => { if (f && f === this.file) this._osExtModify(f).catch(e => console.error("[plugin] TextFileView reload:", e)); });
+            this.registerEvent(this._modRef);
+          }
+          return super.loadFile(file);
+        }
+        async _osExtModify(file) {
+          const data = await d.vault().read(file);
+          if (this.file !== file || data === this.data) return;
+          this.data = data;
+          this.setViewData(data, false);
+        }
         async onLoadFile(file) {
           const data = await d.vault().read(file);
           if (this.file !== file) return;              // another file was opened while this one was read
@@ -1336,7 +1353,13 @@
         return l;
       }
       getActiveViewOfType(C) { const l = this.activeLeaf, v = l && l.view; return v && C && v instanceof C ? v : null; }
-      getActiveFile() { return groupFile(focusedGroup()); }
+      /* the focused note, else the file of the focused plugin FileView (a Kanban board is a .md the app shows
+         in a plugin view: its commands check getActiveFile's frontmatter, so without this they never ran) */
+      getActiveFile() {
+        const g = focusedGroup(), f = groupFile(g); if (f) return f;
+        const l = leafFor(g), v = l && l.view;
+        return v instanceof FileView && v.file instanceof TFile ? v.file : null;
+      }
       getMostRecentLeaf() { return this.activeLeaf; }
       getUnpinnedLeaf() { const l = this.activeLeaf; return l && l.pinned ? this.getLeaf("tab") : l; }
       getLeaf(newLeaf, dir) {
