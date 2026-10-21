@@ -263,9 +263,10 @@
       getFilePath(p) { return "file://" + this.getFullPath(p); }
       /* top5-func: stock's desktop adapter carries its fs module (templater reads adapter.fs). Here it
          is the same vault-confined facade require("fs") gives (ui/plugins/node-modules.js): paths are
-         "/vault/x" = basePath + "/x", and anything outside the vault is refused by Rust (EPERM). */
-      get fs() { const m = host.nodeModules && host.nodeModules.resolve("fs"); return m || undefined; }
-      get fsPromises() { const m = host.nodeModules && host.nodeModules.resolve("fs/promises"); return m || undefined; }
+         "/vault/x" = basePath + "/x", and anything outside the vault is refused by Rust (EPERM).
+         A trusted vault only: in restricted mode the adapter has no fs at all. There is no
+         adapter.fsPromises (and no realpath): the promise API is fs.promises, the same facade. */
+      get fs() { if (!K.st.trusted) return undefined; const m = host.nodeModules && host.nodeModules.resolve("fs"); return m || undefined; }
       /* top5-func: stock's desktop adapter carries Node's url module (Excalidraw: VAULT_BASE_URL =
          url.pathToFileURL(basePath), and a dropped path is "inside the vault" when its file URL starts
          with that). Pure string conversion with Node's rules, over the same "/vault" root basePath
