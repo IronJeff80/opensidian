@@ -50,3 +50,4 @@ CENSUS.push(() => { const r = window.__osModules, s = r && r["@codemirror/state"
 CENSUS.push(() => svqTok());   // typing-j: [svq:n,bytes] the last save that reached disk (count, UTF-8 size), set after the write resolved — a title carrying it was built after that flush, so typing J reads [buf:] ordered with the flush
 CENSUS.push(() => KC.tok());   // keychain-pane: Settings ▸ Keychain [skc:<state>/<ids>/<shown>/<form>/<seq>] [skcmsg:<class>] — ids counts only, never a value
 CENSUS.push(() => canvasTok());   // canvas-core: [cvrow:] explorer .canvas rows, [cv:] the canvas view on screen (path|nodes|edges|err|dirty|saves|on), [cvn:] painted node rects, [cvadd:] "+ Text", [cvw:] board rect
+CENSUS.push(() => Ed.kroTok());   // top10-func lpcaret: [kro:<keys re-placed>/<ms the last keydown waited>] printable keys typed BEFORE a click that reached the page after it (WebKitGTK key/mouse queues), typed at the pre-click caret

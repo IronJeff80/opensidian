@@ -1661,6 +1661,7 @@ Object.assign(Ed, {
     return lp;
   },
   onUpdate(g, v, u) {
+    Ed.kroMap(u);
     if (!g || g.view !== v) { if (u.docChanged && v.editor) v.editor.value = u.state.doc.toString(); return; }
     if (u.docChanged) {
       const t0 = performance.now(), d = u.state.doc;
@@ -1765,6 +1766,39 @@ Ed.geom = function (g) {
   return " [edx:" + Math.round(b.left) + "] [erx:" + xs + "] [ery:" + ys + "]"
     + (cb ? " [ecb:" + cb + "]" : "");
 };
+/* ---------- KEY BEFORE CLICK (live-preview caret, goal top10-func) ----------
+   WebKitGTK hands key and mouse events to the page through separate queues: a
+   key still waiting on a busy page is overtaken by a LATER click, so the click
+   moves the caret first and the key (typed before it) lands at the click point
+   ('**bold** XXand' + a stray space on the clicked line). event.timeStamp keeps
+   the input's own time, so the inversion is visible here: a printable keydown
+   stamped BEFORE the last mousedown arrived after it. It is typed where the
+   caret was when that mousedown came (mapped through every change since),
+   never at the click point; consecutive overtaken keys follow each other.
+   Census [kro:<keys re-placed>/<ms the last keydown waited>]. */
+Ed.kro = { md: null, n: 0, lag: 0 };
+Ed.kroView = function () {
+  const a = document.activeElement, h = a && a.closest ? a.closest(".cm-editor") : null;
+  return h && CMv && CMv.EditorView.findFromDOM ? CMv.EditorView.findFromDOM(h) : null;
+};
+Ed.kroMap = function (u) {                  // keep the pre-click position on the text it pointed at
+  const m = Ed.kro.md; if (m && u.docChanged && m.cm === u.view) m.pos = u.changes.mapPos(m.pos, 1);
+};
+window.addEventListener("mousedown", e => {
+  const cm = e.button === 0 ? Ed.kroView() : null, r = cm && cm.state.selection.main;
+  Ed.kro.md = r && r.empty && typeof e.timeStamp === "number" && e.timeStamp > 0 ? { t: e.timeStamp, cm, pos: r.head } : null;
+}, true);
+window.addEventListener("keydown", e => {
+  const now = performance.now(), m = Ed.kro.md;
+  if (typeof e.timeStamp === "number" && e.timeStamp > 0 && e.timeStamp <= now + 1) Ed.kro.lag = Math.round(now - e.timeStamp);
+  if (!m || !(e.timeStamp > 0 && e.timeStamp < m.t) || e.isComposing || e.ctrlKey || e.metaKey || e.altKey
+      || typeof e.key !== "string" || [...e.key].length !== 1 || !m.cm.dom.isConnected) return;
+  e.preventDefault(); e.stopImmediatePropagation();
+  const p = Math.min(m.pos, m.cm.state.doc.length);
+  m.cm.dispatch({ changes: { from: p, insert: e.key }, annotations: [CMs.Transaction.userEvent.of("input.type")] });
+  m.pos = p + e.key.length; Ed.kro.n++;
+}, true);
+Ed.kroTok = function () { return " [kro:" + Ed.kro.n + "/" + Ed.kro.lag + "]"; };
 Ed.caretXY = function (g) {               // caret rect relative to the pane box
   const cm = Ed.cm(g), pr = g.pane.getBoundingClientRect();
   const c = cm && cm.coordsAtPos(cm.state.selection.main.head);
