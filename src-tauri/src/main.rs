@@ -2017,11 +2017,14 @@ fn log_spans(spans: Vec<serde_json::Value>) -> bool {
 /// graph-webgl: hidden hooks for the graph draw path. OPENSIDIAN_GRAPH_RENDERER=gl|2d forces a
 /// renderer (tests); OPENSIDIAN_GRAPH_LOSE_CTX=1 makes the UI lose its WebGL context once the sim
 /// settled (smoke graphgl: the 2D fallback must keep drawing).
+/// OPENSIDIAN_GRAPH_SETTLE_TRACE=1 arms the per-step settle trace (gate phase graphsettle, ui/main.js
+/// settleTest): one otel span per settle, numbers only. Unset, the UI keeps no trace.
 #[tauri::command]
 fn graph_renderer_pref() -> serde_json::Value {
     serde_json::json!({
         "renderer": std::env::var("OPENSIDIAN_GRAPH_RENDERER").ok(),
         "lose_ctx": std::env::var_os("OPENSIDIAN_GRAPH_LOSE_CTX").is_some(),
+        "settle_trace": std::env::var("OPENSIDIAN_GRAPH_SETTLE_TRACE").as_deref() == Ok("1"),
     })
 }
 

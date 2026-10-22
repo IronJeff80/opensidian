@@ -9033,10 +9033,11 @@ const gnKind = nd => nd.kind ? nd.kind : nd.resolved ? 0 : 1;
 // graph-webgl: draw-path preference. env OPENSIDIAN_GRAPH_RENDERER=gl|2d (backend) beats the
 // hidden localStorage setting opensidian.graphRenderer; OPENSIDIAN_GRAPH_LOSE_CTX=1 is the smoke
 // hook that loses the GL context once the sim has settled (fallback must keep drawing).
+// OPENSIDIAN_GRAPH_SETTLE_TRACE=1 is the gate hook of phase graphsettle (see settleTest): numbers only, off by default.
 let graphPrefP = null;
 const graphRendererPref = () => graphPrefP || (graphPrefP = inv("graph_renderer_pref").catch(() => null).then(p => {
   const r = (p && p.renderer) || localStorage.getItem("opensidian.graphRenderer");
-  return { renderer: r === "gl" || r === "2d" ? r : null, loseCtx: !!(p && p.lose_ctx) };
+  return { renderer: r === "gl" || r === "2d" ? r : null, loseCtx: !!(p && p.lose_ctx), settleTrace: !!(p && p.settle_trace) };
 }));
 function showEditor(g) {
   g.graphOn = false; g.graphRefresh = null; g.graphRedraw = null; g.graphAnimate = null; g.graphAnimState = null; g.graphRc = null; cancelAnimationFrame(g.sim); g.graphRenderer = null;
@@ -9433,6 +9434,12 @@ async function startGraph(g, cfg) {
   const CALM_KE = 4e-5;
   let calm = 0, kePeak = 0, quiet = false;   // quiet: physics halted until the next reheat; kePeak: max KE since it
   let settledMark = false;              // graph_open_settle mark fires once per open
+  // graphsettle gate hook (OPENSIDIAN_GRAPH_SETTLE_TRACE=1, else null: one null test per step, nothing
+  // allocated). Per sim step since the last reset of kePeak (open, reheat, hold, release) it keeps
+  // alpha, KE, kePeak, calm and the ms since the segment began; at quiet ONE otel span
+  // graph_settle_trace carries the series as strings. Numbers only, no note names or text.
+  const sTr = pref.settleTrace ? { why: prevK ? "ggkeep" : "open", t0: -1, a: [], k: [], p: [], c: [], t: [], cut: 0 } : null;
+  const sTrMark = why => { if (sTr) { sTr.why = why; sTr.t0 = -1; sTr.a.length = sTr.k.length = sTr.p.length = sTr.c.length = sTr.t.length = 0; sTr.cut = 0; } };
   // ggkeep: the sim HEAT comes back with the layout. A tab left at rest comes back at rest (quiet,
   // the first frame draws once and the loop stops, CPU 0); a tab left mid-settle resumes at the
   // alpha it had, never at 1. A node the vault grew while the tab was away has no kept slot: it
@@ -9792,9 +9799,14 @@ async function startGraph(g, cfg) {
     {
       if (ke > kePeak) kePeak = ke;
       calm = ke < Math.max(CALM_KE * kePeak, 1e-6 * N.length) ? calm + 1 : 0;
+      if (sTr) {
+        const tn = performance.now(); if (sTr.t0 < 0) sTr.t0 = tn;
+        if (sTr.a.length < 6000) { sTr.a.push(String(alpha)); sTr.k.push(ke.toPrecision(6)); sTr.p.push(kePeak.toPrecision(6)); sTr.c.push(calm); sTr.t.push((tn - sTr.t0).toFixed(1)); } else sTr.cut = 1;
+      }
       // PLAN item 7: never freeze while a node is HELD (alphaTarget > 0)
       if (alphaTarget === 0 && (calm >= 10 || alpha <= ALPHA_MIN)) {
         quiet = true;
+        if (sTr) { otel.span("graph_settle_trace", { why: sTr.why, n: N.length, e: gr.edges.length, q: sTr.a.length, cut: sTr.cut, a: sTr.a.join(","), k: sTr.k.join(","), p: sTr.p.join(","), c: sTr.c.join(","), t: sTr.t.join(",") }); sTrMark("idle"); }
         // R19 (HARD RULE 100ms): graph_recenter ends at the first PAINT of the new centre
         // (see cv.onclick); what happens after that is ANIMATION and is measured here as its
         // own span graph_settle = click -> kinetic energy below eps.
@@ -9840,7 +9852,7 @@ async function startGraph(g, cfg) {
     perf.mark("graph_renderer", perf.now(), { renderer: "2d", reason: "contextlost", webgl: 0, ...gpu });
     redraw();
   };
-  g.reheat = (a = 0.5) => { calm = 0; kePeak = 0; quiet = false; g.graphSettled = false; alpha = Math.max(alpha, a); wake(); };
+  g.reheat = (a = 0.5) => { sTrMark("reheat"); calm = 0; kePeak = 0; quiet = false; g.graphSettled = false; alpha = Math.max(alpha, a); wake(); };
   // graph-controls card (global AND local, GC1): sliders -> F + reheat; any reheat re-syncs the
   // sliders to F, so a value set another way (the recon rig's probe hotkeys) shows on the card too
   if (gcS) {
@@ -9926,7 +9938,7 @@ async function startGraph(g, cfg) {
     drag = null;
     if (window.__graphHeld === release) window.__graphHeld = null;
     for (const q of N) if (q.fx != null) q.fx = q.fy = null;
-    if (alphaTarget !== 0) { alphaTarget = 0; calm = 0; kePeak = 0; quiet = false; g.graphSettled = false; if (g.simGen === gen) wake(); }
+    if (alphaTarget !== 0) { sTrMark("release"); alphaTarget = 0; calm = 0; kePeak = 0; quiet = false; g.graphSettled = false; if (g.simGen === gen) wake(); }
   };
   if (!window.__graphRelWired) {        // once per window; whichever graph holds a node registers itself
     window.__graphRelWired = true;
@@ -9963,7 +9975,7 @@ async function startGraph(g, cfg) {
           p.x = p.fx; p.y = p.fy; p.vx = 0; p.vy = 0;
           // d3 drag: alphaTarget 0.3 while held, the neighbours follow the node out
           // (PLAN item 8: not reheat — alpha CLIMBS toward the target, as stock's)
-          if (alphaTarget !== 0.3 || quiet) { alphaTarget = 0.3; calm = 0; kePeak = 0; quiet = false; g.graphSettled = false; wake(); }
+          if (alphaTarget !== 0.3 || quiet) { sTrMark("hold"); alphaTarget = 0.3; calm = 0; kePeak = 0; quiet = false; g.graphSettled = false; wake(); }
         } else {
           view.tx += dx; view.ty += dy; view.ax = null;  // EMPTY canvas: camera pan, unchanged; drops the zoom anchor
         }
