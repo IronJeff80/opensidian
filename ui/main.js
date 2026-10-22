@@ -4426,6 +4426,28 @@ function ssRestore(g, line) {   // scroll the CURRENT view so `line` is at the t
   }
   Ed.scrollToLine(g, line);           // CM6 height map, re-landed once the lines are measured
 }
+// Reading view has no height map: an <img> that is still decoding when ssRestore
+// lands is 0 px tall, and when its bytes arrive it grows (~360 px for the longpos
+// fixture's images) and pushes the anchored block down — the view ends up showing
+// lines ABOVE the one it restored (longpos 10% lp->read off 35: the first hop of
+// the sweep is the one that loads each fixture image cold). So re-land on each
+// late image load — only while this switch is the latest one, the tab is still
+// in reading view, and the scroller is still where the restore put it (a user
+// scroll since then wins), for at most 5 s after the switch.
+function ssRelandOnImages(g, tab, line) {
+  if (line == null || !g.preview) return;
+  const ims = [...g.preview.querySelectorAll("img")].filter(i => !i.complete);
+  if (!ims.length) return;
+  const seq = g._ssReland = (g._ssReland || 0) + 1, t0 = performance.now();
+  let at = g.preview.scrollTop;
+  const again = () => {
+    if (g._ssReland !== seq || performance.now() - t0 > 5000) return;
+    if (g.active < 0 || g.tabs[g.active] !== tab || tab.mode !== "reading") return;
+    if (Math.abs(g.preview.scrollTop - at) >= 1) { g._ssReland = 0; return; }   // the user scrolled
+    ssRestore(g, line); at = g.preview.scrollTop;
+  };
+  for (const i of ims) { i.addEventListener("load", again, { once: true }); i.addEventListener("error", again, { once: true }); }
+}
 
 /* ---------- R35 PERF: the mode switch against the 100 ms ceiling ----------
    Three numbers, because they fail for different reasons and one of them is
@@ -4704,6 +4726,7 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   // outranks the caret they cannot see (the brief's "caret off-screen" case).
   const mswR0 = performance.now();
   ssRestore(g, anchor);
+  if (tab.mode === "reading") ssRelandOnImages(g, tab, anchor);
   mswSsMs += performance.now() - mswR0;
   mswEnd(mswT0, mswSsMs);
   mswpMark("ss");
