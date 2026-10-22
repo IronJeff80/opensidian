@@ -1279,6 +1279,37 @@ function sfontTok() {
    (*X_ABS, the phase subtracts its measured h1 ink x), ink-adjusted with the
    glyph's own bearing (canvas measureText at the element's computed font);
    caps = actualBoundingBoxAscent of "H"/"P"; boxes = border-box rects. */
+/* caret-color: [ccl:car=<r.g.b>|cur=<r.g.b>|drop=<r.g.b>|bg=<r.g.b>] the caret colours a
+   theme resolves to in the focused editor (else the focused pane's): car = computed
+   caret-color of .cm-content (the native caret this editor paints), cur / drop = the
+   border-left-color of a .cm-cursor and a .cm-dropCursor probe (display:none, removed
+   at once) inside that editor's .cm-scroller — where CM6's drawn and drop cursors live,
+   so the probe meets the same rules they would — and bg = the content's background
+   composited down to the first opaque ancestor, as painted. The probe result is cached
+   per (caret-color, bg) so a title update does not touch the DOM while nothing changed. */
+let cclKey = "", cclProbe = "";
+function cclTok() {
+  const ed = document.querySelector(".cm-editor.cm-focused") || document.querySelector("#main .pane.focused .cm-editor");
+  const ct = ed && ed.querySelector(".cm-content"), sc = ed && ed.querySelector(".cm-scroller");
+  if (!ct || !sc) return "";
+  const c3 = s => { const m = (s || "").match(/[\d.]+/g) || [], k = /^color\(/.test(s || "") ? 255 : 1; return m.length >= 3 ? m.slice(0, 3).map(v => Math.round(+v * k)).join(".") : "-"; };
+  const L = [];
+  for (let x = ct; x && x.nodeType === 1; x = x.parentElement) {
+    const s = getComputedStyle(x).backgroundColor || "", m = s.match(/[\d.]+/g) || [];
+    if (m.length < 3) continue;
+    const k = /^color\(/.test(s) ? 255 : 1, a = m.length > 3 ? +m[3] : 1;
+    if (a === 0) continue;
+    L.push([+m[0] * k, +m[1] * k, +m[2] * k, a]); if (a >= 1) break;
+  }
+  let bg = "-";
+  if (L.length) { let c = L[L.length - 1].slice(0, 3); for (let i = L.length - 2; i >= 0; i--) { const l = L[i]; c = c.map((v, j) => v * (1 - l[3]) + l[j] * l[3]); } bg = c.map(Math.round).join("."); }
+  const car = c3(getComputedStyle(ct).caretColor), key = car + "|" + bg + "|" + document.body.className;
+  if (key !== cclKey) {
+    const p = n => { const d = document.createElement("div"); d.className = n; d.style.display = "none"; sc.appendChild(d); const c = c3(getComputedStyle(d).borderLeftColor); d.remove(); return c; };
+    cclProbe = "cur=" + p("cm-cursor") + "|drop=" + p("cm-dropCursor"); cclKey = key;
+  }
+  return " [ccl:car=" + car + "|" + cclProbe + "|bg=" + bg + "]";
+}
 /* goal/minimalmargin: [nmw:] — the note column's geometry and the computed
    styles that size it, off the live DOM of the focused group's visible view.
      <read|lp>|rlw=<0|1>|pane=<l>,<r>|sb=<scrollbar px>|col=<l>,<r>

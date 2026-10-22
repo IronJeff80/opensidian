@@ -1823,3 +1823,22 @@ span.is-flashing { background: var(--highlight-yellow) }
 .kc-msg { font-size: 12px; color: var(--text-error) }
 .kc-msg[hidden] { display: none }
 .kc-btns { display: flex; justify-content: flex-end; gap: 8px }
+/* caret-color (operator 2026-10-22: "in the old 0.7 draft the cursor/caret was black").
+   The vendored CM6 base theme colours the caret for a LIGHT page unless the
+   EditorView.darkTheme facet is set, and nothing sets it: `&light .cm-content
+   {caret-color: black}` is the native caret this editor paints (no drawSelection),
+   `.cm-cursor, .cm-dropCursor {border-left: 1.2px solid black}` the drawn one a
+   drawSelection / dropCursor extension (a plugin's) would paint. On a dark theme both
+   were black on near-black. The caret follows the THEME instead: --caret-color, else
+   --text-normal, re-resolved on every light/dark or theme switch (no facet to keep in
+   sync). Specificity, not !important: CM6 injects its rules after this sheet as
+   `.ͼ1.ͼ2 .cm-content` / `.ͼ1.ͼ3 .cm-cursor` (0,3,0), so these are (0,4,0) and win
+   regardless of order; only the COLOUR is set — width, margin, the blink (an
+   animation on .cm-cursorLayer) and the focus/selection rules stay CM6's.
+   Every other editable surface (title, inputs, plugin views) gets the same caret at
+   :where() specificity (0,0,0), so a theme's own caret-color on any of them wins.
+   Gate phase caretcolor ([ccl:] in census.js) measures it per theme x mode. */
+.cm-editor .cm-scroller .cm-content.cm-content { caret-color: var(--caret-color, var(--text-normal)) }
+.cm-editor .cm-scroller .cm-cursor.cm-cursor,
+.cm-editor .cm-scroller .cm-dropCursor.cm-dropCursor { border-left-color: var(--caret-color, var(--text-normal)) }
+:where(input, textarea, [contenteditable]:not([contenteditable="false"])) { caret-color: var(--caret-color, var(--text-normal)) }
