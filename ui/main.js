@@ -5516,6 +5516,21 @@ async function lgFollow(src) {
    atomically (old census -> full new census, nothing in between), like the fHold find reveal.
    The graph is untouched: no view is kept, no element changes its box or pointer path. */
 var twHold = 0, twDue = false;
+/* perfslow (note_open ceiling 100 ms): a note OPEN swaps in a freshly setState'd view exactly like a
+   tab switch — measured on the box (perfslow fixture, 81-line Z-Outline, clean run @32a6ae4): 2
+   updateTitle census calls MID-open (inside lpRender) took 62 of its 105 ms of JS, each forcing style +
+   layout of a half-built view. twOpen(fn) wraps an open's own body: the census calls made inside it
+   coalesce into ONE, published as the body's last step — still inside the span (js_ms, not the
+   subtracted vsync wait), and still before the open returns, so the title is current as soon as the
+   open is (scrollsync probes the mode right after a switcher open; a publish deferred to after paint
+   landed 260-630 ms late there, behind the frame tick). */
+function twOpen(fn) {
+  return async sp => {
+    twHold++;
+    try { return await fn(sp); }
+    finally { if (--twHold === 0 && twDue) { twDue = false; updateTitle(); } }
+  };
+}
 async function switchTab(g, i) {
   if (i === g.active) return;
   twHold++;
@@ -5538,14 +5553,14 @@ async function openInTab(name, via = "tab") {   // explorer click -> FOCUSED gro
   if (via !== "boot" && PVHOST && PVHOST.openAs && await PVHOST.openAs(g, name, "tab")) return;   // top5-func: a plugin view may own this note (views.js PV.openAs)
   const lt = g.active >= 0 ? g.tabs[g.active] : null;
   if (lt && !lt.kind && lt.link != null && lt.name !== name) return navigate(g, name);  // R13.3: a linked member navigates in place
-  await act("note_open", { via, tabs: g.tabs.length }, async sp => {
+  await act("note_open", { via, tabs: g.tabs.length }, twOpen(async sp => {
     await flushSave(g);
     const i = g.tabs.findIndex(x => x.name === name);
     if (i >= 0) g.active = i;
     else { g.tabs.push(mkTab(name)); g.active = g.tabs.length - 1; }
     await loadActive(g);
     Object.assign(sp.attrs, { mode: g.tabs[g.active].mode, bytes: g.editor.value.length, lines: g.lpLines || 0 });
-  });
+  }));
 }
 
 /* opentab (docs/opentab/requirements.md): Obsidian 1.13.7 opens a note from the
@@ -5558,7 +5573,7 @@ async function openInTab(name, via = "tab") {   // explorer click -> FOCUSED gro
    rowOpen is the one seam the two row kinds share. */
 async function openNewTab(name, g = fg()) {   // ggclick: a graph click passes the graph's own group
   if (PVHOST && PVHOST.openAs && await PVHOST.openAs(g, name, "tab")) return;   // top5-func: PV.openAs
-  await act("note_open", { via: "newtab", tabs: g.tabs.length }, async sp => {
+  await act("note_open", { via: "newtab", tabs: g.tabs.length }, twOpen(async sp => {
     await flushSave(g);
     const at = g.active >= 0 ? g.active + 1 : g.tabs.length;
     // an INSERT at `at`, written without splice: the tabclose census (main.rs test
@@ -5568,7 +5583,7 @@ async function openNewTab(name, g = fg()) {   // ggclick: a graph click passes t
     g.active = at;
     await loadActive(g);
     Object.assign(sp.attrs, { mode: g.tabs[g.active].mode, bytes: g.editor.value.length, lines: g.lpLines || 0 });
-  });
+  }));
 }
 async function rowOpen(name, ev) {
   if (ev && (ev.button === 1 || ev.ctrlKey || ev.metaKey)) return openNewTab(name);
@@ -5582,7 +5597,7 @@ async function rowOpen(name, ev) {
 async function navigate(g, name, anchor) { // wikilink / graph click: replace g's ACTIVE tab, push history
   if (PVHOST && PVHOST.openAs && await PVHOST.openAs(g, name, "replace")) return;   // top5-func: PV.openAs (the plugin view replaces the active note tab)
   navInfo = ""; nvRv = "";
-  await act("note_open", { via: "link", tabs: g.tabs.length }, async sp => {
+  await act("note_open", { via: "link", tabs: g.tabs.length }, twOpen(async sp => {
     await flushSave(g);
     if (g.active < 0) { g.tabs.push(mkTab(name)); g.active = 0; }
     else {
@@ -5592,7 +5607,7 @@ async function navigate(g, name, anchor) { // wikilink / graph click: replace g'
     }
     await loadActive(g);
     Object.assign(sp.attrs, { mode: g.tabs[g.active].mode, bytes: g.editor.value.length, lines: g.lpLines || 0 });
-  });
+  }));
   await linkSync(g.tabs[g.active], name);   // R13.3: linked members follow
   if (anchor) await navAnchor(g, anchor);
 }
@@ -10243,6 +10258,7 @@ async function enterVault() {
     else renderTabs(g);
   }
   perf.mark("boot", 0, { notes: names.length });   // perf: page start -> vault ready (first note rendered)
+  Ed.fontWarm(fg());   // perfslow: the live preview's faces are built in idle time after boot, not inside the first note open that shows them
   switchReveal();   // item 14: a switch-started window shows itself only now, at the old window's rect
   // plugin-loader: enabled community plugins load once the vault is on screen (after the boot
   // mark), unawaited. Restricted mode (the default) = one plugins_state call, no plugin code.

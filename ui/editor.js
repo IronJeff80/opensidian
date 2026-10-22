@@ -1616,6 +1616,63 @@ Object.assign(Ed, {
   },
   /* ---------- wiring ---------- */
   G(v) { const p = v.cm && v.cm.dom.closest(".pane"); return p && p._g ? p._g : v.g; },
+  /* perfslow (note_open ceiling 100 ms): the first note that shows a heading size, a
+     fence or inline code paid WebKit's font setup for each new face/size inside its
+     open — style recalc resolves a font per (family, weight, style, size) and the
+     first use of each one builds it (box, perfslow fixture: an 81-line note with
+     h2/h3 + a fence spent 40 ms in style for 58 elements; the same rows without those
+     faces 2-3 ms). Done once after boot instead, in idle time, ONE face per idle
+     callback, at most 50 ms apart (~13 ms each on the box: no step holds the main
+     thread long, all 12 land well inside the first second after boot): an
+     off-screen, hidden .lp row in the pane with that face, styled + laid out, removed
+     in the same task (no frame and no other script sees it). A face it does not cover,
+     or one an open reaches first, simply costs what it cost before. */
+  FACES: ["h h1", "h h2", "h h3", "h h4", "h h5", "h h6", "b", "i", "bi", "code", "fence", "task"],
+  fontWarm(g) {
+    if (Ed._fw || !g || !g.lp) return;
+    Ed._fw = { i: 0, ms: 0 };
+    const idle = typeof requestIdleCallback === "function"
+      ? f => requestIdleCallback(f, { timeout: 50 }) : f => setTimeout(f, 16);
+    const step = () => {
+      const c = Ed.FACES[Ed._fw.i++], host = g.lp && g.lp.parentNode;
+      if (!c || !host || !host.isConnected) return;
+      const t0 = performance.now(), w = Ed.el("div", "lp"), row = Ed.el("div", "cm-line lprow"), s = Ed.el("span", c);
+      w.setAttribute("aria-hidden", "true");
+      w.style.cssText = "position:absolute;left:-10000px;top:0;width:600px;visibility:hidden;pointer-events:none";
+      s.textContent = "Warm up the quick fox 0123456789 *_-[]()";
+      row.appendChild(s); w.appendChild(row); host.appendChild(w);
+      void w.offsetHeight;
+      w.remove();
+      Ed._fw.ms += performance.now() - t0;
+      idle(step);
+    };
+    idle(step);
+  },
+  /* perfslow (note_open ceiling 100 ms): CM6 mounts its style modules on EVERY new
+     EditorView and EVERY setState (view.mountStyles -> style-mod 4.1.3 StyleSet.mount).
+     With the document as root, style-mod keeps one <style> tag and rewrites its
+     textContent on every mount, even when the module list is unchanged: the sheet is
+     replaced and the whole document restyles (box, perfslow fixture: 13-17 ms per
+     rewrite; a note open into a new view paid it twice, mkView + setText). A mount
+     that would leave the set exactly as it is — style-mod's own walk: every module
+     already present, in order — is skipped; a new or reordered module still takes
+     style-mod's own path. Hence also ONE shared view theme (Ed.viewTheme): a theme
+     built per mount is a NEW module each time and would always rewrite. */
+  styleOnce() {
+    if (Ed._smOnce) return;
+    for (const s of Object.getOwnPropertySymbols(document)) {
+      const set = document[s];
+      if (!set || typeof set.mount !== "function" || !Array.isArray(set.modules) || !set.styleTag) continue;
+      const mount = set.mount;
+      set.mount = function (mods, root) {
+        const m = this.modules; let j = 0, same = this.styleTag.parentNode === (root.head || root);
+        for (let k = 0; same && k < mods.length; k++) { const i = m.indexOf(mods[k]); if (i < j) same = false; else j = i + 1; }
+        return same ? undefined : mount.call(this, mods, root);
+      };
+      Ed._smOnce = true;
+      return;
+    }
+  },
   mount(v) {
     const G = () => Ed.G(v);
     v._ext = [
@@ -1644,14 +1701,15 @@ Object.assign(Ed, {
       }),
       CMv.EditorView.lineWrapping,
       CMv.EditorView.contentAttributes.of({ spellcheck: "false", autocorrect: "off", autocapitalize: "off" }),
-      CMv.EditorView.theme({ "&.cm-focused": { outline: "none" }, ".cm-scroller": { fontFamily: "inherit", lineHeight: "inherit", overflow: "visible" },
-                             ".cm-content": { padding: "0" }, ".cm-line": { padding: "0" } }),
+      Ed.viewTheme || (Ed.viewTheme = CMv.EditorView.theme({ "&.cm-focused": { outline: "none" }, ".cm-scroller": { fontFamily: "inherit", lineHeight: "inherit", overflow: "visible" },
+                             ".cm-content": { padding: "0" }, ".cm-line": { padding: "0" } })),
       CMv.EditorView.updateListener.of(u => Ed.onUpdate(G(), v, u)),
       Ed.lpExt ? Ed.lpExt(v, G) : [],
       Ed.hlExt(v),
     ];
     if (Ed.PX) { v._pxI = v._ext.length; v._ext.push(Ed.PX.of(Ed.pxExt(v))); }   // editor-api: plugin extensions (empty until a plugin loads)
     const cm = new CMv.EditorView({ state: CMs.EditorState.create({ doc: (v.lines || [""]).join("\n"), extensions: v._ext }) });
+    Ed.styleOnce();
     const lp = v.lp;
     v.cm = cm; v._Ld = null;
     lp.textContent = ""; lp.appendChild(cm.dom); lp._cm = cm;
