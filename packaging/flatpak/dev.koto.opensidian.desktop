@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=opensidian
+Name=Opensidian
 Comment=Local-first markdown vault editor
 Exec=opensidian
 Icon=dev.koto.opensidian

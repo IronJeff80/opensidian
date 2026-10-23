@@ -1763,6 +1763,12 @@ function bmDragStart(e, ix) {
   if (e.button !== 0 || bmRenaming !== null) return;
   const src = bmTree[ix];
   if (!src) return;
+  // bug-ui #11: the press is this drag machine's, not WebKit's — without this the travel
+  // text-selected the rows it crossed (and the next press on that selection would start a native
+  // text drag). Same guard as treeDragStart; removed on mouseup.
+  const own = ev => ev.preventDefault();
+  document.addEventListener("selectstart", own, true);
+  document.addEventListener("dragstart", own, true);
   const sx = e.clientX, sy = e.clientY;
   const label = src.label ?? (src.kind === "g" ? src.name : src.name.split("/").pop());
   let ghost = null, line = null, hl = null, srcEl = null, zones = null, raf = 0, last = null;
@@ -1883,6 +1889,8 @@ function bmDragStart(e, ix) {
   const up = async () => {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
+    document.removeEventListener("selectstart", own, true);
+    document.removeEventListener("dragstart", own, true);
     if (raf) { cancelAnimationFrame(raf); raf = 0; if (last) step(); }
     disarm();                              // R5: a release before 0.85s opens nothing
     const d = bmDrop, dragged = !!ghost;
@@ -3892,7 +3900,7 @@ function updateTitle() {          // pane/focus census in the window title (head
       "/" + vpxBg(document.getElementById("wframe")) + "/" + vpxBg(document.querySelector("#bar button")) +
       "/" + vpxBg(document.getElementById("mbox")) + "]"
     : "";
-  let t = "opensidian [panes:" + ps.length + " focused:" + nf +
+  let t = "Opensidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
             " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + thmpxTok + snipTok + vthemeTok + creloadTok + vbridgeTok + vtgTok + bseedTok + vpxTok + navTok + navgTok + lg + md + gg + gpx + modal +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
@@ -10475,7 +10483,7 @@ $("p-create").onclick = () => enterMode("create");
 $("p-open").onclick = () => enterMode("open");
 $("p-back").onclick = showPicker;
 $("p-recent").addEventListener("scroll", () => { if (vaultPath) { try { updateTitle(); } catch (_) {} } }, { passive: true });   // item 14: [prow:] follows the list scroll
-$("p-close").onclick = () => { $("picker").hidden = true; };
+$("p-close").onclick = () => { $("picker").hidden = true; try { updateTitle(); } catch (_) {} };   // bug-ui #14: the census (window title) drops [precent:] with the picker, as the Esc path does
 $("p-path").onkeydown = e => { if (e.key === "Enter") browseTo($("p-path").value.trim()); };
 $("p-name").onkeydown = e => { if (e.key === "Enter") $("p-go").click(); };
 /* vaultbleed A — ONE VAULT PER PROCESS. The boot picker (no vault yet) binds
@@ -10760,7 +10768,7 @@ $("vswitch").onclick = showPicker;
     // the BOOT picker's window stays untitled by the census (no 'panes:', see
     // loadRecent) — so the reason is published as "opensidian [vault:-]
     // [vargerr:...]" only, never the pane census
-    $("p-err").textContent = bootNote; const pt = "opensidian" + vargTok(); document.title = pt; pushTitle(pt); } }
+    $("p-err").textContent = bootNote; const pt = "Opensidian" + vargTok(); document.title = pt; pushTitle(pt); } }
   // R30 / T2: the table AND the nav DOM are warmed off the open path — the nav is
   // 19 entries that never change, so building it at boot into the hidden modal
   // takes the only unavoidable DOM work out of the open keystroke. The pane stays
@@ -11133,6 +11141,58 @@ function sactCtl(r) {
   b.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") run(ev); };
   d.appendChild(b);
   return d;
+}
+/* bug-ui census [bui:] (gate phase bugui, GitHub #9 #11 #12 #14) — measurements off the live DOM:
+     cur=<bad>/<n>:<first bad>  every enabled clickable in the open Settings modal (button, role=button,
+                                .sbtn, .snavi, live rows/dropdowns, ...) and its computed cursor; bad = not pointer
+     upd=<cursor>@x,y           the "Check for updates" button: computed cursor + painted centre (client px)
+     gen=x,y                    the General nav entry's centre (client px; the phase opens that pane)
+     lbl=x,y                    the centre of the Check for updates row's label text (pointer-shape reference)
+     sel=<len>,<max>,<n>        the document selection's text length now, the longest seen since the last
+                                press in #bmlist, and how many presses that was (#11)
+     bmsrc=<n>                  bookmark rows still carrying drag fills (.bmdrop-src/.bmdrop-into)
+     pcx= / scx=                the vault picker's close button / Settings' close button, while shown:
+                                btn WxH, glyph (svg WxH or "txt"), path d, stroke-width, colour,
+                                glyph-centre offset from the button centre, right/top inset in its card */
+let buiSelMax = 0, buiPress = 0;
+document.addEventListener("selectionchange", () => {
+  const n = String(getSelection() || "").length;
+  if (n > buiSelMax) buiSelMax = n;
+});
+document.addEventListener("mousedown", e => {
+  if (e.target && e.target.closest && e.target.closest("#bmlist")) { buiSelMax = String(getSelection() || "").length; buiPress++; }
+}, true);
+function buiTok() {
+  const vis = e => !!e && e.getClientRects().length > 0, out = [];
+  if (vis($("sbox"))) {
+    const C = [...$("sbox").querySelectorAll("button, [role=button], .sbtn, .slink[tabindex], .snavi, .fbtn, .fback, .hkbtn, .hkchip, .hkx, #hkclear, .sctl.dropdown.live, .srow.live, .fcand")]
+      .filter(e => vis(e) && !e.closest("[aria-disabled=true], .dis"));
+    const bad = C.filter(e => getComputedStyle(e).cursor !== "pointer")
+      .map(e => (e.id || e.className.toString().split(" ")[0] || e.tagName) + "=" + getComputedStyle(e).cursor);
+    out.push("cur=" + bad.length + "/" + C.length + (bad.length ? ":" + bad.slice(0, 4).join(",").replace(/[[\]|]/g, "") : ""));
+    const u = document.querySelector('#sbox .sctl[data-act="check_updates"] .sbtn');
+    if (vis(u)) { const r = u.getBoundingClientRect(); out.push("upd=" + getComputedStyle(u).cursor + "@" + Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2)); }
+    const ul = u && u.closest(".srow") && u.closest(".srow").querySelector(".slabel");   // that row's label TEXT (a range, not the block): the pointer-shape reference for "not a button"
+    if (ul && ul.firstChild) { const g = document.createRange(); g.selectNodeContents(ul); const r = g.getBoundingClientRect(); if (r.width) out.push("lbl=" + Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2)); }
+    const gn = document.querySelector('#snav .snavi[data-pane="general"]');   // the General entry (home of Check for updates): the phase clicks it from here, never OCR
+    if (vis(gn)) { const r = gn.getBoundingClientRect(); out.push("gen=" + Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2)); }
+  }
+  out.push("sel=" + String(getSelection() || "").length + "," + buiSelMax + "," + buiPress);
+  out.push("bmsrc=" + document.querySelectorAll("#bmlist .bmdrop-src, #bmlist .bmdrop-into").length);
+  const cx = (n, b, card) => {
+    if (!vis(b) || !vis(card)) return;
+    const r = b.getBoundingClientRect(), k = card.getBoundingClientRect(), s = getComputedStyle(b), g = b.querySelector("svg");
+    let gl = "txt", d = "-", sw = "-", dx = "-", dy = "-";
+    if (g && vis(g)) {
+      const q = g.getBoundingClientRect(), p = g.querySelector("path");
+      gl = Math.round(q.width) + "x" + Math.round(q.height); d = p ? p.getAttribute("d").replace(/\s+/g, "") : "-";
+      sw = getComputedStyle(p || g).strokeWidth; dx = Math.round(q.x + q.width / 2 - r.x - r.width / 2); dy = Math.round(q.y + q.height / 2 - r.y - r.height / 2);
+    }
+    out.push(n + "=" + Math.round(r.width) + "x" + Math.round(r.height) + ";" + gl + ";" + d + ";" + sw + ";" + s.color.replace(/\s+/g, "") + ";" + dx + "," + dy + ";" + Math.round(k.right - r.right) + "," + Math.round(r.top - k.top) + ";" + Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2));
+  };
+  cx("pcx", $("p-close"), $("pcard"));
+  cx("scx", $("sclose"), $("sbox"));
+  return " [bui:" + out.join("|") + "]";
 }
 function sactTok() {
   const k = Object.keys(sactN);
@@ -12661,7 +12721,7 @@ function psgTok() {
 }
 function psgPublish() {
   if (!psgProbe || vaultPath || $("picker").hidden) return;
-  const t = "opensidian" + vargTok() + psgTok() + sbarTok();   // noscroll: the boot picker's root/element scrollbars too (the pane census never runs here)
+  const t = "Opensidian" + vargTok() + psgTok() + sbarTok();   // noscroll: the boot picker's root/element scrollbars too (the pane census never runs here)
   if (t === psgLast) return;
   psgLast = t; document.title = t; pushTitle(t);
 }
