@@ -1,33 +1,3 @@
-    /* An other-kind file opens on a double press. The board takes pointer capture on every press
-       (canvas.js), so the second click and the dblclick land on the wrapper, not on this card:
-       detect the double press here, before the wrapper sees it. dblclick stays as a fallback
-       for a press that did reach the card, deduped against the press that already opened. */
-    let lastP = 0, px = 0, py = 0, opened = 0;
-    const openOther = () => {
-      const c = node._ccCtx, s = node._cc || {};
-      opened = Date.now();
-      s.open = (s.open || 0) + 1;
-      const fn = c.app && typeof c.app.openWithDefaultApp === "function" ? c.app.openWithDefaultApp : null;
-      if (fn) Promise.resolve(fn.call(c.app, node.data.file)).catch(err => console.warn("[canvas] open file:", err));
-      ping(c);
-    };
-    box.addEventListener("pointerdown", e => {
-      const s = node._cc || {};
-      if (s.kind !== "other" || node.isEditing || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey) return;
-      if (e.target.classList.contains("canvas-node-resizer")) return;
-      const now = Date.now(), dbl = now - lastP < 500 && Math.abs(e.clientX - px) + Math.abs(e.clientY - py) < 8;
-      lastP = now; px = e.clientX; py = e.clientY;
-      if (!dbl) return;                              // a single press still selects / drags the card (canvas.js)
-      lastP = 0;
-      e.stopPropagation(); e.preventDefault();
-      openOther();
-    });
-    box.addEventListener("dblclick", e => {
-      const s = node._cc || {};
-      if (s.kind !== "other" || node.isEditing) return;
-      e.stopPropagation();
-      if (Date.now() - opened > 600) openOther();
-    });
 // opensidian, a vault-compatible markdown notes app.
 // Copyright (C) 2026 Jendrik Poloczek
 // SPDX-License-Identifier: GPL-3.0-or-later
