@@ -395,6 +395,7 @@
         for (const d of doc.nodes) this.addNode(new NODE_CLASS[d.type](this, d));
         for (const e of doc.edges) this.edges.set(e.id, e);
         this.renderEdges();
+        if (window.CanvasHistory) window.CanvasHistory.record(this, "import", changed);   // goal cv-history: a newly opened document starts a clean history
       }
       // the document as it is now: the parsed root (unknown fields kept), its nodes in board order,
       // the edges whose two ends are still on the board
@@ -410,6 +411,7 @@
         if (node.data.type === "group") this.groupEl.appendChild(node.containerEl); else this.nodeEl.appendChild(node.containerEl);
         node.load();
         node.render();
+        if (window.CanvasHistory) window.CanvasHistory.record(this, "add", changed);
         return node;
       }
       createTextNode(o) {
@@ -445,6 +447,7 @@
         node.detach();
         this.renderEdges();
         this.requestSave();
+        if (window.CanvasHistory) window.CanvasHistory.record(this, "remove", changed);
       }
       deleteSelection() { for (const n of [...this.selection]) this.removeNode(n); }
       select(node, add) {

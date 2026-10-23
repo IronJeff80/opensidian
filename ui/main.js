@@ -7205,6 +7205,15 @@ function canvasTok() {
   const a = v.containerEl.querySelector(".canvas-control.mod-add-text");
   if (vis(a)) t += " [cvadd:" + c(a) + "]";
   if (vis(v.canvas.wrapperEl)) t += " [cvw:" + rc(v.canvas.wrapperEl) + "]";
+  // cv-history tokens: [cvh:u=<undo depth>|r=<redo depth>] once the board has a history, [cvundo:x,y] [cvredo:x,y] its
+  // control buttons, [cvhsel:<id>,...] the selected cards in selection order (at most 16)
+  const hs = window.CanvasHistory ? window.CanvasHistory.state(v.canvas) : null;
+  if (hs) {
+    t += " [cvh:u=" + hs.u + "|r=" + hs.r + "]";
+    if (vis(hs.undoEl)) t += " [cvundo:" + c(hs.undoEl) + "]";
+    if (vis(hs.redoEl)) t += " [cvredo:" + c(hs.redoEl) + "]";
+  }
+  if (v.canvas.selection.size) t += " [cvhsel:" + [...v.canvas.selection].slice(0, 16).map(n => esc(n.id)).join(",") + "]";
   return t;
 }
 function folderMenu(e, f) {                 // right-click an explorer folder row: New canvas in that folder
