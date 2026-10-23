@@ -149,7 +149,9 @@
     wire(node, ctx);
     const p = String(node.data.file || ""), ext = ctx.file && ctx.file.extension ? String(ctx.file.extension).toLowerCase() : extOf(p);
     node.containerEl.classList.remove("cc-media");
-    if (ext === "md" || ext === "canvas" || ctx.missing || !p) { node._cc = { kind: ext === "md" ? "note" : "missing" }; return false; }
+    // the vault model lists notes, canvases and images only: no TFile for an .mp3/.zip says nothing
+    const tracked = ext === "md" || ext === "canvas" || IMG.has(ext);
+    if (ext === "md" || ext === "canvas" || (ctx.missing && tracked) || !p) { node._cc = { kind: ext === "md" ? "note" : "missing" }; return false; }
     const host = node.contentEl;
     if (IMG.has(ext)) {
       const img = mk("img", "canvas-file-img", host);
