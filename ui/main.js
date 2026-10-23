@@ -10860,6 +10860,7 @@ function sactCtl(r) {
      cur=<bad>/<n>:<first bad>  every enabled clickable in the open Settings modal (button, role=button,
                                 .sbtn, .snavi, live rows/dropdowns, ...) and its computed cursor; bad = not pointer
      upd=<cursor>@x,y           the "Check for updates" button: computed cursor + painted centre (client px)
+     gen=x,y                    the General nav entry's centre (client px; the phase opens that pane)
      sel=<len>,<max>,<n>        the document selection's text length now, the longest seen since the last
                                 press in #bmlist, and how many presses that was (#11)
      bmsrc=<n>                  bookmark rows still carrying drag fills (.bmdrop-src/.bmdrop-into)
@@ -10884,6 +10885,8 @@ function buiTok() {
     out.push("cur=" + bad.length + "/" + C.length + (bad.length ? ":" + bad.slice(0, 4).join(",").replace(/[[\]|]/g, "") : ""));
     const u = document.querySelector('#sbox .sctl[data-act="check_updates"] .sbtn');
     if (vis(u)) { const r = u.getBoundingClientRect(); out.push("upd=" + getComputedStyle(u).cursor + "@" + Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2)); }
+    const gn = document.querySelector('#snav .snavi[data-pane="general"]');   // the General entry (home of Check for updates): the phase clicks it from here, never OCR
+    if (vis(gn)) { const r = gn.getBoundingClientRect(); out.push("gen=" + Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2)); }
   }
   out.push("sel=" + String(getSelection() || "").length + "," + buiSelMax + "," + buiPress);
   out.push("bmsrc=" + document.querySelectorAll("#bmlist .bmdrop-src, #bmlist .bmdrop-into").length);
