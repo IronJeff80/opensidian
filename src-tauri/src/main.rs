@@ -5542,6 +5542,16 @@ fn quit_request(app: &tauri::AppHandle, why: &str) -> bool {
     }
 }
 
+/// CloseRequested (close button -> win_close, Alt+F4, a WM close): held while the UI flushes
+fn quit_event(w: &tauri::Window, e: &tauri::WindowEvent) {
+    use tauri::Manager;
+    if let tauri::WindowEvent::CloseRequested { api, .. } = e {
+        if !quit_request(w.app_handle(), "window close") {
+            api.prevent_close();
+        }
+    }
+}
+
 /// the UI's listener is up: from now on a quit waits for its flush
 #[tauri::command]
 fn quit_arm() {
@@ -5927,13 +5937,7 @@ fn main() {
         // half-attached; R31.10.
         .on_window_event(|w, e| {
             winsize_event(w, e); // goal winsize: track + save on close (not the drop)
-            // tab-dataloss: a close waits (bounded) for the UI to flush its edits
-            if let tauri::WindowEvent::CloseRequested { api, .. } = e {
-                use tauri::Manager;
-                if !quit_request(w.app_handle(), "window close") {
-                    api.prevent_close();
-                }
-            }
+            quit_event(w, e); // tab-dataloss: a close waits (bounded) for the UI flush
             if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, position }) = e {
                 use tauri::Emitter;
                 let _ = w.emit(DROP_EVENT, (paths, position.x, position.y));
@@ -6079,7 +6083,8 @@ mod tests {
     fn tabdl_quit_is_wired() {
         // both quit paths reach quit_request, and the UI side answers it
         let src = include_str!("main.rs");
-        assert!(src.contains("quit_request(w.app_handle(), \"window close\")"));
+        assert!(src.contains("quit_event(w, e); // tab-dataloss"));
+        assert!(src.contains("api.prevent_close()"));
         assert!(src.contains("install_term(app.handle().clone())"));
         assert!(src.contains("quit_arm, quit_ready,"));
         let ui = include_str!("../../ui/main.js");
