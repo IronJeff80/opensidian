@@ -10197,7 +10197,7 @@ $("p-create").onclick = () => enterMode("create");
 $("p-open").onclick = () => enterMode("open");
 $("p-back").onclick = showPicker;
 $("p-recent").addEventListener("scroll", () => { if (vaultPath) { try { updateTitle(); } catch (_) {} } }, { passive: true });   // item 14: [prow:] follows the list scroll
-$("p-close").onclick = () => { $("picker").hidden = true; };
+$("p-close").onclick = () => { $("picker").hidden = true; try { updateTitle(); } catch (_) {} };   // bug-ui #14: the census (window title) drops [precent:] with the picker, as the Esc path does
 $("p-path").onkeydown = e => { if (e.key === "Enter") browseTo($("p-path").value.trim()); };
 $("p-name").onkeydown = e => { if (e.key === "Enter") $("p-go").click(); };
 /* vaultbleed A — ONE VAULT PER PROCESS. The boot picker (no vault yet) binds
