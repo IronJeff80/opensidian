@@ -177,8 +177,16 @@ function unlinkTab(g, t, closing) { // R13.4: drop t from its group; a group of 
     if (rest.length < 2) for (const m of rest) delete m.t.link;
   }
   if (t.kind === "lg") delete t.linkId;
-  else if (!closing)                // menu on the auto-linked group's tab: detach its local graphs
-    for (const h of groups()) for (const x of h.tabs) if (x.kind === "lg" && x.linkId === g.id) delete x.linkId;
+  // menu on the auto-linked group's tab: detach its local graphs. bug-graph #13: so does CLOSING
+  // the tab a graph was linked FROM (x.linkTab: the tab it was opened on, or the leaf that carried
+  // the shared group on restore). Stock links a pane to a leaf and keeps it open when that leaf
+  // closes (forum.obsidian.md/t/3050, staff: "design decision"), so the graph stays, centred
+  // where it was — but unlinked, instead of jumping to whatever tab takes the focus and staying
+  // chained to a note that is gone. Closing any OTHER tab of the pane (one the graph only
+  // followed, e.g. a note opened in a new tab) keeps the link: the graph follows the tab that
+  // becomes active, as before.
+  else for (const h of groups()) for (const x of h.tabs)
+    if (x.kind === "lg" && x.linkId === g.id && (!closing || x.linkTab === t)) { delete x.linkId; delete x.linkTab; }
   for (const h of groups()) renderTabs(h);
 }
 async function linkSync(src, name) { // R13.3: a member opening a note reaches every member
@@ -2913,7 +2921,7 @@ function wsLinksIn(gs) {
     let key = null;
     const man = rest.length >= 2 ? rest : (!rest.length && lgs.length >= 2 ? lgs : null);
     if (man) { const L = ++linkSeq; for (const m of man) m.t.link = L; key = "L" + L; }
-    if (anchor) for (const m of lgs) if (m.g !== anchor.g) m.t.linkId = anchor.g.id;
+    if (anchor) for (const m of lgs) if (m.g !== anchor.g) { m.t.linkId = anchor.g.id; m.t.linkTab = anchor.t; }   // linkTab: bug-graph #13
     if (!key && anchor && lgs.some(m => m.t.linkId === anchor.g.id)) key = "G" + anchor.g.id;
     if (key) wsGrp[key] = hex;
   }
@@ -10155,6 +10163,19 @@ async function startGraph(g, cfg) {
     const r = cv.getBoundingClientRect();
     const mx = e.clientX - r.left, my = e.clientY - r.top;
     if (view.ax !== mx || view.ay !== my) { [view.wx, view.wy] = toWorld(mx, my); view.ax = mx; view.ay = my; }
+    // bug-graph #15: a touchpad PINCH reaches the page as ctrl+wheel with small, continuous
+    // deltas (a mouse notch is |deltaY| >= 40 here and stays on the lattice below). One notch per
+    // event made a pinch jump 10% per tiny event, whatever its size; it now zooms in proportion
+    // to the gesture, exp(-deltaY/100) per event, anchored at the cursor like a notch.
+    if (e.ctrlKey && e.deltaY && Math.abs(e.deltaY) < 30) {
+      const s = Math.min(GZ_MAX, Math.max(GZ_MIN, view.scale * Math.exp(-e.deltaY / 100)));
+      view.tx = mx - view.wx * s; view.ty = my - view.wy * s; view.scale = s;
+      view.notch = Math.max(GZ_IN, Math.min(GZ_OUT, Math.round(Math.log(s) / Math.log(0.9))));
+      if (gcS && (gcS.kind === "gg" || gcS.kind === "lg") && gcS.st.scale !== s) { gcS.st.scale = s; gcS.save({ scale: s }); }
+      updateTitle();
+      redraw();
+      return;
+    }
     view.notch = Math.max(GZ_IN, Math.min(GZ_OUT, view.notch + (e.deltaY < 0 ? -1 : 1)));
     const s = notchScale(view.notch);
     view.tx = mx - view.wx * s; view.ty = my - view.wy * s; view.scale = s;
@@ -10274,6 +10295,51 @@ async function startGraph(g, cfg) {
     if (rsp) otel.paint(rsp, { nodes: N.length, edges: gr.edges.length });
     if (g.settleSp && quiet) { otel.end(g.settleSp, { nodes: N.length, edges: gr.edges.length, reheat: false }); g.settleSp = null; }   // centre unchanged / nothing to settle
   };
+  // bug-graph #15: MULTI-TOUCH. Two touch pointers on the canvas are one gesture: the world
+  // point under their midpoint at touch-down stays under the midpoint, the scale follows the
+  // finger spread (pinch zooms around the gesture centre) and moving both fingers moves the
+  // midpoint (two-finger pan) — one formula, so a pinch that drifts pans as it zooms. Touch
+  // pointers never reach the mouse path above (WebKit sends no mousemove for a touch drag),
+  // and touch-action none keeps the webview from taking the gesture as a page zoom/scroll.
+  // The zoom leaves the wheel lattice; view.notch is snapped to the nearest notch so the next
+  // wheel step continues from here. A single finger keeps the old behaviour.
+  cv.style.touchAction = "none";
+  const tch = new Map();                  // touch pointerId -> canvas px
+  let pinch = null;                       // { d0, s0, wx, wy } of the current two-finger gesture
+  const tchXY = e => { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+  const pinchFrom = () => {
+    const [a, b] = [...tch.values()];
+    const [wx, wy] = toWorld((a.x + b.x) / 2, (a.y + b.y) / 2);
+    pinch = { d0: Math.hypot(b.x - a.x, b.y - a.y) || 1, s0: view.scale, wx, wy };
+  };
+  const zoomed = s => {                   // persist exactly like a wheel notch does (graph.json / the leaf's options)
+    view.notch = Math.max(GZ_IN, Math.min(GZ_OUT, Math.round(Math.log(s) / Math.log(0.9))));
+    if (gcS && (gcS.kind === "gg" || gcS.kind === "lg") && gcS.st.scale !== s) { gcS.st.scale = s; gcS.save({ scale: s }); }
+    updateTitle();
+  };
+  cv.addEventListener("pointerdown", e => {
+    if (e.pointerType !== "touch") return;
+    tch.set(e.pointerId, tchXY(e));
+    if (tch.size === 2) { if (drag) release(); moved = true; pinchFrom(); e.preventDefault(); }   // moved: the first finger's compat click is not a node click
+  });
+  cv.addEventListener("pointermove", e => {
+    const p = tch.get(e.pointerId);
+    if (!p) return;
+    Object.assign(p, tchXY(e));
+    if (!pinch || tch.size !== 2) return;
+    e.preventDefault();
+    const [a, b] = [...tch.values()];
+    const s = Math.min(GZ_MAX, Math.max(GZ_MIN, pinch.s0 * Math.hypot(b.x - a.x, b.y - a.y) / pinch.d0));
+    view.scale = s; view.tx = (a.x + b.x) / 2 - pinch.wx * s; view.ty = (a.y + b.y) / 2 - pinch.wy * s; view.ax = null;
+    redraw();
+  });
+  const tchEnd = e => {
+    if (!tch.delete(e.pointerId)) return;
+    if (pinch && tch.size < 2) { pinch = null; zoomed(view.scale); }
+    else if (tch.size === 2) pinchFrom();  // a third finger lifted: the remaining two carry on
+  };
+  cv.addEventListener("pointerup", tchEnd);
+  cv.addEventListener("pointercancel", tchEnd);
   // a save can land while the initial fetch is in flight (writeNote sees
   // graphRefresh still null and skips) — refresh once now to close the race
   await g.graphRefresh();
@@ -10319,6 +10385,7 @@ async function cmdLocalGraph() {       // R7.2: local graph of focused note -> n
   const t = { kind: "lg", name: "Graph of " + center.split("/").pop(),
               center, depth: 1, inc: true, out: true, linkId: g.id,
               mode: "source", hist: [], hpos: 0 };
+  t.linkTab = t0;                      // bug-graph #13: closing THIS tab unlinks the graph (unlinkTab)
   await splitWith(g, "row", t);        // R7.3: auto-linked to g from birth
   for (const h of groups()) renderTabs(h);  // chain glyph lands on the source tab too
 }
