@@ -106,13 +106,6 @@ Secret Service: gnome-keyring, KWallet or KeePassXC. Secrets are never written t
 a running keyring, secret storage reports that it is unsupported and those plugins cannot save
 secrets.
 
-**Compatibility.** We test 50 popular plugins. 44 pass. Known not to work yet:
-- realclaudian: needs `node:zlib`
-- editing-toolbar: needs a keyring; not yet tested with one
-- advanced-slides, local-rest-api: their built-in servers
-- zotero integration
-- markmind: no public source to test
-
 ## Donate
 
 Donation makes it possible! 
