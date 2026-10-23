@@ -1169,3 +1169,17 @@ The vendored files include no NOTICE file.
 **Upstream:** https://mozilla.github.io/pdf.js (npm `pdfjs-dist@6.3.289`)
 **Licence:** Apache-2.0, full text shipped beside the files as `ui/vendor/pdfjs/LICENSE`.
 Apache-2.0 is compatible with GPL-3.0. The vendored files include no NOTICE file.
+
+## glib 0.18.5 (vendored Rust crate, gtk-rs)
+
+**Used in:** `src-tauri/vendor/glib-0.18.5/`, swapped in for the crates.io crate via
+`[patch.crates-io]` in `src-tauri/Cargo.toml` (it is the GLib binding under tauri's GTK stack).
+**Upstream:** https://github.com/gtk-rs/gtk-rs-core (crates.io `glib@0.18.5`,
+sha256 `233daaf6e83ae6a12a52055f568f9d7cf4671dabb78ff9560ab6da230ce00ee5`)
+**Modification:** exactly one upstream commit, gtk-rs-core `b5a4071e439bef2b5eea76c3aa25e5ae84839e34`
+(https://github.com/gtk-rs/gtk-rs-core/pull/1343, "glib: fix UB in VariantStrIter::impl_get"),
+the fix for GHSA-wrw7-89jp-8q8g / RUSTSEC-2024-0429, which upstream ships only in glib >= 0.20.
+Everything else is the published crate byte for byte.
+**Licence:** MIT, full text shipped beside the files as `src-tauri/vendor/glib-0.18.5/LICENSE`
+(with the project's `COPYRIGHT`). MIT is compatible with GPL-3.0. The vendored files carry no
+SPDX tag of ours: tagging them would modify them.

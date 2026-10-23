@@ -91,3 +91,12 @@ sha2 = "=0.10.9"
 # print their message and location; only symbolised backtraces are lost.
 [profile.release]
 strip = "symbols"
+
+# glib-fix (v0.8.1) — GHSA-wrw7-89jp-8q8g / RUSTSEC-2024-0429: VariantStrIter::impl_get
+# passed `&p` as a variadic out-argument, UB. Fixed upstream only in glib >= 0.20
+# (gtk-rs/gtk-rs-core PR 1343, commit b5a4071e); gtk3-rs 0.18 pins glib 0.18, so no bump.
+# vendor/glib-0.18.5 = crates.io glib 0.18.5 byte-for-byte (sha256 233daaf6…0ee5, the
+# Cargo.lock checksum) + exactly that two-line upstream hunk. Checked by harness
+# scripts/glib-vendor-check.sh before every release.
+[patch.crates-io]
+glib = { path = "vendor/glib-0.18.5" }
