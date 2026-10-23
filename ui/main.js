@@ -7205,6 +7205,8 @@ function canvasTok() {
   const a = v.containerEl.querySelector(".canvas-control.mod-add-text");
   if (vis(a)) t += " [cvadd:" + c(a) + "]";
   if (vis(v.canvas.wrapperEl)) t += " [cvw:" + rc(v.canvas.wrapperEl) + "]";
+  // goal cv-cards: [cvcard:<id>|...] per painted card, [cvcard:@pan|tx,ty], [cvext:<url>] (ui/plugins/canvas-cards.js)
+  if (window.__osCanvasCards) try { t += window.__osCanvasCards.census(v); } catch (_) {}
   return t;
 }
 function folderMenu(e, f) {                 // right-click an explorer folder row: New canvas in that folder
