@@ -178,12 +178,15 @@ function unlinkTab(g, t, closing) { // R13.4: drop t from its group; a group of 
   }
   if (t.kind === "lg") delete t.linkId;
   // menu on the auto-linked group's tab: detach its local graphs. bug-graph #13: so does CLOSING
-  // the tab they show (the group's active tab). Stock keeps a linked pane open when the pane it
-  // links to closes (forum.obsidian.md/t/3050, staff: "design decision"), so the graph stays,
-  // centred where it was — but unlinked, instead of jumping to whatever tab takes the focus
-  // and staying chained to a note that is gone. Closing a background tab leaves the link alone.
-  else if (!closing || g.tabs[g.active] === t)
-    for (const h of groups()) for (const x of h.tabs) if (x.kind === "lg" && x.linkId === g.id) delete x.linkId;
+  // the tab a graph was linked FROM (x.linkTab: the tab it was opened on, or the leaf that carried
+  // the shared group on restore). Stock links a pane to a leaf and keeps it open when that leaf
+  // closes (forum.obsidian.md/t/3050, staff: "design decision"), so the graph stays, centred
+  // where it was — but unlinked, instead of jumping to whatever tab takes the focus and staying
+  // chained to a note that is gone. Closing any OTHER tab of the pane (one the graph only
+  // followed, e.g. a note opened in a new tab) keeps the link: the graph follows the tab that
+  // becomes active, as before.
+  else for (const h of groups()) for (const x of h.tabs)
+    if (x.kind === "lg" && x.linkId === g.id && (!closing || x.linkTab === t)) { delete x.linkId; delete x.linkTab; }
   for (const h of groups()) renderTabs(h);
 }
 async function linkSync(src, name) { // R13.3: a member opening a note reaches every member
@@ -2916,7 +2919,7 @@ function wsLinksIn(gs) {
     let key = null;
     const man = rest.length >= 2 ? rest : (!rest.length && lgs.length >= 2 ? lgs : null);
     if (man) { const L = ++linkSeq; for (const m of man) m.t.link = L; key = "L" + L; }
-    if (anchor) for (const m of lgs) if (m.g !== anchor.g) m.t.linkId = anchor.g.id;
+    if (anchor) for (const m of lgs) if (m.g !== anchor.g) { m.t.linkId = anchor.g.id; m.t.linkTab = anchor.t; }   // linkTab: bug-graph #13
     if (!key && anchor && lgs.some(m => m.t.linkId === anchor.g.id)) key = "G" + anchor.g.id;
     if (key) wsGrp[key] = hex;
   }
@@ -10175,6 +10178,7 @@ async function cmdLocalGraph() {       // R7.2: local graph of focused note -> n
   const t = { kind: "lg", name: "Graph of " + center.split("/").pop(),
               center, depth: 1, inc: true, out: true, linkId: g.id,
               mode: "source", hist: [], hpos: 0 };
+  t.linkTab = t0;                      // bug-graph #13: closing THIS tab unlinks the graph (unlinkTab)
   await splitWith(g, "row", t);        // R7.3: auto-linked to g from birth
   for (const h of groups()) renderTabs(h);  // chain glyph lands on the source tab too
 }
