@@ -1839,6 +1839,14 @@ span.is-flashing { background: var(--highlight-yellow) }
    :where() specificity (0,0,0), so a theme's own caret-color on any of them wins.
    Gate phase caretcolor ([ccl:] in census.js) measures it per theme x mode. */
 .cm-editor .cm-scroller .cm-content.cm-content { caret-color: var(--caret-color, var(--text-normal)) }
+/* An editor WITHOUT focus paints no caret. WebKitGTK keeps blinking the native caret of a
+   selection that sits in a contenteditable after focus has moved to a non-editable element
+   (a click on the empty tab strip: view.hasFocus false, .cm-focused gone, caret still
+   blinking at ~1.2 s, measured in the title-flake goal). CM6's own drawn cursor is shown
+   only under &.cm-focused; this is the native caret's equivalent, at (0,5,0) so it beats
+   the (0,4,0) rule above. A screenshot of an unfocused editor no longer depends on where
+   in the blink it was taken. */
+.cm-editor:not(.cm-focused) .cm-scroller .cm-content.cm-content { caret-color: var(--transparent) }
 .cm-editor .cm-scroller .cm-cursor.cm-cursor,
 .cm-editor .cm-scroller .cm-dropCursor.cm-dropCursor { border-left-color: var(--caret-color, var(--text-normal)) }
 :where(input, textarea, [contenteditable]:not([contenteditable="false"])) { caret-color: var(--caret-color, var(--text-normal)) }
