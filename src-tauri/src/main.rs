@@ -582,11 +582,11 @@ impl Refused {
             Refused::NotAFile => format!("{name}: not a regular file"),
             Refused::Symlink => format!("{name}: symlinks are not copied"),
             Refused::BadName => format!("{name}: unsafe file name"),
-            Refused::BadExt(e) => format!("{name}: .{e} is not a file type opensidian can attach"),
+            Refused::BadExt(e) => format!("{name}: .{e} is not a file type Opensidian can attach"),
             Refused::BadMagic(e) => format!("{name}: not a .{e} file (its content does not match the extension)"),
             Refused::TooBig(n, cap) => format!("{name}: {} MB is over the {} MB limit", n / 1048576, cap / 1048576),
             Refused::Unreadable => format!(
-                "{name}: opensidian may only read dropped files from {} (sandbox)",
+                "{name}: Opensidian may only read dropped files from {} (sandbox)",
                 sandbox::DROP_READ_DIRS.iter().map(|d| format!("~/{d}")).collect::<Vec<_>>().join(", ")
             ),
             Refused::NoFreeName => format!("{name}: no free file name left in the attachment folder"),
@@ -1608,7 +1608,7 @@ fn pick_vault_inner(app: &tauri::AppHandle, win: &tauri::Window, v: &State<Vault
     }
     if !sandbox::allows(&p) {
         persist_vault(&p); // next boot confines to this one instead
-        return Err(format!("sandboxed to {} — vault saved, restart opensidian to open it", sandbox::confined_to().unwrap().display()));
+        return Err(format!("sandboxed to {} — vault saved, restart Opensidian to open it", sandbox::confined_to().unwrap().display()));
     }
     bind_vault(v, &p)?; // Err once bound: a live process is never re-rooted
     persist_vault(&p);
@@ -1650,7 +1650,7 @@ fn make_vault_dir(parent: &str, name: &str) -> Result<PathBuf, String> {
         return Err(format!("already exists: {}", p.display()));
     }
     if !sandbox::allows(Path::new(parent.trim())) {
-        return Err(format!("sandboxed to {} — create the folder outside opensidian, then pick it and restart", sandbox::confined_to().unwrap().display()));
+        return Err(format!("sandboxed to {} — create the folder outside Opensidian, then pick it and restart", sandbox::confined_to().unwrap().display()));
     }
     fs::create_dir_all(&p).map_err(|e| e.to_string())?;
     seed_new_vault(&p).map_err(|e| e.to_string())?;
@@ -9452,8 +9452,8 @@ mod tests {
         assert_eq!(a.text, "", "a disguised payload is still refused: the extension decides");
         assert_eq!(a.refused.len(), 7, "{:?}", a.refused);
         assert!(a.refused[0].contains("doc.pdf: not a .pdf file"), "{:?}", a.refused);
-        assert!(a.refused[1].contains(".zip is not a file type opensidian can attach"), "{:?}", a.refused);
-        assert!(a.refused[5].contains("is not a file type opensidian can attach"), "{:?}", a.refused);
+        assert!(a.refused[1].contains(".zip is not a file type Opensidian can attach"), "{:?}", a.refused);
+        assert!(a.refused[5].contains("is not a file type Opensidian can attach"), "{:?}", a.refused);
         for p in &paths {
             assert!(p.exists(), "a refused source was touched: {}", p.display());
         }
