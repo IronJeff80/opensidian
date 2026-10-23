@@ -10861,6 +10861,7 @@ function sactCtl(r) {
                                 .sbtn, .snavi, live rows/dropdowns, ...) and its computed cursor; bad = not pointer
      upd=<cursor>@x,y           the "Check for updates" button: computed cursor + painted centre (client px)
      gen=x,y                    the General nav entry's centre (client px; the phase opens that pane)
+     lbl=x,y                    the centre of the Check for updates row's label text (pointer-shape reference)
      sel=<len>,<max>,<n>        the document selection's text length now, the longest seen since the last
                                 press in #bmlist, and how many presses that was (#11)
      bmsrc=<n>                  bookmark rows still carrying drag fills (.bmdrop-src/.bmdrop-into)
@@ -10885,6 +10886,8 @@ function buiTok() {
     out.push("cur=" + bad.length + "/" + C.length + (bad.length ? ":" + bad.slice(0, 4).join(",").replace(/[[\]|]/g, "") : ""));
     const u = document.querySelector('#sbox .sctl[data-act="check_updates"] .sbtn');
     if (vis(u)) { const r = u.getBoundingClientRect(); out.push("upd=" + getComputedStyle(u).cursor + "@" + Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2)); }
+    const ul = u && u.closest(".srow") && u.closest(".srow").querySelector(".slabel");   // that row's label TEXT (a range, not the block): the pointer-shape reference for "not a button"
+    if (ul && ul.firstChild) { const g = document.createRange(); g.selectNodeContents(ul); const r = g.getBoundingClientRect(); if (r.width) out.push("lbl=" + Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2)); }
     const gn = document.querySelector('#snav .snavi[data-pane="general"]');   // the General entry (home of Check for updates): the phase clicks it from here, never OCR
     if (vis(gn)) { const r = gn.getBoundingClientRect(); out.push("gen=" + Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2)); }
   }
