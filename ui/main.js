@@ -7290,7 +7290,7 @@ function cvEmbedFill(root) {
     bang.nodeValue = bang.nodeValue.slice(0, -1);
     const s = document.createElement("span");
     s.className = "cv-embed";
-    s.style.cssText = "display:block;height:260px;margin:.5em 0;border:1px solid var(--background-modifier-border, #888);border-radius:8px;cursor:pointer;overflow:hidden";
+    s.style.cssText = "display:block;height:260px;margin:.5em 0;border:1px solid var(--background-modifier-border);border-radius:8px;cursor:pointer;overflow:hidden";
     s.dataset.canvas = a.dataset.note;
     s.title = a.dataset.note;
     s.setAttribute("role", "link");
@@ -7324,8 +7324,8 @@ async function cvEmbedPaint(s, link) {
   for (const n of [...ns.filter(n => n.type === "group"), ...ns.filter(n => n.type !== "group")])   // groups underneath
     el("rect", { x: num(n.x), y: num(n.y), width: Math.max(0, num(n.width)), height: Math.max(0, num(n.height)), rx: 8,
                  class: "cv-emb-node" + (n.type === "group" ? " is-group" : ""),
-                 style: "fill:" + (n.type === "group" ? "transparent" : "var(--background-secondary, rgba(127,127,127,.12))") +
-                        ";stroke:var(--background-modifier-border, #888);stroke-width:2;vector-effect:non-scaling-stroke" + (n.type === "group" ? ";stroke-dasharray:6 4" : "") });
+                 style: "fill:" + (n.type === "group" ? "transparent" : "var(--background-secondary)") +
+                        ";stroke:var(--background-modifier-border);stroke-width:2;vector-effect:non-scaling-stroke" + (n.type === "group" ? ";stroke-dasharray:6 4" : "") });
   const side = (n, sd, o) => {
     const x = num(n.x), y = num(n.y), w = num(n.width), h = num(n.height);
     const s2 = sd || (Math.abs(o.x - (x + w / 2)) > Math.abs(o.y - (y + h / 2)) ? (o.x > x + w / 2 ? "right" : "left") : (o.y > y + h / 2 ? "bottom" : "top"));
@@ -7337,7 +7337,7 @@ async function cvEmbedPaint(s, link) {
     if (!a || !b) continue;
     const [ax, ay] = side(a, e.fromSide, mid(b)), [bx, by] = side(b, e.toSide, mid(a));
     el("path", { d: "M" + ax + " " + ay + " L" + bx + " " + by, class: "cv-emb-edge",
-                 style: "fill:none;stroke:var(--text-faint, #888);stroke-width:2;vector-effect:non-scaling-stroke" });
+                 style: "fill:none;stroke:var(--text-faint);stroke-width:2;vector-effect:non-scaling-stroke" });
   }
   svg.style.cssText = "display:block;width:100%;height:100%";
   s.textContent = "";
