@@ -10848,6 +10848,52 @@ function sactCtl(r) {
   d.appendChild(b);
   return d;
 }
+/* bug-ui census [bui:] (gate phase bugui, GitHub #9 #11 #12 #14) — measurements off the live DOM:
+     cur=<bad>/<n>:<first bad>  every enabled clickable in the open Settings modal (button, role=button,
+                                .sbtn, .snavi, live rows/dropdowns, ...) and its computed cursor; bad = not pointer
+     upd=<cursor>@x,y           the "Check for updates" button: computed cursor + painted centre (client px)
+     sel=<len>,<max>,<n>        the document selection's text length now, the longest seen since the last
+                                press in #bmlist, and how many presses that was (#11)
+     bmsrc=<n>                  bookmark rows still carrying drag fills (.bmdrop-src/.bmdrop-into)
+     pcx= / scx=                the vault picker's close button / Settings' close button, while shown:
+                                btn WxH, glyph (svg WxH or "txt"), path d, stroke-width, colour,
+                                glyph-centre offset from the button centre, right/top inset in its card */
+let buiSelMax = 0, buiPress = 0;
+document.addEventListener("selectionchange", () => {
+  const n = String(getSelection() || "").length;
+  if (n > buiSelMax) buiSelMax = n;
+});
+document.addEventListener("mousedown", e => {
+  if (e.target && e.target.closest && e.target.closest("#bmlist")) { buiSelMax = String(getSelection() || "").length; buiPress++; }
+}, true);
+function buiTok() {
+  const vis = e => !!e && e.getClientRects().length > 0, out = [];
+  if (vis($("sbox"))) {
+    const C = [...$("sbox").querySelectorAll("button, [role=button], .sbtn, .slink[tabindex], .snavi, .fbtn, .fback, .hkbtn, .hkchip, .hkx, #hkclear, .sctl.dropdown.live, .srow.live, .fcand")]
+      .filter(e => vis(e) && !e.closest("[aria-disabled=true], .dis"));
+    const bad = C.filter(e => getComputedStyle(e).cursor !== "pointer")
+      .map(e => (e.id || e.className.toString().split(" ")[0] || e.tagName) + "=" + getComputedStyle(e).cursor);
+    out.push("cur=" + bad.length + "/" + C.length + (bad.length ? ":" + bad.slice(0, 4).join(",").replace(/[[\]|]/g, "") : ""));
+    const u = document.querySelector('#sbox .sctl[data-act="check_updates"] .sbtn');
+    if (vis(u)) { const r = u.getBoundingClientRect(); out.push("upd=" + getComputedStyle(u).cursor + "@" + Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2)); }
+  }
+  out.push("sel=" + String(getSelection() || "").length + "," + buiSelMax + "," + buiPress);
+  out.push("bmsrc=" + document.querySelectorAll("#bmlist .bmdrop-src, #bmlist .bmdrop-into").length);
+  const cx = (n, b, card) => {
+    if (!vis(b) || !vis(card)) return;
+    const r = b.getBoundingClientRect(), k = card.getBoundingClientRect(), s = getComputedStyle(b), g = b.querySelector("svg");
+    let gl = "txt", d = "-", sw = "-", dx = "-", dy = "-";
+    if (g && vis(g)) {
+      const q = g.getBoundingClientRect(), p = g.querySelector("path");
+      gl = Math.round(q.width) + "x" + Math.round(q.height); d = p ? p.getAttribute("d").replace(/\s+/g, "") : "-";
+      sw = getComputedStyle(p || g).strokeWidth; dx = Math.round(q.x + q.width / 2 - r.x - r.width / 2); dy = Math.round(q.y + q.height / 2 - r.y - r.height / 2);
+    }
+    out.push(n + "=" + Math.round(r.width) + "x" + Math.round(r.height) + ";" + gl + ";" + d + ";" + sw + ";" + s.color.replace(/\s+/g, "") + ";" + dx + "," + dy + ";" + Math.round(k.right - r.right) + "," + Math.round(r.top - k.top) + ";" + Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2));
+  };
+  cx("pcx", $("p-close"), $("pcard"));
+  cx("scx", $("sclose"), $("sbox"));
+  return " [bui:" + out.join("|") + "]";
+}
 function sactTok() {
   const k = Object.keys(sactN);
   return (k.length ? " [sact:" + k.map(a => a + ":" + sactN[a]).join(",") + "]" : "") +
