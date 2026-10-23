@@ -63,6 +63,36 @@ build-options:
     CARGO_NET_OFFLINE: 'true'
 
 modules:
+  # BROTLI 1.2.1 (CVE-2026-111497). org.gnome.Platform//49 (commit 2bb946ea,
+  # 2026-10-03) ships libbrotlidec.so.1.2.0 — measured on the box with a
+  # BrotliDecoderVersion() probe inside the runtime: 1.2.0, pre-fix. WebKitGTK
+  # decodes HTTP Content-Encoding br and WOFF2 fonts with it. Our module builds
+  # the fixed release into /app/lib, which the flatpak loader searches before
+  # the runtime's /usr/lib, under the same sonames (libbrotli*.so.1). The
+  # tarball is the upstream tag archive, sha256-pinned (same pin as the
+  # portable AppImage); flatpak-builder refuses a mismatch. Drop this module
+  # once the runtime itself ships >= 1.2.1.
+  - name: brotli
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DBUILD_SHARED_LIBS=ON
+      - -DBROTLI_DISABLE_TESTS=ON
+      # /app/lib, NOT the cmake default lib64: the flatpak loader searches
+      # /app/lib only, so a lib64 install leaves the runtime 1.2.0 in charge
+      # (measured: lib64 build -> probe still 1.2.0).
+      - -DCMAKE_INSTALL_LIBDIR=lib
+    cleanup:
+      - /bin
+      - /include
+      - /lib/pkgconfig
+      - /share/man
+      - '*.a'
+    sources:
+      - type: archive
+        url: https://github.com/google/brotli/archive/refs/tags/v1.2.1.tar.gz
+        sha256: 98d35d11a78dc453aebb7d10c3748f3f73ff78c8267c0dc697b8631f67bf7e8f
+
   - name: opensidian
     buildsystem: simple
     build-commands:

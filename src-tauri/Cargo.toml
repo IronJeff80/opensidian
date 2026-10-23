@@ -1,6 +1,6 @@
 [package]
 name = "opensidian"
-version = "0.6.2"
+version = "0.8.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 
@@ -31,6 +31,24 @@ landlock = "=0.4.7"
 # pins it to that exact version, so the lock gains no package.
 libc = "=0.2.189"
 
+# cp-browser — the plugin store (plugin_store.rs). NO NEW CRATE: both are
+# ALREADY in Cargo.lock as tauri/webkit dependencies, `=` pins the locked version.
+#   url  2.5.8  (2026-01-05, MIT OR Apache-2.0)  allowlist / redirect parsing
+#   sha2 0.10.9 (2025-04-30, MIT OR Apache-2.0)  sha256 of every installed file
+#        (was dev-only for builtins.rs; now also shipped). soup3: linux block below
+sha2 = "=0.10.9"
+url = "=2.5.8"
+
+# goal settings-general — the signed update check (updates.rs) verifies the release
+# SHA256SUMS.asc (OpenPGP, EdDSA) against the embedded pinned key. ONE NEW CRATE:
+#   ed25519-compact 2.4.2 (2026-08-19, MIT, sha256 f05391a5…41da), default
+#   features OFF = zero dependencies (no getrandom, no pem): verify only. Picked as
+#   the smallest Ed25519 verifier (vs ed25519-dalek's curve25519-dalek tree); the
+#   newest release >= 6 weeks before 2026-10-19 (2.5.0/2.6.0 are 2026-09-25, too new).
+#   SHA-512/256 come from the already-locked sha2 above; the OpenPGP packet subset is
+#   hand-parsed in updates.rs (strict: v4, EdDSA, binary sig, pinned fingerprint).
+ed25519-compact = { version = "=2.4.2", default-features = false }
+
 # R33.6b — the POSITIVE session test behind the two-path drag (win_move_proto).
 # Both crates are ALREADY in Cargo.lock as tauri's own transitive deps (tauri ->
 # tao -> gtk/gdk/gdkx11 0.18.2), so naming them here resolves to the versions the
@@ -40,6 +58,17 @@ libc = "=0.2.189"
 [target.'cfg(target_os = "linux")'.dependencies]
 gdk = "=0.18.2"
 gdkx11 = "=0.18.2"
+# cp-browser: the plugin store's HTTPS client is libsoup 3 — the library webkit2gtk
+# already links (TLS = glib-networking, system CA store). soup3 0.5.0 (2023-08-01,
+# MIT) is webkit2gtk's own binding, ALREADY in Cargo.lock: no new crate, no new C lib.
+soup3 = "=0.5.0"
+# ---- cp-secrets (begin) ----
+# app.secretStorage over the freedesktop Secret Service (src/secrets.rs). dbus
+# 0.9.12 is ALREADY in Cargo.lock (tauri -> tao's own dependency, libdbus via
+# libdbus-sys 0.2.7); `=` pins that locked version, so this fetches and trusts
+# nothing new. MIT OR Apache-2.0.
+dbus = "=0.9.12"
+# ---- cp-secrets (end) ----
 
 # listtoggle A2 — the unit table runs ui/editor.js in JavaScriptCore, the engine
 # the webview runs it in. javascriptcore-rs 1.1.2 is ALREADY in Cargo.lock as

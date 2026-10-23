@@ -1,0 +1,148 @@
+/* opensidian, a vault-compatible markdown notes app.
+   Copyright (C) 2026 Jendrik Poloczek
+   SPDX-License-Identifier: GPL-3.0-or-later
+   plugin-loader (recon M1): the surfaces the community plugin API creates —
+   Notice toasts, Modal / SuggestModal, Setting rows and controls, plugin ribbon
+   icons and status bar items, plugin menus. Obsidian's own class names (themes
+   and plugin styles.css target them); colours are theme tokens only, never
+   literals (same rule as scripts/lint-colors.sh). Nothing here matches an
+   element unless a plugin created it. */
+.notice-container { position: fixed; top: 38px; right: 12px; z-index: 80; display: flex;
+  flex-direction: column; align-items: flex-end; gap: 6px; pointer-events: none }
+.notice-container .notice { pointer-events: auto; max-width: 360px; padding: 10px 14px;
+  background: var(--bg-elevated); color: var(--text-chrome); border: 1px solid var(--border);
+  border-radius: 6px; box-shadow: 0 4px 14px var(--shadow-popover); font-size: 13px;
+  white-space: pre-wrap; cursor: pointer }
+
+.os-plugin-modal.modal-container { position: fixed; inset: 0; z-index: 70; display: flex;
+  align-items: flex-start; justify-content: center; padding-top: 12vh }
+.os-plugin-modal .modal-bg { position: absolute; inset: 0; background: var(--scrim) }
+.os-plugin-modal .modal { position: relative; min-width: 360px; max-width: min(640px, 92vw);
+  max-height: 76vh; overflow: auto; padding: 18px 20px; background: var(--bg-elevated);
+  color: var(--text-chrome); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 28px var(--shadow-popover) }
+.os-plugin-modal .modal-close-button { position: absolute; top: 8px; right: 10px; width: 20px;
+  height: 20px; cursor: pointer; color: var(--text-chrome-muted) }
+.os-plugin-modal .modal-close-button::before { content: "\2715"; font-size: 14px }
+.os-plugin-modal .modal-title { font-weight: 600; font-size: 15px; margin: 0 24px 10px 0 }
+.os-plugin-modal .modal-title:empty { display: none }
+.os-plugin-modal .modal.prompt { padding: 0; width: 560px }
+.os-plugin-modal .prompt-input { width: 100%; box-sizing: border-box; padding: 10px 14px; border: 0;
+  border-bottom: 1px solid var(--border); background: var(--bg-elevated); color: var(--text-chrome); font-size: 14px; outline: none }
+.os-plugin-modal .prompt-results { max-height: 50vh; overflow: auto; padding: 4px 0 }
+.os-plugin-modal .suggestion-item { padding: 6px 14px; cursor: pointer; font-size: 13px }
+.os-plugin-modal .suggestion-item.is-selected { background: var(--border) }
+.os-plugin-modal .suggestion-empty { padding: 8px 14px; color: var(--text-chrome-muted); font-size: 13px }
+.os-plugin-modal .suggestion-highlight { color: var(--text-accent); font-weight: 600 }
+.os-plugin-modal .prompt-instructions { display: flex; gap: 12px; padding: 6px 14px; font-size: 12px; color: var(--text-chrome-muted) }
+.os-plugin-modal .prompt-instructions:empty { display: none }
+.os-plugin-modal .prompt-instruction-command { font-weight: 600; margin-right: 4px }
+
+/* Setting / toggle / icon classes are Obsidian's names, and the app's own graph controls card reuses
+   them (main.js gcSlider/gcToggle, style.css .graph-controls): unscoped, these rules leaked into the
+   graph card (gate ggpanel L2). They apply ONLY where plugin UI is built: a plugin settings tab
+   (#spage) and plugin modals. :where() keeps the original specificity. */
+:where(#spage, .os-plugin-modal) .setting-item { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border) }
+:where(#spage, .os-plugin-modal) .setting-item:first-child { border-top: 0 }
+:where(#spage, .os-plugin-modal) .setting-item-info { flex: 1 1 auto; min-width: 0 }
+:where(#spage, .os-plugin-modal) .setting-item-name { font-size: 14px; color: var(--text-chrome) }
+:where(#spage, .os-plugin-modal) .setting-item-description { font-size: 12px; color: var(--text-chrome-muted); margin-top: 2px }
+:where(#spage, .os-plugin-modal) .setting-item-description:empty { display: none }
+:where(#spage, .os-plugin-modal) .setting-item-control { flex: 0 0 auto; display: flex; align-items: center; gap: 8px }
+:where(#spage, .os-plugin-modal) .setting-item-heading .setting-item-name { font-weight: 600 }
+:where(#spage, .os-plugin-modal) .setting-item.is-disabled { opacity: .5; pointer-events: none }
+:where(#spage, .os-plugin-modal) .setting-item-control input[type=text], :where(#spage, .os-plugin-modal) .setting-item-control input[type=search],
+:where(#spage, .os-plugin-modal) .setting-item-control textarea, :where(#spage, .os-plugin-modal) .setting-item-control select.dropdown {
+  background: var(--bg-base); color: var(--text-chrome); border: 1px solid var(--border);
+  border-radius: 4px; padding: 4px 8px; font-size: 13px }
+:where(#spage, .os-plugin-modal) .setting-item-control button, .os-plugin-modal button { background: var(--bg-surface); color: var(--text-chrome);
+  border: 1px solid var(--border); border-radius: 4px; padding: 4px 12px; font-size: 13px; cursor: pointer }
+:where(#spage, .os-plugin-modal) .setting-item-control button.mod-cta, .os-plugin-modal button.mod-cta { background: var(--bg-button-primary); color: var(--text-on-accent) }
+:where(#spage, .os-plugin-modal) .setting-item-control button.mod-warning, .os-plugin-modal button.mod-warning { color: var(--text-error) }
+:where(#spage, .os-plugin-modal) .checkbox-container { position: relative; width: 34px; height: 18px; border-radius: 9px;
+  background: var(--border); cursor: pointer; flex: 0 0 auto }
+:where(#spage, .os-plugin-modal) .checkbox-container::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px;
+  height: 14px; border-radius: 50%; background: var(--text-chrome-muted); transition: left .1s }
+:where(#spage, .os-plugin-modal) .checkbox-container.is-enabled { background: var(--interactive-accent) }
+:where(#spage, .os-plugin-modal) .checkbox-container.is-enabled::after { left: 18px; background: var(--text-on-accent) }
+:where(#spage, .os-plugin-modal) .checkbox-container input { display: none }
+:where(#spage, .os-plugin-modal) .checkbox-container.is-disabled { opacity: .5; pointer-events: none }
+:where(#spage, .os-plugin-modal) .extra-setting-button, :where(#spage, .os-plugin-modal) .clickable-icon { cursor: pointer; color: var(--text-chrome-muted) }
+:where(#spage, .os-plugin-modal) .extra-setting-button svg, :where(#spage, .os-plugin-modal) .setting-item-control button svg { width: 16px; height: 16px; vertical-align: middle }
+
+#ribbon .os-plugin-ribbon { cursor: pointer }
+#ribbon .os-plugin-ribbon svg { width: 18px; height: 18px; display: block; margin: 0 auto }
+
+.os-plugin-statusbar { position: fixed; right: 0; bottom: 0; z-index: 30; display: flex; gap: 10px;
+  padding: 2px 10px; font-size: 12px; color: var(--text-chrome-muted); background: var(--bg-sidebar);
+  border-top: 1px solid var(--border); border-left: 1px solid var(--border); border-top-left-radius: 6px }
+.os-plugin-statusbar:empty { display: none }
+body.os-has-plugin-status #main .status { bottom: 30px }
+
+.os-plugin-menu .menu-item { display: flex; align-items: center; gap: 6px }
+.os-plugin-menu .menu-item-icon:empty { display: none }
+.os-plugin-menu .menu-item-icon svg { width: 14px; height: 14px; display: block }
+.os-plugin-menu .menu-item.is-label { cursor: default; color: var(--text-chrome-muted) }
+.os-plugin-menu .menu-item.mod-warning { color: var(--text-error) }
+/* Settings > Community plugins (ui/plugins/settings.js): live toggles + the per-plugin gear */
+.sctl.toggle.live { cursor: pointer }
+.sctl.toggle.live:focus-visible { outline: 2px solid var(--border-focus-ring); outline-offset: 1px }
+.sctl.cpgear { cursor: pointer; font-size: 16px; color: var(--text-chrome-muted) }
+.sctl.cpgear:hover { color: var(--text-chrome) }
+#spage.os-plugin-tab .vertical-tab-content { padding: 0 }
+
+/* plugin-views: a plugin's View in a main-area tab — it fills the pane's .content
+   (a flex row) like the note view it stands in for; one shows, the rest are hidden. */
+.content > .workspace-leaf-content.os-pv { flex: 1 1 0; display: flex; flex-direction: column;
+  min-width: 0; min-height: 0; overflow: hidden; color: var(--text-normal) }
+.content > .workspace-leaf-content.os-pv[hidden] { display: none }
+.os-pv > .view-header { display: flex; align-items: center; gap: 4px; padding: 4px 8px; flex: 0 0 auto }
+.os-pv > .view-header[hidden] { display: none }
+.os-pv > .view-header > .view-header-title { flex: 1 1 auto; min-width: 0 }
+.os-pv > .view-header .view-actions { display: flex; gap: 2px }
+.os-pv > .view-content { flex: 1 1 0; min-height: 0; overflow: auto; padding: 8px 12px }
+/* a plugin View in a sidebar pane (.spane, a bounded flex column) fills it the same way:
+   Obsidian's leaf content is a height-bounded flex column whose .view-content scrolls. Left
+   unbounded, the view grew with its content, and a view that sizes a child from its own
+   scroller's clientHeight (Copilot's chat: last turn min-height = clientHeight - the user
+   message) fed back into itself and grew without end, pushing its input off the sidebar. */
+.spane > .workspace-leaf-content.os-pv { flex: 1 1 0; display: flex; flex-direction: column;
+  min-width: 0; min-height: 0; overflow: hidden; color: var(--text-normal) }
+
+/* goal canvas-core: the Canvas core plugin's board (ui/plugins/canvas.js) */
+.canvas-view { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; padding: 0 }
+.canvas-wrapper { position: absolute; inset: 0; overflow: hidden; outline: none; cursor: grab; touch-action: none;
+  background-color: var(--background-primary, #1e1e1e);
+  background-image: radial-gradient(var(--background-modifier-border, #444) 1px, transparent 1px); background-size: 20px 20px }
+.canvas-wrapper[hidden] { display: none }
+.canvas { position: absolute; left: 0; top: 0; transform-origin: 0 0 }
+.canvas-edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none }
+.canvas-edge-label { font-size: 14px; fill: var(--text-normal, #ddd); paint-order: stroke; stroke: var(--background-primary, #1e1e1e); stroke-width: 4px }
+.canvas-nodes { position: absolute; left: 0; top: 0 }
+.canvas-node { position: absolute; box-sizing: border-box; display: flex; flex-direction: column; cursor: default;
+  --canvas-color: var(--background-modifier-border, #555) }
+.canvas-node > .canvas-node-container { flex: 1 1 auto; min-height: 0; overflow: auto; border: 2px solid var(--canvas-color);
+  border-radius: 8px; background: var(--background-primary, #1e1e1e); color: var(--text-normal, #ddd) }
+.canvas-node.is-themed > .canvas-node-container { background: color-mix(in srgb, var(--canvas-color) 12%, var(--background-primary, #1e1e1e)) }
+.canvas-node.is-selected > .canvas-node-container { box-shadow: 0 0 0 2px var(--interactive-accent, #7f6df2) }
+.canvas-node-label { position: absolute; bottom: 100%; left: 0; font-size: 12px; color: var(--text-muted, #999); white-space: nowrap; padding-bottom: 2px }
+.canvas-node-label:empty { display: none }
+.canvas-text, .canvas-node-placeholder, .canvas-link { padding: 8px 12px; white-space: pre-wrap; word-break: break-word }
+.canvas-link { color: var(--text-accent, #8ab4f8) }
+.canvas-node-placeholder { color: var(--text-muted, #999) }
+.canvas-node-textarea { width: 100%; height: 100%; box-sizing: border-box; resize: none; border: 0; outline: none;
+  padding: 8px 12px; font: inherit; background: transparent; color: inherit }
+.canvas-node-content-blocker { position: absolute; inset: 0 }
+.canvas-node.is-editing > .canvas-node-content-blocker, .canvas-node-content-blocker[hidden] { display: none }
+.canvas-node-resizer { position: absolute; right: -4px; bottom: -4px; width: 12px; height: 12px; cursor: nwse-resize; z-index: 1 }
+.canvas-node.canvas-node-group > .canvas-node-container, .canvas-node.canvas-node-group.is-themed > .canvas-node-container {
+  background: color-mix(in srgb, var(--canvas-color) 8%, transparent) }  /* translucent even when coloured (.is-themed alone is opaque) */
+.canvas-node-group > .canvas-node-label { font-size: 16px }
+.canvas-file-embed { padding: 0 8px }
+.canvas-controls { position: absolute; right: 8px; top: 8px; display: flex; gap: 4px; z-index: 2 }
+.canvas-control { padding: 2px 8px; cursor: pointer }
+.canvas-error { margin: 24px; padding: 16px; border: 1px solid var(--text-error, #e93147); border-radius: 8px; color: var(--text-normal, #ddd) }
+.canvas-error-title { font-weight: 600; color: var(--text-error, #e93147); margin-bottom: 6px }
+/* top5-func: a plugin setting tab's SettingTab.icon in the Settings sidebar (ui/plugins/settings.js nav) */
+.snavi-icon { display: inline-flex; width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px }
+.snavi-icon > svg { width: 14px; height: 14px }

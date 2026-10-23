@@ -125,6 +125,40 @@ pub const REMOVED_NAV: &[&str] = &["Core plugins", "Community plugins"];
 /// structure.tsv tabs whose rows are dropped with their nav entries
 pub const REMOVED_TABS: &[&str] = &["coreplugins", "community"];
 
+/* goal/settings-general (operator 2026-10-19): General shows OPENSIDIAN, not the
+   reference app. Another DELIBERATE deviation applied as an overlay, like the
+   plugin panes above: structure.tsv stays the untouched recon oracle, the
+   model rewrites, adds or drops the rows named here and nothing else.
+     - the top row is Opensidian's own version (CARGO_PKG_VERSION), with no
+       stock installer version in its description
+     - a "Plugin API version" row right under it, read from the ONE source
+       (plugin_store::COMPAT_APP_VERSION via compat_app_version!)
+     - Automatic updates: shown off and inert, deactivated for now; no
+       background update check exists anywhere
+     - Receive early access versions and Account > Commercial license: gone
+     - Help: opens https://www.opensidian.org (an ACTION row, see ACTIONS)
+   The description deliberately does not name the reference app: the nob probe
+   (ui/main.js nobTok) walks every model string and refuses that word. */
+/// the General pane's top row: Opensidian's version where stock shows its own
+pub const VERSION_LABEL: &str = concat!("Version ", env!("CARGO_PKG_VERSION"));
+const VERSION_DESC: &str = "The Opensidian release you are running. Check for updates looks for a newer signed release on GitHub.";
+/// the plugin API row, inserted right under the version row
+pub const API_LABEL: &str = concat!("Plugin API version ", crate::compat_app_version!());
+const API_DESC: &str = "Plugin API this build implements; plugins requiring a newer minAppVersion are refused.";
+const AUTO_UPDATES_DESC: &str = "Automatic updates are deactivated for now. Use Check for updates to look for a new signed release.";
+const HELP_DESC: &str = "Learn how to use Opensidian and get help at www.opensidian.org.";
+/// the Help row's target, opened through open_external (xdg-open)
+pub const HELP_URL: &str = "https://www.opensidian.org";
+/// (tab, label) rows the model drops from a kept pane
+pub const REMOVED_ROWS: &[(&str, &str)] = &[
+    ("general", "Receive early access versions"),
+    ("general", "Commercial license"),
+];
+/// (tab, label) -> action: a row whose control runs an app ACTION rather than
+/// writing a config key. Enabled like a backed row; ui/main.js SACT must carry a
+/// handler for every action named here (`actions_are_all_handled_by_the_ui`).
+const ACTIONS: &[(&str, &str, &str)] = &[("general", "Help", "help"), ("general", VERSION_LABEL, "check_updates")];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Control {
@@ -173,7 +207,9 @@ pub struct Row {
     pub shot: &'static str,
     /// the config key backing this row, or None
     pub key: Option<&'static str>,
-    /// enabled == key.is_some(); carried explicitly so the frontend never
+    /// the app action this row's control runs (ACTIONS), or None
+    pub action: Option<&'static str>,
+    /// enabled == key.is_some() || action.is_some(); carried explicitly so the frontend never
     /// re-derives the rule, and asserted in `enabled_iff_backed_by_a_real_key`
     pub enabled: bool,
 }
@@ -228,8 +264,12 @@ fn parse_rows() -> Vec<Row> {
             Some(c) => c,
             None => continue, // pinned by `every_control_word_is_known`
         };
+        if REMOVED_ROWS.iter().any(|(t, l)| *t == f[0] && *l == f[2]) {
+            continue; // goal/settings-general: early access + Commercial license
+        }
         let key = key_for(f[0], f[2]);
-        out.push(Row {
+        let action = action_for(f[0], f[2]);
+        let mut row = Row {
             tab: f[0],
             section: if f[1] == "-" { None } else { Some(f[1]) },
             label: f[2],
@@ -238,10 +278,46 @@ fn parse_rows() -> Vec<Row> {
             default_shown: f[5],
             shot: f[6],
             key,
-            enabled: key.is_some(),
-        });
+            action,
+            enabled: key.is_some() || action.is_some(),
+        };
+        let version_row = f[0] == "general" && f[1] == "-" && f[2].starts_with("Version ");
+        if version_row {
+            row.label = VERSION_LABEL;
+            row.desc = VERSION_DESC;
+            // Check for updates: an ACTION row (updates.rs update_check), keyed by the NEW label
+            row.action = action_for("general", VERSION_LABEL);
+            row.enabled = row.key.is_some() || row.action.is_some();
+        } else if f[0] == "general" && f[2] == "Automatic updates" {
+            row.desc = AUTO_UPDATES_DESC;
+            row.default_shown = "off"; // drawn off; keyless, so inert
+        } else if f[0] == "general" && f[2] == "Help" {
+            row.desc = HELP_DESC;
+        }
+        out.push(row);
+        if version_row {
+            out.push(Row {
+                tab: "general",
+                section: None,
+                label: API_LABEL,
+                desc: API_DESC,
+                control: Control::None,
+                default_shown: "-",
+                shot: f[6],
+                key: None,
+                action: None,
+                enabled: false,
+            });
+        }
     }
     out
+}
+
+fn action_for(tab: &str, label: &str) -> Option<&'static str> {
+    ACTIONS
+        .iter()
+        .find(|(t, l, _)| *t == tab && *l == label)
+        .map(|(_, _, a)| *a)
 }
 
 fn slug(entry: &str) -> String {
@@ -321,8 +397,11 @@ mod tests {
         assert_eq!(data.len(), 105, "the Obsidian recon transcript changed — it is the oracle, keep it");
         let dropped = data.iter().filter(|l| REMOVED_TABS.contains(&l.split('\t').next().unwrap_or(""))).count();
         assert_eq!(dropped, 34, "31 Core plugins rows + 3 Community plugins rows");
-        assert_eq!(data.len() - dropped, rows().len(), "a transcript line was silently dropped");
-        assert_eq!(rows().len(), 71, "row count changed — update R30 and the smoke census");
+        // and the General overlay (goal/settings-general): -2 dropped rows, +1 plugin API row
+        let removed = data.iter().filter(|l| { let f: Vec<&str> = l.split('\t').collect(); REMOVED_ROWS.iter().any(|(t, r)| *t == f[0] && *r == f[2]) }).count();
+        assert_eq!(removed, REMOVED_ROWS.len(), "a REMOVED_ROWS entry names no transcript row");
+        assert_eq!(data.len() - dropped - removed + 1, rows().len(), "a transcript line was silently dropped");
+        assert_eq!(rows().len(), 70, "row count changed — update R30 and the smoke census");
     }
 
     #[test]
@@ -338,6 +417,13 @@ mod tests {
     #[test]
     fn enabled_iff_backed_by_a_real_key() {
         for r in rows() {
+            if let Some(a) = r.action {
+                // an ACTION row: enabled because the UI runs a real handler for it
+                assert!(r.key.is_none(), "row {}/{} has both a key and an action", r.tab, r.label);
+                assert!(ACTIONS.iter().any(|(_, _, x)| *x == a), "row {}/{} names unknown action {a:?}", r.tab, r.label);
+                assert!(r.enabled, "action row {}/{} is not enabled", r.tab, r.label);
+                continue;
+            }
             match r.key {
                 Some(k) => {
                     assert!(
@@ -371,7 +457,11 @@ mod tests {
         // 7 -> 11 (goal fontset): Interface / Text / Monospace font + Font size are
         // live (docs/fontset/recon.md REQ-1, REQ-16), recorded in
         // /workspace/goal/fonts/progress.md as R30 requires.
-        assert_eq!(enabled, 11, "enabled-row count changed — say why in progress.md (R30)");
+        // 11 -> 12 (goal settings-general): General > Help is an ACTION row that
+        // opens https://www.opensidian.org, recorded in /workspace/goal/settings-general/progress.md.
+        // 12 -> 13 (goal settings-general): the General top row's "Check for updates" is an
+        // ACTION row (updates.rs: signed GitHub release check), same progress.md.
+        assert_eq!(enabled, 13, "enabled-row count changed — say why in progress.md (R30)");
     }
 
     /// a key is "real" only if main.rs actually reads or writes it
@@ -463,5 +553,42 @@ mod tests {
             assert!(!r.shot.is_empty(), "row {}/{} has no source shot", r.tab, r.label);
             assert!(!r.label.is_empty() && !r.desc.is_empty());
         }
+    }
+
+    /// goal/settings-general: the General pane shows Opensidian, not the stock build
+    #[test]
+    fn general_shows_opensidian_version_and_plugin_api() {
+        let g: Vec<&Row> = rows().iter().filter(|r| r.tab == "general").collect();
+        assert_eq!(g[0].label, format!("Version {}", env!("CARGO_PKG_VERSION")), "top row is not the Opensidian version");
+        assert!(!g[0].desc.contains("1.13") && !g[0].desc.contains("Installer"), "stock installer version leaked: {}", g[0].desc);
+        assert_eq!((g[0].action, g[0].enabled, g[0].default_shown), (Some("check_updates"), true, "Check for updates"));
+        assert_eq!(g[1].label, format!("Plugin API version {}", crate::plugin_store::COMPAT_APP_VERSION));
+        assert_eq!(g[1].label, "Plugin API version 1.14.4");
+        assert!(g[1].desc.contains("minAppVersion") && g[1].control == Control::None && !g[1].enabled);
+        let au = g.iter().find(|r| r.label == "Automatic updates").expect("Automatic updates row");
+        assert!(au.control == Control::Toggle && au.default_shown == "off" && !au.enabled, "auto-updates must be off and inert");
+        assert!(au.desc.contains("deactivated"));
+        for gone in ["Receive early access versions", "Commercial license"] {
+            assert!(!g.iter().any(|r| r.label == gone), "{gone} row survived");
+        }
+        let help = g.iter().find(|r| r.label == "Help").expect("Help row");
+        assert_eq!((help.action, help.enabled), (Some("help"), true));
+        assert!(help.desc.contains("Opensidian"));
+        for r in &g {
+            assert!(!r.label.to_lowercase().contains("obsidian") || r.label.contains("Opensidian"));
+            assert!(!r.desc.replace("Opensidian", "").to_lowercase().contains("obsidian"), "{} names the reference app", r.label);
+        }
+    }
+
+    /// every ACTION the model names has a handler in the UI, and Help's goes to HELP_URL
+    #[test]
+    fn actions_are_all_handled_by_the_ui() {
+        let js = include_str!("../../ui/main.js");
+        for (_, _, a) in ACTIONS {
+            assert!(js.contains(&format!("  {a}: ")), "ui/main.js SACT has no handler for action {a:?}");
+        }
+        assert_eq!(HELP_URL, "https://www.opensidian.org");
+        assert!(js.contains(&format!("help: () => sOpenExt(\"{HELP_URL}\")")), "SACT.help does not open HELP_URL");
+        assert!(js.contains("inv(\"update_check\")"), "SACT.check_updates does not call the update_check command");
     }
 }

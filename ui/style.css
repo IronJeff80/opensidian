@@ -241,6 +241,35 @@ body {
      x=889 y=400 (thumb) / x=884 (track = page). Obsidian's names: themes override them. */
   --scrollbar-bg: transparent;
   --scrollbar-thumb-bg: #323233;
+  /* layers: Obsidian's public z-index variables, which plugin and theme CSS position with
+     (Kanban's new-list form: z-index: var(--layer-popover)). Unset, such a z-index computes auto
+     and the plugin's own later content covers it. Values follow this file's own stack:
+     #modal 50, .ctxmenu 60, #notice 71, #tabghost 99. */
+  --layer-cover: 5;
+  --layer-sidedock: 10;
+  --layer-status-bar: 15;
+  --layer-popover: 30;
+  --layer-slides: 45;
+  --layer-modal: 50;
+  --layer-menu: 60;
+  --layer-notice: 71;
+  --layer-tooltip: 72;
+  --layer-dragged-item: 99;
+  /* toggles: Obsidian's public toggle geometry variables. Plugin switches size themselves from
+     them (Copilot 4.0.15's SettingSwitch: height calc(var(--toggle-s-thumb-height) + 2 x
+     --toggle-s-border-width)); unset, that height is invalid, the switch box collapses to 0px
+     tall and a click on its centre lands on nothing. */
+  --toggle-border-width: 2px;
+  --toggle-width: 40px;
+  --toggle-radius: 18px;
+  --toggle-thumb-radius: 18px;
+  --toggle-thumb-height: 18px;
+  --toggle-thumb-width: 18px;
+  --toggle-s-border-width: 2px;
+  --toggle-s-width: 34px;
+  --toggle-s-thumb-height: 15px;
+  --toggle-s-thumb-width: 15px;
+  --toggle-thumb-color: #ffffff;
 }
 /* ---------------------------------------------------------------------------
    LIGHT. Every value below was SAMPLED from a pixel of a running Obsidian
@@ -482,6 +511,8 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
              color: var(--text-chrome-muted) }
 .trow .tfi svg { width: 14px; height: 14px }
 .trow.folder { font-weight: 500 }
+.trow .ttag { flex: 0 0 auto; margin-left: 6px; padding: 0 4px; border-radius: 3px;   /* goal canvas-core: the CANVAS tag on a .canvas row */
+             font-size: 0.7em; letter-spacing: .04em; color: var(--text-chrome-dim); background: var(--bg-surface) }
 #vswitch { padding: 6px 12px; border-top: 1px solid var(--bg-surface); color: var(--text-chrome-muted);
            cursor: pointer; font-size: 12px; white-space: nowrap;
            overflow: hidden; text-overflow: ellipsis }
@@ -620,7 +651,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .editor { flex: 1 1 0; min-width: 0;   /* R22 */ background: var(--bg-base); color: var(--text-chrome); border: 0;
           padding: 16px; resize: none;
           font: 13px/1.6 monospace; outline: none }
-.lp { flex: 1 1 0; min-width: 0; overflow-y: auto; overflow-x: hidden }   /* R22: min-width:0 + no h-scroll */   /* padding + type: R15 block below */
+.lp { flex: 1 1 0; min-width: 0; overflow-y: auto; overflow-x: hidden; overflow-anchor: none }   /* CM6 virtualises against this scroller: browser scroll anchoring would follow a reused line element across a viewport redraw (find reveal 1080 -> 0) — CM6 sets the same on its own .cm-scroller */   /* R22: min-width:0 + no h-scroll */   /* padding + type: R15 block below */
 .lp a.wiki { color: var(--accent-blue) }
 .lp a.wiki-unresolved { color: var(--link-unresolved); font-style: italic }
 /* R8.2: one rendered row per line/block; the raw caret row blends in */
@@ -1034,6 +1065,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .lp .lprow { white-space: pre-wrap; overflow-wrap: anywhere }
 .lp .lprow.lzy { height: calc(var(--line-height-normal, 1.55) * 1em) }   /* audit #10/#12: a lazy row placeholder (Ed.lzy) holds one line of height */
 .lp .mk { display: none }
+.lp:not(.src) .cm-line.blk > .cm-widgetBuffer { display: none }   /* editor.js lpParse .blk: no empty line box above a block embed */
 .lp.src .mk, .lp .mk.rv { display: inline; color: var(--text-chrome-dim) }
 .lp:focus, .lp .lprow:focus { outline: none }
 .lp .tbox { vertical-align: middle }                            /* rendered task checkbox (x offsets: R15.11 below) */
@@ -1163,6 +1195,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .fcands { max-height: 360px; overflow-y: auto; border-top: 1px solid var(--bg-surface) }
 .sbtn { padding: 4px 10px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 4px; white-space: nowrap }
 .sbtn.acc { background: var(--interactive-accent); border-color: var(--interactive-accent); color: var(--bg-ribbon) }
+.supd { margin-top: 4px }
 .sicons { flex: none; display: flex; align-items: center; gap: 19px; color: var(--text-chrome-faint) }
 .sico { width: 16px; height: 16px; display: flex; align-items: center; justify-content: center;
         text-align: center; font-size: 15px; line-height: 16px }
@@ -1711,3 +1744,109 @@ span.is-flashing { background: var(--highlight-yellow) }
 /* stock's missing-file banner is 37 px tall; the R29.4 banner shrunk to match */
 .lp .imgmiss.pdfmiss, .preview .imgmiss.pdfmiss { padding: 8px 16px }
 .lp.src .pdf-embed { display: none }
+/* census C4 make-md: .app-container (ui/index.html) wraps the app chrome for plugins and
+   themes that look it up. goal cp-makemd3: a REAL box, not display:contents — under
+   display:contents the editor scrollers lost their bottom range (srclick R25.13c line-83
+   jump read scrollTop 0, scrollsync's lp clamp moved up to L274). It is body's one flex
+   item, stretched to body's box, and lays the chrome out as body did (a flex row). */
+.app-container { display: flex; flex: 1 1 0; min-width: 0; min-height: 0 }
+/* ==== cp-browser BEGIN: the community plugin browser (ui/plugins/browser.js) on the Community
+   plugins pane. Theme tokens only. ==== */
+.cpb-btn { flex: none; height: 28px; padding: 0 12px; border-radius: 4px; border: 1px solid var(--border);
+           background: var(--bg-surface); color: var(--text-chrome); font: inherit; font-size: 13px; cursor: pointer }
+.cpb-btn:hover { border-color: var(--border-strong) }
+.cpb-btn:focus-visible { outline: 2px solid var(--border-focus-ring); outline-offset: 1px }
+.cpb-btn:disabled { opacity: .6; cursor: default }
+.cpb-btn.cpb-cta { background: var(--bg-button-primary); color: var(--text-on-accent); border-color: var(--bg-button-primary) }
+.cpb-btn.cpb-danger { color: var(--text-error) }
+.cpb-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px }
+.cpb-btn.cpb-back { border: 0; background: none; padding: 0 4px; color: var(--text-chrome-muted) }
+.cpb-btn.cpb-back:hover { color: var(--text-chrome) }
+.cpb-count { flex: 1; text-align: right; color: var(--text-chrome-faint); font-size: 12px }
+.cpb-tools { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap }
+.cpb-q { flex: 1 1 220px; min-width: 0; height: 30px; box-sizing: border-box; padding: 0 10px; border-radius: 4px;
+         border: 1px solid var(--border); background: var(--bg-sidebar); color: var(--text-chrome); font: inherit; font-size: 13px }
+.cpb-q:focus { outline: 2px solid var(--border-focus-ring); outline-offset: -1px }
+.cpb-sort { display: flex; gap: 4px }
+.cpb-btn.cpb-sortb { height: 30px; padding: 0 10px }
+.cpb-btn.cpb-sortb.on { border-color: var(--interactive-accent); color: var(--text-chrome) }
+.cpb-row { cursor: pointer; min-height: 64px }
+.cpb-row:hover { background: var(--bg-surface) }
+.cpb-row .sdesc { overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical }
+.cpb-more { margin: 10px 4px; color: var(--text-chrome-faint); font-size: 12px }
+.cpb-head { margin: 4px 0 12px }
+.cpb-name { font-size: 20px; font-weight: 600; color: var(--text-chrome); margin-bottom: 4px }
+.cpb-desc { margin-top: 8px; color: var(--text-chrome) }
+.cpb-facts { display: flex; flex-wrap: wrap; gap: 6px 24px; margin-bottom: 12px; font-size: 13px }
+.cpb-k { color: var(--text-chrome-faint); margin-right: 6px }
+.cpb-v { color: var(--text-chrome) }
+.cpb-acts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px }
+.cpb-state { color: var(--text-chrome-muted); font-size: 13px }
+.cpb-err { margin: 8px 0; color: var(--text-error); white-space: pre-wrap; word-break: break-word }
+.cpb-note { margin: 8px 0; color: var(--text-chrome-muted) }
+.cpb-readme { border: 1px solid var(--bg-surface); border-radius: 6px; padding: 4px 16px; color: var(--text-chrome);
+              line-height: 1.5; overflow-wrap: anywhere; user-select: text }
+.cpb-readme pre { overflow-x: auto; padding: 8px; border-radius: 4px; background: var(--bg-sidebar) }
+.cpb-readme code { font-family: var(--font-monospace, monospace) }
+.cpb-readme table { border-collapse: collapse }
+.cpb-readme th, .cpb-readme td { border: 1px solid var(--border); padding: 2px 6px }
+.cpb-readme a.cpb-link { color: var(--interactive-accent); text-decoration: underline; cursor: default }
+/* ==== cp-browser END ==== */
+/* ---- Settings ▸ Keychain (goal keychain-pane, ui/keychain.js): a live pane over secrets_op ---- */
+.kc-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px }
+.kc-head .kc-title { margin: 0 }
+.kc-add { width: 28px; height: 28px; font-size: 18px; line-height: 1; padding: 0; border-radius: 4px;
+          background: var(--bg-surface); color: var(--text-chrome); border: 1px solid var(--border); cursor: pointer }
+.kc-add:disabled { opacity: .45; cursor: default }
+.kc-find { width: 100%; box-sizing: border-box; margin-bottom: 12px; padding: 6px 8px; border-radius: 4px;
+           background: var(--bg-base); color: var(--text-chrome); border: 1px solid var(--border) }
+.kc-callout { border-left: 3px solid var(--text-error); background: var(--bg-surface); border-radius: 4px;
+              padding: 10px 12px; margin-bottom: 12px; font-size: 13px; line-height: 18px; color: var(--text-chrome) }
+.kc-callout[hidden] { display: none }
+.kc-ctitle { font-weight: 600; color: var(--text-error); margin-bottom: 4px }
+.kc-cause { margin-top: 6px; color: var(--text-chrome-faint); font-family: var(--font-monospace, monospace); font-size: 12px; overflow-wrap: anywhere }
+.kc-learn { display: inline-block; margin-top: 6px; color: var(--accent-blue); text-decoration: underline; cursor: pointer }
+.kc-empty { padding: 12px; color: var(--text-chrome-faint); font-size: 13px }
+.kcrow { min-height: 44px }
+.kcrow .kc-id { font-family: var(--font-monospace, monospace) }
+.kcrow button, .kc-btns button { padding: 4px 10px; border-radius: 4px; border: 1px solid var(--border);
+                                 background: var(--bg-surface); color: var(--text-chrome); cursor: pointer }
+.kcrow button.mod-warning, .kc-btns button.mod-warning { color: var(--text-error) }
+.kc-btns button.mod-cta { background: var(--bg-button-primary); color: var(--text-on-accent) }
+.kc-modal { position: fixed; inset: 0; z-index: 70; display: flex; align-items: center; justify-content: center;
+            background: var(--background-modifier-cover, var(--bg-surface)) }
+.kc-card { width: 380px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px;
+           padding: 16px; display: flex; flex-direction: column; gap: 10px; color: var(--text-chrome) }
+.kc-mtitle { font-weight: 600; font-size: 15px }
+.kc-mbody { font-size: 13px; color: var(--text-chrome-muted); overflow-wrap: anywhere }
+.kc-card input { padding: 6px 8px; border-radius: 4px; background: var(--bg-base); color: var(--text-chrome); border: 1px solid var(--border) }
+.kc-msg { font-size: 12px; color: var(--text-error) }
+.kc-msg[hidden] { display: none }
+.kc-btns { display: flex; justify-content: flex-end; gap: 8px }
+/* caret-color (operator 2026-10-22: "in the old 0.7 draft the cursor/caret was black").
+   The vendored CM6 base theme colours the caret for a LIGHT page unless the
+   EditorView.darkTheme facet is set, and nothing sets it: `&light .cm-content
+   {caret-color: black}` is the native caret this editor paints (no drawSelection),
+   `.cm-cursor, .cm-dropCursor {border-left: 1.2px solid black}` the drawn one a
+   drawSelection / dropCursor extension (a plugin's) would paint. On a dark theme both
+   were black on near-black. The caret follows the THEME instead: --caret-color, else
+   --text-normal, re-resolved on every light/dark or theme switch (no facet to keep in
+   sync). Specificity, not !important: CM6 injects its rules after this sheet as
+   `.ͼ1.ͼ2 .cm-content` / `.ͼ1.ͼ3 .cm-cursor` (0,3,0), so these are (0,4,0) and win
+   regardless of order; only the COLOUR is set — width, margin, the blink (an
+   animation on .cm-cursorLayer) and the focus/selection rules stay CM6's.
+   Every other editable surface (title, inputs, plugin views) gets the same caret at
+   :where() specificity (0,0,0), so a theme's own caret-color on any of them wins.
+   Gate phase caretcolor ([ccl:] in census.js) measures it per theme x mode. */
+.cm-editor .cm-scroller .cm-content.cm-content { caret-color: var(--caret-color, var(--text-normal)) }
+/* An editor WITHOUT focus paints no caret. WebKitGTK keeps blinking the native caret of a
+   selection that sits in a contenteditable after focus has moved to a non-editable element
+   (a click on the empty tab strip: view.hasFocus false, .cm-focused gone, caret still
+   blinking at ~1.2 s, measured in the title-flake goal). CM6's own drawn cursor is shown
+   only under &.cm-focused; this is the native caret's equivalent, at (0,5,0) so it beats
+   the (0,4,0) rule above. A screenshot of an unfocused editor no longer depends on where
+   in the blink it was taken. */
+.cm-editor:not(.cm-focused) .cm-scroller .cm-content.cm-content { caret-color: var(--transparent) }
+.cm-editor .cm-scroller .cm-cursor.cm-cursor,
+.cm-editor .cm-scroller .cm-dropCursor.cm-dropCursor { border-left-color: var(--caret-color, var(--text-normal)) }
+:where(input, textarea, [contenteditable]:not([contenteditable="false"])) { caret-color: var(--caret-color, var(--text-normal)) }

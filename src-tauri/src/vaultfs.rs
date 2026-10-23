@@ -657,6 +657,376 @@ impl Vault {
     }
 }
 
+/* ---- td-vault-io: the plugin `fs` / DataAdapter backend ------------------
+   A community plugin's `fs.readFile("/vault/x")` / `adapter.writeBinary(..)`
+   lands here as ONE command (main.rs plugin_vfs -> plugin_op). The JS side
+   (ui/plugins/api.js) maps the virtual root `/vault` to "" and is NOT the
+   guard: plugins share the page realm, so anything they can reach in JS they
+   can also hand to invoke directly. Every rule is therefore enforced here:
+     - plugin_rel refuses, before any syscall: NUL, a backslash (Windows /
+       UNC forms), a drive letter, percent-encoded `.` `/` `\` `%` NUL, an
+       absolute path, `.` / `..` components, an over-long path;
+     - every component is then walked from the held vault fd with
+       openat(O_NOFOLLOW|O_DIRECTORY) (Vault::walk), and every leaf is used
+       relative to its parent fd with O_NOFOLLOW / AT_SYMLINK_NOFOLLOW, so a
+       symlink at ANY position is refused, never followed;
+     - only regular files are read/appended/copied (a FIFO or device node
+       inside the vault is refused by fstat on the opened fd), only regular
+       files and directories are stat'ed, renamed or removed.
+   A refusal is io::ErrorKind::PermissionDenied with no OS errno (`refused`),
+   which plugin_err turns into the stable "EPERM: vault-escape refused, ..." */
+
+pub const PLUGIN_READ_CAP: u64 = 64 << 20;
+/// plugin chmod sets permission bits only: no setuid, setgid or sticky
+pub const PLUGIN_MODE_MASK: u32 = 0o777;
+const PLUGIN_PATH_MAX: usize = 4096;
+
+/// a plugin-supplied vault-relative path -> checked relative PathBuf ("" = the
+/// vault root). Lexical refusals only; the fd walk does the rest.
+pub fn plugin_rel(s: &str) -> io::Result<PathBuf> {
+    let r = |why: &str| refused(Path::new(&s.replace('\0', "\\0")), why);
+    if s.len() > PLUGIN_PATH_MAX {
+        return Err(r("path too long"));
+    }
+    if s.contains('\0') {
+        return Err(r("NUL in path"));
+    }
+    if s.contains('\\') {
+        return Err(r("backslash (Windows/UNC form)"));
+    }
+    let b = s.as_bytes();
+    if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+        return Err(r("drive-letter path"));
+    }
+    let low = s.to_ascii_lowercase();
+    if ["%2e", "%2f", "%5c", "%00", "%25"].iter().any(|p| low.contains(p)) {
+        return Err(r("percent-encoded traversal"));
+    }
+    if s.starts_with('/') {
+        return Err(r("absolute host path"));
+    }
+    let mut out = PathBuf::new();
+    for c in s.split('/') {
+        match c {
+            "" => {}
+            "." | ".." => return Err(r("dot component")),
+            _ => out.push(c),
+        }
+    }
+    Ok(out)
+}
+
+/// what stat answers: no inode, uid, mode or host path — synthetic fields only
+#[derive(Debug, Clone, PartialEq)]
+pub struct PStat {
+    pub kind: &'static str, // "file" | "folder"
+    pub size: u64,
+    pub mtime_ms: i64,
+    pub ctime_ms: i64,
+}
+
+fn pstat_of(rel: &Path, st: &libc::stat) -> io::Result<PStat> {
+    let kind = match st.st_mode & libc::S_IFMT {
+        libc::S_IFREG => "file",
+        libc::S_IFDIR => "folder",
+        libc::S_IFLNK => return Err(refused(rel, "symlink in vault path")),
+        _ => return Err(refused(rel, "not a regular file or directory")),
+    };
+    let ms = |s: i64, ns: i64| s * 1000 + ns / 1_000_000;
+    Ok(PStat {
+        kind,
+        size: if kind == "file" { st.st_size as u64 } else { 0 },
+        mtime_ms: ms(st.st_mtime, st.st_mtime_nsec),
+        ctime_ms: ms(st.st_ctime, st.st_ctime_nsec),
+    })
+}
+
+impl Vault {
+    /// the leaf's lstat relative to its held parent; "" = the root itself
+    fn p_lstat(&self, rel: &Path) -> io::Result<libc::stat> {
+        if rel.as_os_str().is_empty() {
+            return fstat(self.root.fd.as_raw_fd());
+        }
+        let (d, leaf) = self.parent(rel, false)?;
+        stat_at(d.fd.as_raw_fd(), &leaf)
+    }
+
+    pub fn p_stat(&self, rel: &Path) -> io::Result<PStat> {
+        pstat_of(rel, &self.p_lstat(rel)?)
+    }
+
+    /// open the regular file `rel` (O_NOFOLLOW, non-blocking so a FIFO cannot
+    /// hang us) and check the OPENED fd is a regular file
+    fn p_open(&self, rel: &Path, flags: libc::c_int) -> io::Result<File> {
+        let (d, leaf) = self.parent(rel, false)?;
+        // a FIFO/device/socket/symlink already there is refused BEFORE the open
+        // (opening a FIFO for write with no reader is ENXIO, not a refusal)
+        match stat_at(d.fd.as_raw_fd(), &leaf) {
+            Ok(st) if is_reg(&st) => {}
+            Ok(st) => return Err(pstat_of(rel, &st).err().unwrap_or_else(|| refused(rel, "not a regular file"))),
+            Err(e) if e.raw_os_error() == Some(libc::ENOENT) => {}
+            Err(e) => return Err(e),
+        }
+        // SAFETY: valid fd + NUL-terminated name; fd owned by the File below
+        let raw = cvt(unsafe {
+            libc::openat(d.fd.as_raw_fd(), leaf.as_ptr(), flags | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK, 0o666 as libc::c_uint)
+        })
+        .map_err(|e| self.leaf_why(rel, e))?;
+        let f = unsafe { File::from_raw_fd(raw) };
+        if !is_reg(&fstat(f.as_raw_fd())?) {
+            return Err(refused(rel, "not a regular file"));
+        }
+        Ok(f)
+    }
+
+    /// ELOOP on an O_NOFOLLOW leaf open = the leaf is a symlink
+    fn leaf_why(&self, rel: &Path, e: io::Error) -> io::Error {
+        match e.raw_os_error() {
+            Some(libc::ELOOP) => refused(rel, "symlink in vault path"),
+            _ => e,
+        }
+    }
+
+    pub fn p_read(&self, rel: &Path, cap: u64) -> io::Result<Vec<u8>> {
+        let mut f = self.p_open(rel, libc::O_RDONLY)?;
+        let n = fstat(f.as_raw_fd())?.st_size as u64;
+        if n > cap {
+            return Err(io::Error::new(io::ErrorKind::Other, format!("file too large ({n} > {cap} bytes)")));
+        }
+        let mut v = Vec::with_capacity(n as usize);
+        (&mut f).take(cap + 1).read_to_end(&mut v)?;
+        if v.len() as u64 > cap {
+            return Err(io::Error::new(io::ErrorKind::Other, "file too large"));
+        }
+        Ok(v)
+    }
+
+    /// writeFile (atomic replace) or appendFile; like Node, parents are NOT
+    /// created (ENOENT)
+    pub fn p_write(&self, rel: &Path, bytes: &[u8], append: bool) -> io::Result<()> {
+        let (_d, _leaf) = self.parent(rel, false)?;
+        if !append {
+            return self.write_atomic(rel, bytes, false);
+        }
+        let mut f = self.p_open(rel, libc::O_WRONLY | libc::O_APPEND | libc::O_CREAT)?;
+        f.write_all(bytes)
+    }
+
+    /// directory entries (name, "file"|"folder"); symlinks, devices, FIFOs and
+    /// sockets are not listed — nothing a plugin could follow out
+    pub fn p_list(&self, rel: &Path) -> io::Result<Vec<(String, &'static str)>> {
+        let d = self.dir(rel, false)?;
+        let dup = d.fd.try_clone()?;
+        // SAFETY: fdopendir takes ownership of the dup'd fd; closedir frees both
+        let dp = unsafe { libc::fdopendir(dup.as_raw_fd()) };
+        if dp.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        std::mem::forget(dup);
+        let mut out = Vec::new();
+        loop {
+            // SAFETY: dp is a valid DIR*; the entry is copied out before the next call
+            let e = unsafe { libc::readdir(dp) };
+            if e.is_null() {
+                break;
+            }
+            let name = unsafe { std::ffi::CStr::from_ptr((*e).d_name.as_ptr()) }.to_owned();
+            if name.as_bytes() == b"." || name.as_bytes() == b".." {
+                continue;
+            }
+            let kind = match stat_at(d.fd.as_raw_fd(), &name) {
+                Ok(st) if is_reg(&st) => "file",
+                Ok(st) if st.st_mode & libc::S_IFMT == libc::S_IFDIR => "folder",
+                _ => continue,
+            };
+            out.push((String::from_utf8_lossy(name.as_bytes()).into_owned(), kind));
+        }
+        // SAFETY: dp from fdopendir above
+        unsafe { libc::closedir(dp) };
+        out.sort();
+        Ok(out)
+    }
+
+    pub fn p_mkdir(&self, rel: &Path, recursive: bool) -> io::Result<()> {
+        if recursive {
+            return self.mkdir_p(rel);
+        }
+        let (d, leaf) = self.parent(rel, false)?;
+        if let Ok(st) = stat_at(d.fd.as_raw_fd(), &leaf) {
+            pstat_of(rel, &st)?; // a symlink there is a refusal, not EEXIST
+            return Err(io::Error::from_raw_os_error(libc::EEXIST));
+        }
+        // SAFETY: valid fd + NUL-terminated name
+        cvt(unsafe { libc::mkdirat(d.fd.as_raw_fd(), leaf.as_ptr(), 0o777) }).map(|_| ())
+    }
+
+    /// unlink a regular file, or rmdir an EMPTY directory (`dir`)
+    pub fn p_remove(&self, rel: &Path, dir: bool) -> io::Result<()> {
+        let (d, leaf) = self.parent(rel, false)?;
+        let st = pstat_of(rel, &stat_at(d.fd.as_raw_fd(), &leaf)?)?;
+        let flag = match (st.kind, dir) {
+            ("file", _) => 0,
+            ("folder", true) => libc::AT_REMOVEDIR,
+            _ => return Err(io::Error::from_raw_os_error(libc::EISDIR)),
+        };
+        // SAFETY: valid fd + NUL-terminated name
+        cvt(unsafe { libc::unlinkat(d.fd.as_raw_fd(), leaf.as_ptr(), flag) }).map(|_| ())
+    }
+
+    /// rename a regular file or directory; an existing regular-file target is
+    /// replaced (Node semantics), a symlink target is refused. Both parents are
+    /// held fds inside the vault, so the entry can only move within it.
+    pub fn p_rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        let (fd_from, lf) = self.parent(from, false)?;
+        pstat_of(from, &stat_at(fd_from.fd.as_raw_fd(), &lf)?)?;
+        let (fd_to, lt) = self.parent(to, false)?;
+        match stat_at(fd_to.fd.as_raw_fd(), &lt) {
+            Ok(st) => {
+                pstat_of(to, &st)?;
+            }
+            Err(e) if e.raw_os_error() == Some(libc::ENOENT) => {}
+            Err(e) => return Err(e),
+        }
+        // SAFETY: valid fds + NUL-terminated names
+        cvt(unsafe { libc::renameat(fd_from.fd.as_raw_fd(), lf.as_ptr(), fd_to.fd.as_raw_fd(), lt.as_ptr()) }).map(|_| ())
+    }
+
+    /// copyFile: the source's bytes by fd, then an atomic replace of `to`
+    pub fn p_copy(&self, from: &Path, to: &Path) -> io::Result<()> {
+        let bytes = self.p_read(from, PLUGIN_READ_CAP)?;
+        self.p_write(to, &bytes, false)
+    }
+
+    /// fs.chmod for plugins (obsidian-git marks its askpass helper executable).
+    /// The leaf is opened O_PATH|O_NOFOLLOW relative to its held parent: on a
+    /// symlink that yields an fd to the LINK itself, whose fstat is S_IFLNK and
+    /// is refused — the target is never reached. Only a regular file or a
+    /// directory is changed, through /proc/self/fd/<fd>, which names exactly the
+    /// inode we hold (fchmod on an O_PATH fd is EBADF), so a swap after the open
+    /// cannot redirect it. setuid/setgid/sticky never get through: mode & 0o777.
+    pub fn p_chmod(&self, rel: &Path, mode: u32) -> io::Result<()> {
+        let (d, leaf) = self.parent(rel, false)?;
+        // SAFETY: valid fd + NUL-terminated name; the fd is owned below
+        let raw = cvt(unsafe { libc::openat(d.fd.as_raw_fd(), leaf.as_ptr(), libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC) })?;
+        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+        pstat_of(rel, &fstat(fd.as_raw_fd())?)?; // symlink, FIFO, device, socket -> refused
+        hook("p_chmod:opened");
+        let via = CString::new(format!("/proc/self/fd/{}", fd.as_raw_fd())).expect("no NUL in a decimal fd");
+        // SAFETY: NUL-terminated path; the magic link resolves to the inode `fd` pins
+        cvt(unsafe { libc::chmod(via.as_ptr(), (mode & PLUGIN_MODE_MASK) as libc::mode_t) }).map(|_| ())
+    }
+}
+
+const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+pub fn b64_encode(b: &[u8]) -> String {
+    let mut s = String::with_capacity(b.len().div_ceil(3) * 4);
+    for c in b.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            s.push(if i <= c.len() { B64[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+        }
+    }
+    s
+}
+
+pub fn b64_decode(s: &str) -> Option<Vec<u8>> {
+    let s = s.trim_end_matches('=');
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for ch in s.bytes() {
+        let v = B64.iter().position(|&x| x == ch)? as u32;
+        acc = acc << 6 | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}
+
+/// an io::Error -> "CODE: message" for the JS facade (err.code = CODE). A
+/// refusal (PermissionDenied with no errno) is the stable vault-escape error.
+pub fn plugin_err(op: &str, path: &str, e: &io::Error) -> String {
+    let p = path.replace('\0', "\\0");
+    if e.kind() == io::ErrorKind::PermissionDenied && e.raw_os_error().is_none() {
+        return format!("EPERM: vault-escape refused, {op} '{p}' ({e})");
+    }
+    let code = match e.raw_os_error() {
+        Some(libc::ENOENT) => "ENOENT",
+        Some(libc::EEXIST) => "EEXIST",
+        Some(libc::ENOTDIR) => "ENOTDIR",
+        Some(libc::EISDIR) => "EISDIR",
+        Some(libc::ENOTEMPTY) => "ENOTEMPTY",
+        Some(libc::EINVAL) => "EINVAL",
+        Some(libc::EACCES) => "EACCES",
+        Some(libc::ENAMETOOLONG) => "ENAMETOOLONG",
+        Some(libc::EPERM) => "EPERM",
+        Some(libc::ELOOP) => "ELOOP",
+        _ if e.kind() == io::ErrorKind::NotFound => "ENOENT",
+        _ if e.kind() == io::ErrorKind::AlreadyExists => "EEXIST",
+        _ => "EIO",
+    };
+    format!("{code}: {e}, {op} '{p}'")
+}
+
+/// the whole plugin fs surface, one op at a time. `data` is base64 (bytes
+/// cross the IPC as text; binary and UTF-8 alike). Ops not named here do not
+/// exist: no fd, stream, watch, chown, link or realpath. chmod is not an op
+/// here either: it is plugin_chmod, which checks the vault's trust itself.
+pub fn plugin_op(root: &Path, op: &str, path: &str, to: Option<&str>, data: Option<&str>, recursive: bool) -> Result<serde_json::Value, String> {
+    use serde_json::json;
+    let e = |x: io::Error| plugin_err(op, path, &x);
+    let rel = plugin_rel(path).map_err(e)?;
+    let need = |rel: &Path| if rel.as_os_str().is_empty() { Err(plugin_err(op, path, &refused(rel, "the vault root itself"))) } else { Ok(()) };
+    let vfs = Vault::open(root).map_err(e)?;
+    let bytes = || data.and_then(b64_decode).ok_or_else(|| format!("EINVAL: data is not base64, {op} '{path}'"));
+    let dest = || -> Result<PathBuf, String> {
+        let t = to.ok_or_else(|| format!("EINVAL: missing destination, {op} '{path}'"))?;
+        let r = plugin_rel(t).map_err(|x| plugin_err(op, t, &x))?;
+        if r.as_os_str().is_empty() {
+            return Err(plugin_err(op, t, &refused(&r, "the vault root itself")));
+        }
+        Ok(r)
+    };
+    match op {
+        "stat" => vfs.p_stat(&rel).map(|s| json!({"type": s.kind, "size": s.size, "mtime": s.mtime_ms, "ctime": s.ctime_ms})).map_err(e),
+        "exists" => match vfs.p_stat(&rel) {
+            Ok(_) => Ok(json!(true)),
+            Err(x) if x.kind() == io::ErrorKind::NotFound || matches!(x.raw_os_error(), Some(libc::ENOENT) | Some(libc::ENOTDIR)) => Ok(json!(false)),
+            Err(x) => Err(e(x)),
+        },
+        "read" => { need(&rel)?; vfs.p_read(&rel, PLUGIN_READ_CAP).map(|b| json!(b64_encode(&b))).map_err(e) }
+        "write" | "append" => { need(&rel)?; vfs.p_write(&rel, &bytes()?, op == "append").map(|_| json!(null)).map_err(e) }
+        "list" => vfs.p_list(&rel).map(|v| json!(v.into_iter().map(|(n, k)| json!([n, k])).collect::<Vec<_>>())).map_err(e),
+        "mkdir" => { need(&rel)?; vfs.p_mkdir(&rel, recursive).map(|_| json!(null)).map_err(e) }
+        "unlink" | "rmdir" => { need(&rel)?; vfs.p_remove(&rel, op == "rmdir").map(|_| json!(null)).map_err(e) }
+        "rename" => { need(&rel)?; let t = dest()?; vfs.p_rename(&rel, &t).map(|_| json!(null)).map_err(e) }
+        "copy" => { need(&rel)?; let t = dest()?; vfs.p_copy(&rel, &t).map(|_| json!(null)).map_err(e) }
+        _ => Err(format!("ENOSYS: fs op {op:?} is not available in opensidian")),
+    }
+}
+
+/// fs.chmod for plugins — TRUSTED vaults only (operator ruling 2026-10-20).
+/// Refused EPERM (not ENOSYS) in restricted mode, checked here as well as at
+/// the caller; the path is confined exactly like every plugin_op (plugin_rel +
+/// the O_NOFOLLOW fd walk); the vault root itself is refused; the leaf is
+/// changed only if it is a regular file or directory, never through a symlink
+/// (Vault::p_chmod); the mode is masked to 0o777.
+pub fn plugin_chmod(root: &Path, trusted: bool, path: &str, mode: u32) -> Result<serde_json::Value, String> {
+    let e = |x: io::Error| plugin_err("chmod", path, &x);
+    if !trusted {
+        return Err(format!("EPERM: restricted mode, plugin chmod is off, chmod '{}'", path.replace('\0', "\\0")));
+    }
+    let rel = plugin_rel(path).map_err(e)?;
+    if rel.as_os_str().is_empty() {
+        return Err(e(refused(&rel, "the vault root itself")));
+    }
+    Vault::open(root).map_err(e)?.p_chmod(&rel, mode & PLUGIN_MODE_MASK).map(|_| serde_json::Value::Null).map_err(e)
+}
+
 /// one-shot helpers for callers that hold only the root path
 pub fn write_atomic(root: &Path, rel: &Path, bytes: &[u8]) -> io::Result<()> {
     Vault::open(root)?.write_atomic(rel, bytes, false)
@@ -847,5 +1217,261 @@ mod tests {
         fs::set_permissions(root.join("M.md"), fs::Permissions::from_mode(0o640)).unwrap();
         v.write_atomic(Path::new("M.md"), b"m2", false).unwrap();
         assert_eq!(fs::metadata(root.join("M.md")).unwrap().permissions().mode() & 0o777, 0o640);
+    }
+
+    // ---- td-vault-io: the plugin fs backend ----
+    fn pop(root: &Path, op: &str, p: &str, to: Option<&str>, data: Option<&[u8]>) -> Result<serde_json::Value, String> {
+        let d = data.map(b64_encode);
+        plugin_op(root, op, p, to, d.as_deref(), false)
+    }
+
+    #[test]
+    fn pvfs_base64_round_trips_every_length() {
+        for n in 0..70usize {
+            let b: Vec<u8> = (0..n).map(|i| (i * 37 + 11) as u8).collect();
+            assert_eq!(b64_decode(&b64_encode(&b)).unwrap(), b, "len {n}");
+        }
+        assert_eq!(b64_encode(b"Man"), "TWFu");
+        assert_eq!(b64_encode(b"Ma"), "TWE=");
+        assert!(b64_decode("@@").is_none());
+    }
+
+    #[test]
+    fn pvfs_positive_ops_stay_inside_the_vault() {
+        let (root, _out) = fresh("pvfs-pos");
+        let bin: Vec<u8> = (0..=255u8).collect();
+        pop(&root, "write", "b.bin", None, Some(&bin)).unwrap();
+        assert_eq!(fs::read(root.join("b.bin")).unwrap(), bin);
+        let got = pop(&root, "read", "b.bin", None, None).unwrap();
+        assert_eq!(b64_decode(got.as_str().unwrap()).unwrap(), bin);
+        pop(&root, "write", "u.txt", None, Some("héllo ✓".as_bytes())).unwrap();
+        pop(&root, "append", "u.txt", None, Some(b"!")).unwrap();
+        assert_eq!(fs::read_to_string(root.join("u.txt")).unwrap(), "héllo ✓!");
+        pop(&root, "append", "new.txt", None, Some(b"a")).unwrap();
+        assert_eq!(fs::read(root.join("new.txt")).unwrap(), b"a");
+        let st = pop(&root, "stat", "u.txt", None, None).unwrap();
+        assert_eq!((st["type"].as_str(), st["size"].as_u64()), (Some("file"), Some("héllo ✓!".len() as u64)));
+        assert!(st["mtime"].as_i64().unwrap() > 1_600_000_000_000);
+        assert_eq!(pop(&root, "stat", "", None, None).unwrap()["type"], "folder");
+        plugin_op(&root, "mkdir", "d/e", None, None, true).unwrap();
+        assert!(pop(&root, "mkdir", "x/y", None, None).unwrap_err().starts_with("ENOENT"));
+        assert!(pop(&root, "mkdir", "d", None, None).unwrap_err().starts_with("EEXIST"));
+        assert!(pop(&root, "write", "nope/f", None, Some(b"x")).unwrap_err().starts_with("ENOENT"), "no implicit parents");
+        pop(&root, "rename", "u.txt", Some("d/e/u2.txt"), None).unwrap();
+        pop(&root, "copy", "d/e/u2.txt", Some("d/c.txt"), None).unwrap();
+        assert_eq!(fs::read(root.join("d/c.txt")).unwrap(), fs::read(root.join("d/e/u2.txt")).unwrap());
+        let l = pop(&root, "list", "d", None, None).unwrap();
+        assert_eq!(l, serde_json::json!([["c.txt", "file"], ["e", "folder"]]));
+        assert_eq!(pop(&root, "exists", "d/c.txt", None, None).unwrap(), true);
+        assert_eq!(pop(&root, "exists", "d/zz", None, None).unwrap(), false);
+        assert!(pop(&root, "rmdir", "d", None, None).unwrap_err().starts_with("ENOTEMPTY"));
+        assert!(pop(&root, "unlink", "d", None, None).unwrap_err().starts_with("EISDIR"));
+        pop(&root, "unlink", "d/c.txt", None, None).unwrap();
+        pop(&root, "unlink", "d/e/u2.txt", None, None).unwrap();
+        pop(&root, "rmdir", "d/e", None, None).unwrap();
+        assert!(!root.join("d/e").exists());
+        assert!(pop(&root, "open", "b.bin", None, None).unwrap_err().starts_with("ENOSYS"));
+    }
+
+    #[test]
+    fn pvfs_every_escape_form_is_a_stable_refusal() {
+        let (root, out) = fresh("pvfs-neg");
+        fs::write(out.join("sentinel"), b"S").unwrap();
+        fs::create_dir_all(root.join("a/b")).unwrap();
+        fs::write(root.join("a/b/f.txt"), b"in").unwrap();
+        let o = out.display().to_string();
+        let bad = [
+            "../outside/sentinel".to_string(),
+            "a/../../outside/sentinel".into(),
+            o.clone() + "/sentinel",
+            "/etc/passwd".into(),
+            "/dev/null".into(),
+            "%2e%2e/outside/sentinel".into(),
+            "%2E%2E%2Foutside%2Fsentinel".into(),
+            "C:/Windows/win.ini".into(),
+            "c:sentinel".into(),
+            "\\\\host\\share\\x".into(),
+            "..\\outside\\sentinel".into(),
+            "a/b\0/f.txt".into(),
+            "./a/b/f.txt".into(),
+        ];
+        for p in &bad {
+            for op in ["read", "write", "append", "stat", "list", "mkdir", "unlink", "rmdir", "exists"] {
+                let r = pop(&root, op, p, None, Some(b"X"));
+                let er = r.expect_err(&format!("{op} {p:?} must be refused"));
+                assert!(er.starts_with("EPERM: vault-escape refused"), "{op} {p:?}: {er}");
+            }
+        }
+        // a symlink at each traversed position: first dir, middle dir, leaf
+        symlink(&out, root.join("L1")).unwrap();
+        symlink(&out, root.join("a/L2")).unwrap();
+        symlink(out.join("sentinel"), root.join("a/b/L3")).unwrap();
+        for p in ["L1/sentinel", "a/L2/sentinel", "a/b/L3", "L1", "a/L2"] {
+            for op in ["read", "write", "append", "stat", "mkdir", "unlink", "rmdir", "exists", "list"] {
+                if op == "list" && p == "a/b/L3" { continue; }
+                let er = pop(&root, op, p, None, Some(b"X")).expect_err(&format!("{op} {p}"));
+                assert!(er.starts_with("EPERM: vault-escape refused"), "{op} {p}: {er}");
+            }
+        }
+        // rename / copy with an escaping source or destination
+        for (a, b) in [("a/b/f.txt", "../outside/x"), ("a/b/f.txt", "L1/x"), ("a/b/f.txt", "a/b/L3"), ("../outside/sentinel", "got"), ("L1/sentinel", "got"), ("a/b/L3", "got"), ("a/b/f.txt", "/tmp/x"), ("a/b/f.txt", "%2e%2e/x")] {
+            for op in ["rename", "copy"] {
+                let er = pop(&root, op, a, Some(b), None).expect_err(&format!("{op} {a} {b}"));
+                assert!(er.starts_with("EPERM: vault-escape refused"), "{op} {a} -> {b}: {er}");
+            }
+        }
+        assert_eq!(fs::read(out.join("sentinel")).unwrap(), b"S", "sentinel unchanged");
+        assert_eq!(fs::read_dir(&out).unwrap().count(), 1, "nothing created outside");
+        assert_eq!(fs::read(root.join("a/b/f.txt")).unwrap(), b"in");
+        assert!(fs::symlink_metadata(root.join("a/b/L3")).unwrap().file_type().is_symlink());
+        // symlinks are not listed (nothing to follow out)
+        let l = pop(&root, "list", "a", None, None).unwrap();
+        assert_eq!(l, serde_json::json!([["b", "folder"]]));
+    }
+
+    #[test]
+    fn pvfs_fifo_is_not_a_regular_file() {
+        let (root, _out) = fresh("pvfs-fifo");
+        let c = CString::new(root.join("q").as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        for op in ["read", "append", "stat"] {
+            let er = pop(&root, op, "q", None, Some(b"x")).unwrap_err();
+            assert!(er.starts_with("EPERM: vault-escape refused"), "{op}: {er}");
+        }
+    }
+
+    // ---- git-chmod: plugin fs.chmod (trusted vaults only) ----
+    fn mode_of(p: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        fs::symlink_metadata(p).unwrap().permissions().mode() & 0o7777
+    }
+
+    #[test]
+    fn pchmod_regular_file_mode_round_trips() {
+        let (root, _out) = fresh("pchmod-reg");
+        fs::create_dir_all(root.join("d")).unwrap();
+        fs::write(root.join("d/askpass.sh"), b"#!/bin/sh\n").unwrap();
+        plugin_chmod(&root, true, "d/askpass.sh", 0o755).unwrap();
+        assert_eq!(mode_of(&root.join("d/askpass.sh")), 0o755);
+        plugin_chmod(&root, true, "d/askpass.sh", 0o644).unwrap();
+        assert_eq!(mode_of(&root.join("d/askpass.sh")), 0o644);
+        assert!(plugin_chmod(&root, true, "d/nope.sh", 0o755).unwrap_err().starts_with("ENOENT"));
+    }
+
+    #[test]
+    fn pchmod_setuid_setgid_sticky_stripped() {
+        let (root, _out) = fresh("pchmod-suid");
+        fs::write(root.join("f"), b"x").unwrap();
+        plugin_chmod(&root, true, "f", 0o4755).unwrap();
+        assert_eq!(mode_of(&root.join("f")), 0o755, "setuid stripped");
+        plugin_chmod(&root, true, "f", 0o7777).unwrap();
+        assert_eq!(mode_of(&root.join("f")), 0o777, "setuid/setgid/sticky stripped");
+        plugin_chmod(&root, true, "f", 0o2644 | 0o10000).unwrap();
+        assert_eq!(mode_of(&root.join("f")), 0o644, "setgid + high bits stripped");
+    }
+
+    #[test]
+    fn pchmod_symlink_to_inside_vault_file_refused() {
+        let (root, _out) = fresh("pchmod-lin");
+        fs::write(root.join("real.sh"), b"x").unwrap();
+        fs::set_permissions(root.join("real.sh"), std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+        symlink(root.join("real.sh"), root.join("link.sh")).unwrap();
+        symlink("real.sh", root.join("rel.sh")).unwrap();
+        for p in ["link.sh", "rel.sh"] {
+            let er = plugin_chmod(&root, true, p, 0o777).expect_err(p);
+            assert!(er.starts_with("EPERM: vault-escape refused"), "{p}: {er}");
+        }
+        assert_eq!(mode_of(&root.join("real.sh")), 0o600, "target unchanged");
+    }
+
+    #[test]
+    fn pchmod_symlink_to_outside_vault_file_refused() {
+        let (root, out) = fresh("pchmod-lout");
+        fs::write(out.join("secret"), b"S").unwrap();
+        fs::set_permissions(out.join("secret"), std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+        fs::create_dir_all(root.join("a")).unwrap();
+        symlink(out.join("secret"), root.join("a/leak")).unwrap();
+        symlink(&out, root.join("L")).unwrap();
+        for p in ["a/leak", "L/secret", "L"] {
+            let er = plugin_chmod(&root, true, p, 0o777).expect_err(p);
+            assert!(er.starts_with("EPERM: vault-escape refused"), "{p}: {er}");
+        }
+        assert_eq!(mode_of(&out.join("secret")), 0o600, "outside target mode unchanged");
+        assert!(fs::symlink_metadata(root.join("a/leak")).unwrap().file_type().is_symlink());
+    }
+
+    #[test]
+    fn pchmod_dangling_symlink_refused() {
+        let (root, out) = fresh("pchmod-dang");
+        symlink(out.join("does-not-exist"), root.join("dang")).unwrap();
+        symlink("nowhere", root.join("dang2")).unwrap();
+        for p in ["dang", "dang2"] {
+            let er = plugin_chmod(&root, true, p, 0o755).expect_err(p);
+            assert!(er.starts_with("EPERM: vault-escape refused"), "{p}: {er}");
+        }
+        assert!(!out.join("does-not-exist").exists(), "nothing created through the link");
+    }
+
+    #[test]
+    fn pchmod_dotdot_and_absolute_refused() {
+        let (root, out) = fresh("pchmod-esc");
+        fs::write(out.join("sentinel"), b"S").unwrap();
+        fs::set_permissions(out.join("sentinel"), std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+        let abs = out.join("sentinel").display().to_string();
+        for p in ["../outside/sentinel", "a/../../outside/sentinel", abs.as_str(), "/etc/passwd", "%2e%2e/outside/sentinel", "..\\outside\\sentinel", "./x", "", "/"] {
+            let er = plugin_chmod(&root, true, p, 0o777).expect_err(p);
+            assert!(er.starts_with("EPERM: vault-escape refused"), "{p:?}: {er}");
+        }
+        assert_eq!(mode_of(&out.join("sentinel")), 0o600, "outside file unchanged");
+    }
+
+    #[test]
+    fn pchmod_directory_works() {
+        let (root, _out) = fresh("pchmod-dir");
+        fs::create_dir_all(root.join("d/e")).unwrap();
+        plugin_chmod(&root, true, "d/e", 0o700).unwrap();
+        assert_eq!(mode_of(&root.join("d/e")), 0o700);
+        plugin_chmod(&root, true, "d/e", 0o3755).unwrap();
+        assert_eq!(mode_of(&root.join("d/e")), 0o755, "dir: setgid/sticky stripped");
+        // a FIFO is neither file nor directory: refused
+        let c = CString::new(root.join("q").as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert!(plugin_chmod(&root, true, "q", 0o777).unwrap_err().starts_with("EPERM: vault-escape refused"));
+        assert_eq!(mode_of(&root.join("q")), 0o600);
+    }
+
+    #[test]
+    fn pchmod_untrusted_vault_refused() {
+        let (root, _out) = fresh("pchmod-untr");
+        fs::write(root.join("f"), b"x").unwrap();
+        fs::set_permissions(root.join("f"), std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
+        let er = plugin_chmod(&root, false, "f", 0o755).unwrap_err();
+        assert!(er.starts_with("EPERM: restricted mode"), "{er}");
+        assert!(!er.starts_with("ENOSYS"));
+        assert_eq!(mode_of(&root.join("f")), 0o644, "untrusted: unchanged");
+        // and chmod is not reachable through the trust-agnostic plugin_op
+        assert!(pop(&root, "chmod", "f", None, None).unwrap_err().starts_with("ENOSYS"));
+        assert_eq!(mode_of(&root.join("f")), 0o644);
+    }
+
+    #[test]
+    fn pchmod_parent_swapped_for_symlink_after_open_still_hits_held_inode() {
+        let (root, out) = fresh("pchmod-race");
+        fs::create_dir_all(root.join("d")).unwrap();
+        fs::write(root.join("d/f"), b"x").unwrap();
+        fs::write(out.join("f"), b"S").unwrap();
+        fs::set_permissions(out.join("f"), std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+        let (r2, o2) = (root.clone(), out.clone());
+        set_hook(Some(Box::new(move |at| {
+            if at == "p_chmod:opened" {
+                fs::rename(r2.join("d"), r2.join("d.moved")).unwrap();
+                symlink(&o2, r2.join("d")).unwrap();
+            }
+        })));
+        let r = plugin_chmod(&root, true, "d/f", 0o755);
+        set_hook(None);
+        r.unwrap();
+        assert_eq!(mode_of(&out.join("f")), 0o600, "outside file never touched");
+        assert_eq!(mode_of(&root.join("d.moved/f")), 0o755, "the held inode got the mode");
     }
 }

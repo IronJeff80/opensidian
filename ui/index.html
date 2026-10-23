@@ -8,13 +8,18 @@
   (at your option) any later version. See LICENSE, or <https://www.gnu.org/licenses/>.
 -->
 <html><head><meta charset="utf-8"><title>opensidian</title>
-<link rel="stylesheet" href="style.css"></head>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="plugins/plugins.css"></head>
 <body>
 <!-- R33 frameless window: the window ships with decorations:false, so THIS is the
      title bar. The window controls sit INSIDE the top chrome row, as in Obsidian,
      so this strip lies over the tab row, and the row underneath reserves its
      width (.wfinset). The empty
      part of the top row is the drag region; double-click it to maximise. -->
+<!-- census C4 make-md: the app chrome sits in one .app-container div, a child of body, as
+     in stock; plugins (make-md loadSpaces) set attributes on it and themes target it.
+     It is a real flex box filling body (style.css), laid out as body was; see goal cp-makemd3. -->
+<div class="app-container">
 <div id="wframe">
   <button id="wf-min" title="Minimise" aria-label="Minimise window"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M1.5 6h9"/></svg></button>
   <button id="wf-max" title="Maximise / restore" aria-label="Maximise or restore window"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.7" y="1.7" width="8.6" height="8.6" rx="1"/></svg></button>
@@ -168,9 +173,26 @@
      renames nothing; a refusal nobody can see is indistinguishable from a
      rename that silently did nothing. -->
 <div id="notice" hidden></div>
+</div>
 <script src="census.js"></script>
 <script src="otel.js"></script>
 <script src="graph-gl.js"></script>
+<script src="vendor/codemirror/cm6.js"></script>
 <script src="editor.js"></script>
+<script src="plugins/editor-api.js"></script>
+<script src="plugins/node-leaves.js"></script>
+<script src="plugins/loader.js"></script>
+<script src="plugins/node-modules.js"></script>
+<script src="plugins/node-desktop.js"></script>
+<script src="plugins/views.js"></script>
+<script src="plugins/api-dom.js"></script>
+<script src="plugins/api-functions.js"></script>
+<script src="plugins/api-core.js"></script>
+<script src="plugins/api-ui.js"></script>
+<script src="plugins/api-vault.js"></script>
+<script src="plugins/api.js"></script>
+<script src="plugins/settings.js"></script>
+<script src="plugins/canvas.js"></script>
+<script src="keychain.js"></script>
 <script src="main.js"></script>
 </body></html>

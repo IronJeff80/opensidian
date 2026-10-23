@@ -748,6 +748,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
+name = "ed25519-compact"
+version = "2.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f05391a505666bdf2b5d2626f41b7f0f49052b1e33cceac960eaa818008141da"
+
+[[package]]
 name = "embed-resource"
 version = "3.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2367,8 +2373,10 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "opensidian"
-version = "0.6.2"
+version = "0.8.0"
 dependencies = [
+ "dbus",
+ "ed25519-compact",
  "gdk",
  "gdkx11",
  "hayro",
@@ -2380,8 +2388,10 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "soup3",
  "tauri",
  "tauri-build",
+ "url",
 ]
 
 [[package]]

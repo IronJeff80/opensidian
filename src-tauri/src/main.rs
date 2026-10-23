@@ -19,6 +19,7 @@ use tauri::State;
 
 mod appid;
 mod builtins;
+mod canvasfs;
 mod cfgstore;
 mod datefmt;
 mod graphq;
@@ -26,15 +27,23 @@ mod index;
 mod migrate;
 mod outline;
 mod pdf;
+mod plugins;
+mod plugin_store;
 mod qscreate;
 mod perf;
 mod sandbox;
+// cp-secrets: app.secretStorage over the OS keyring (Secret Service)
+mod secrets;
 mod settings;
 mod spawn;
 mod spawner;
+mod desk_http;
+mod desk_net;
+mod desk_proc;
 mod vaultlock;
 mod srcmode;
 mod themefs;
+mod updates;
 mod vaultfs;
 mod watcher;
 mod winsize;
@@ -57,6 +66,12 @@ struct Vault {
     /// vaultbleed B: the flock that makes this the ONLY backend on the vault
     /// (vaultlock.rs); held until the process exits
     lock: OnceLock<vaultlock::VaultLock>,
+    /// typing-srclong: the watcher baseline, walked by bind BEFORE Index::build
+    /// and taken by the first watch_tick. Without it that first tick seeded its
+    /// baseline from its own later walk, and a note created in between was in
+    /// neither the index nor any diff: never reported (the typing phase red
+    /// "external create of TYPEGATE not in the tree", 4/8 runs under load).
+    seed: Mutex<Option<watcher::Snapshot>>,
 }
 
 fn cur_vault(v: &Vault) -> Option<PathBuf> {
@@ -127,10 +142,32 @@ fn bind_vault_locked(v: &Vault, p: &Path, lock_dir: &Path) -> Result<(), BindErr
     // which runs after this returns — sees the built-ins as ordinary theme
     // dirs. Seeding writes only paths that do not exist (builtins.rs).
     builtins::seed_and_record(p);
+    ensure_app_json(p);
+    let base = watcher::snapshot(p); // the watcher baseline: walked first, so nothing created after it is missed
     let ix = span_timed!("index_build", Index::build(p), serde_json::json!({"notes": 0}));
     *v.index.lock().unwrap() = ix;
+    *v.seed.lock().unwrap() = Some(base);
     Ok(())
 }
+/// census C4 (make-md): an opened vault always carries `.obsidian/app.json` —
+/// stock materializes it on open, so a plugin that reads it straight through
+/// the adapter (make-md: adapter.read(configDir + "/app.json")) gets `{}` on a
+/// fresh vault instead of ENOENT. Only ever CREATES (O_EXCL, `.obsidian`
+/// walked no-follow from the vault dir fd): an existing file — or a symlink
+/// in its place — is left byte-for-byte alone. `{}` reads as every key's
+/// default, exactly like the absent file did for our own readers. A failure
+/// (read-only vault, refused symlink) is logged and the bind goes on.
+fn ensure_app_json(root: &Path) {
+    let r = vaultfs::Vault::open(root)
+        .and_then(|vfs| vfs.create_new(Path::new(".obsidian/app.json"), true))
+        .and_then(|mut f| std::io::Write::write_all(&mut f, b"{}"));
+    match r {
+        Ok(()) => eprintln!("[vaultinit] created .obsidian/app.json"),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => eprintln!("[vaultinit] .obsidian/app.json not created: {e}"),
+    }
+}
+
 /// component-wise traversal check: only plain, non-hidden components allowed
 fn safe_rel(name: &str) -> Option<PathBuf> {
     let mut out = PathBuf::new();
@@ -823,6 +860,15 @@ fn list_notes(v: State<Vault>, otel: Option<perf::Ctx>) -> Vec<String> {
 #[tauri::command]
 fn list_images(v: State<Vault>, otel: Option<perf::Ctx>) -> Vec<String> {
     span_timed!(otel => "list_images", v.index.lock().unwrap().images().to_vec())
+}
+
+/// canvas-core: the Canvas core plugin's file I/O (canvasfs.rs) — `.canvas`
+/// files only, vault-confined, and NOT gated on plugin trust: Canvas is an
+/// app feature, so it works in restricted mode like notes do.
+#[tauri::command]
+fn canvas_io(v: State<Vault>, op: String, path: Option<String>, data: Option<String>, otel: Option<perf::Ctx>) -> Result<serde_json::Value, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    span_timed!(otel => "canvas_io", canvasfs::op(&root, &op, path.as_deref().unwrap_or(""), data.as_deref()))
 }
 
 #[tauri::command]
@@ -1971,11 +2017,14 @@ fn log_spans(spans: Vec<serde_json::Value>) -> bool {
 /// graph-webgl: hidden hooks for the graph draw path. OPENSIDIAN_GRAPH_RENDERER=gl|2d forces a
 /// renderer (tests); OPENSIDIAN_GRAPH_LOSE_CTX=1 makes the UI lose its WebGL context once the sim
 /// settled (smoke graphgl: the 2D fallback must keep drawing).
+/// OPENSIDIAN_GRAPH_SETTLE_TRACE=1 arms the per-step settle trace (gate phase graphsettle, ui/main.js
+/// settleTest): one otel span per settle, numbers only. Unset, the UI keeps no trace.
 #[tauri::command]
 fn graph_renderer_pref() -> serde_json::Value {
     serde_json::json!({
         "renderer": std::env::var("OPENSIDIAN_GRAPH_RENDERER").ok(),
         "lose_ctx": std::env::var_os("OPENSIDIAN_GRAPH_LOSE_CTX").is_some(),
+        "settle_trace": std::env::var("OPENSIDIAN_GRAPH_SETTLE_TRACE").as_deref() == Ok("1"),
     })
 }
 
@@ -3136,6 +3185,396 @@ fn snippet_css(v: State<Vault>, label: String, otel: Option<perf::Ctx>) -> Resul
 fn set_snippet_enabled(v: State<Vault>, label: String, on: bool) -> Result<(), String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
     themefs::set_snippet_enabled(&root, &label, on)
+}
+
+/* ---- plugin-loader item 3: the three commands ui/plugins/loader.js calls ----
+   Thin over src-tauri/src/plugins.rs (confinement + format live there, tested
+   there). Trust (restricted mode OFF) is ~/.opensidian.json "plugins_trusted"
+   keyed by the CANONICAL vault path, so a vault cannot ship itself trusted. */
+
+/* cp-unrestricted (operator ruling 2026-10-18, stock parity): the page CSP
+   follows the vault's trust state, per window. One vault per process, so the
+   window's pages are this process's vault's pages.
+     restricted (default, or no vault yet): the config CSP, byte for byte — no
+       'unsafe-eval', no blob: (the negative control; pinned by
+       csp_is_exactly_this_string_and_no_remote_image_origin).
+     trusted: script-src gains 'unsafe-eval' blob:, and worker-src 'self' blob:
+       is added — community plugins eval, new Function and spawn blob workers,
+       as in stock. Never set in the config: a global unsafe-eval is refused.
+   Tauri builds the header per page response; page_csp rewrites it after, from
+   the trust flag in ~/.opensidian.json (outside the vault). A page already
+   loaded keeps its header, so PAGE_EVAL says which one it got and the loader
+   reloads once when the flag and the page disagree. */
+static PAGE_EVAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn csp_by_trust(header: &str, trusted: bool) -> String {
+    if !trusted {
+        return header.to_string();
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut worker = false;
+    for d in header.split(';').map(str::trim).filter(|d| !d.is_empty()) {
+        match d.split_whitespace().next().unwrap_or("") {
+            "script-src" => out.push(format!("{d} 'unsafe-eval' blob:")),
+            "worker-src" => {
+                worker = true;
+                out.push(format!("{d} blob:"));
+            }
+            // the synchronous fs route (vfs_sync) is same-origin
+            "connect-src" => out.push(format!("{d} 'self'")),
+            _ => out.push(d.to_string()),
+        }
+    }
+    if !worker {
+        out.push("worker-src 'self' blob:".into());
+    }
+    out.join("; ")
+}
+
+/// the response hook of the page window: an HTML page (the only responses
+/// Tauri gives a CSP header) gets the header of the vault's trust state
+fn page_csp(h: &tauri::AppHandle, res: &mut tauri::http::Response<std::borrow::Cow<'static, [u8]>>) {
+    use tauri::Manager;
+    let Some(base) = res.headers().get("Content-Security-Policy").and_then(|v| v.to_str().ok()).map(str::to_owned) else {
+        return;
+    };
+    let trusted = cur_vault(&h.state::<Vault>()).is_some_and(|r| plugins::is_trusted(&cfg_value(), &r));
+    let csp = csp_by_trust(&base, trusted);
+    match tauri::http::HeaderValue::from_str(&csp) {
+        Ok(v) => {
+            res.headers_mut().insert("Content-Security-Policy", v);
+            PAGE_EVAL.store(trusted, std::sync::atomic::Ordering::SeqCst);
+        }
+        // keep Tauri's (restricted) header: never widen on a failure
+        Err(_) => PAGE_EVAL.store(false, std::sync::atomic::Ordering::SeqCst),
+    }
+    eprintln!("[csp] page trusted={trusted} Content-Security-Policy: {}", res.headers()["Content-Security-Policy"].to_str().unwrap_or("?"));
+}
+
+/* ---- cp-unrestricted: synchronous fs for plugins (fs.existsSync, readFileSync, ...).
+   Stock plugins call Node's *Sync fs at load; an invoke is always async, so the page
+   reaches the SAME confined core as plugin_vfs (vaultfs::plugin_op) through a
+   same-origin synchronous XHR on the app's own scheme. The request never reaches the
+   asset resolver's answer: this hook replaces it. Gated on the vault's trust flip
+   exactly like plugin_vfs; connect-src 'self' is only in a trusted page's CSP. */
+const VFS_SYNC_PATH: &str = "/__os_vfs_sync";
+
+type PageResponse = tauri::http::Response<std::borrow::Cow<'static, [u8]>>;
+
+fn vfs_sync_answer(root: Option<&Path>, trusted: bool, post: bool, body: &[u8]) -> (u16, serde_json::Value) {
+    use serde_json::json;
+    let Some(root) = root else { return (403, json!({ "err": "EPERM: no vault open" })) };
+    if !trusted {
+        return (403, json!({ "err": "EPERM: restricted mode, plugin file access is off" }));
+    }
+    if !post {
+        return (405, json!({ "err": "EINVAL: POST only" }));
+    }
+    let Ok(a) = serde_json::from_slice::<serde_json::Value>(body) else { return (400, json!({ "err": "EINVAL: bad request" })) };
+    let s = |k: &str| a.get(k).and_then(|v| v.as_str());
+    let (Some(op), Some(path)) = (s("op"), s("path")) else { return (400, json!({ "err": "EINVAL: op and path are required" })) };
+    let recursive = a.get("recursive").and_then(|v| v.as_bool()).unwrap_or(false);
+    // git-chmod: fs.chmod / chmodSync / promises.chmod (node-desktop.js) — only here, on the
+    // trusted sync route; vaultfs::plugin_chmod re-checks trust, confines and masks the mode
+    if op == "chmod" {
+        let Some(mode) = a.get("mode").and_then(|v| v.as_u64()) else { return (400, json!({ "err": "EINVAL: chmod needs an integer mode" })) };
+        return match vaultfs::plugin_chmod(root, trusted, path, (mode & u64::from(vaultfs::PLUGIN_MODE_MASK)) as u32) {
+            Ok(v) => (200, json!({ "ok": v })),
+            Err(e) => (200, json!({ "err": e })),
+        };
+    }
+    match vaultfs::plugin_op(root, op, path, s("to"), s("data"), recursive) {
+        Ok(v) => (200, json!({ "ok": v })),
+        Err(e) => (200, json!({ "err": e })),
+    }
+}
+
+fn vfs_sync(h: &tauri::AppHandle, req: &tauri::http::Request<Vec<u8>>) -> PageResponse {
+    use tauri::Manager;
+    let root = cur_vault(&h.state::<Vault>());
+    let trusted = root.as_deref().is_some_and(|r| plugins::is_trusted(&cfg_value(), r));
+    let (status, v) = vfs_sync_answer(root.as_deref(), trusted, req.method() == tauri::http::Method::POST, req.body());
+    if status == 403 {
+        eprintln!("[plugin] refused {VFS_SYNC_PATH}: restricted mode (403)");
+    }
+    tauri::http::Response::builder()
+        .status(status)
+        .header("Content-Type", "application/json")
+        .header("Cache-Control", "no-store")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(std::borrow::Cow::Owned(v.to_string().into_bytes()))
+        .expect("vfs sync response")
+}
+
+/// the app window, from the config entry, with page_csp on its responses
+fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) -> tauri::Result<()> {
+    let h = app.clone();
+    tauri::WebviewWindowBuilder::from_config(app, wc)?
+        .on_web_resource_request(move |req, res| {
+            if req.uri().path() == VFS_SYNC_PATH {
+                *res = vfs_sync(&h, &req);
+            } else {
+                page_csp(&h, res)
+            }
+        })
+        .build()?;
+    Ok(())
+}
+
+fn plugins_state_of(root: &Path) -> serde_json::Value {
+    serde_json::json!({
+        // which CSP the loaded page got (page_csp): eval allowed or not
+        "pageEval": PAGE_EVAL.load(std::sync::atomic::Ordering::SeqCst),
+        "trusted": plugins::is_trusted(&cfg_value(), root),
+        "enabled": plugins::enabled_ids(root),
+        "installed": plugins::installed(root),
+    })
+}
+
+/// {trusted, enabled:[id], installed:[{id, manifest, hasMain, hasStyles}]}
+#[tauri::command]
+fn plugins_state(v: State<Vault>, otel: Option<perf::Ctx>) -> Result<serde_json::Value, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    Ok(span_timed!(otel => "plugins_state", plugins_state_of(&root)))
+}
+
+/// restricted mode (trusted) and/or one enable toggle; answers the new state
+#[tauri::command]
+fn plugins_set(
+    v: State<Vault>,
+    trusted: Option<bool>,
+    id: Option<String>,
+    on: Option<bool>,
+    otel: Option<perf::Ctx>,
+) -> Result<serde_json::Value, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    span_timed!(otel => "plugins_set", (|| -> Result<serde_json::Value, String> {
+        if let Some(t) = trusted {
+            let key = plugins::trust_key(&root);
+            cfg_update(&[cfgstore::Op::SetIn(plugins::TRUST_KEY.into(), key, serde_json::json!(t))]);
+            if !t {
+                desk_proc::kill_all();   // flip OFF: what plugins started stops with them
+                desk_net::close_all();
+            }
+        }
+        if let (Some(id), Some(on)) = (id.as_deref(), on) {
+            plugins::set_enabled(&root, id, on)?;
+        }
+        Ok(plugins_state_of(&root))
+    })())
+}
+
+/// op "load" -> data.json (null if absent) | "save" (data) -> null | "styles" -> css or null
+#[tauri::command]
+fn plugin_io(
+    v: State<Vault>,
+    id: String,
+    op: String,
+    data: Option<serde_json::Value>,
+    otel: Option<perf::Ctx>,
+) -> Result<serde_json::Value, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    span_timed!(otel => "plugin_io", match op.as_str() {
+        "load" => plugins::read_data(&root, &id),
+        "save" => plugins::write_data(&root, &id, data.as_ref().unwrap_or(&serde_json::Value::Null))
+            .map(|_| serde_json::Value::Null),
+        "styles" => plugins::read_styles(&root, &id).map(|s| s.map_or(serde_json::Value::Null, serde_json::Value::String)),
+        _ => Err(format!("plugin_io: unknown op {op:?}")),
+    })
+}
+
+
+/* ---- td-vault-io: the plugin `fs` / DataAdapter command. One op per call,
+   all confinement in vaultfs::plugin_op (tested there). Plugin code only runs
+   in a trusted vault, so an untrusted vault answers nothing. */
+#[tauri::command]
+fn plugin_vfs(
+    v: State<Vault>,
+    op: String,
+    path: String,
+    to: Option<String>,
+    data: Option<String>,
+    recursive: Option<bool>,
+    otel: Option<perf::Ctx>,
+) -> Result<serde_json::Value, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    if !plugins::is_trusted(&cfg_value(), &root) {
+        return Err("EPERM: restricted mode, plugin file access is off".into());
+    }
+    span_timed!(otel => "plugin_vfs", vaultfs::plugin_op(&root, &op, &path, to.as_deref(), data.as_deref(), recursive.unwrap_or(false)))
+}
+
+/* ---- cp-unrestricted: child_process for plugins (desk_proc.rs). Stock lets a
+   plugin spawn with the user's rights once community plugins are on; the gate
+   here is the same flip, checked on every spawn: an untrusted vault starts
+   nothing. read/write/end/kill act only on ids a spawn handed out. */
+#[tauri::command]
+fn desk_proc_spawn(
+    v: State<Vault>,
+    file: String,
+    args: Option<Vec<String>>,
+    cwd: Option<String>,
+    env: Option<std::collections::BTreeMap<String, String>>,
+) -> Result<serde_json::Value, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    if !plugins::is_trusted(&cfg_value(), &root) {
+        return Err("EPERM: restricted mode, plugins cannot start programs".into());
+    }
+    let args: Vec<String> = args.unwrap_or_default().iter().map(|a| desk_proc::map_arg(&root, a)).collect();
+    let sp = desk_proc::Spec { file, args, cwd: desk_proc::map_cwd(&root, cwd.as_deref()), env: env.unwrap_or_default().into_iter().collect() };
+    eprintln!("[desk] spawn {} {:?} cwd={}", sp.file, sp.args, sp.cwd.display());
+    let run = span_timed!("desk_proc_spawn", desk_proc::start(sp))?;
+    let pid = run.pid();
+    Ok(serde_json::json!({ "id": desk_proc::register(run), "pid": pid }))
+}
+
+#[tauri::command]
+async fn desk_proc_read(id: u64, wait_ms: Option<u64>) -> Result<desk_proc::Chunk, String> {
+    let run = desk_proc::get(id)?;
+    let wait = std::time::Duration::from_millis(wait_ms.unwrap_or(250).min(2000));
+    let c = tauri::async_runtime::spawn_blocking(move || run.read(wait)).await.map_err(|e| e.to_string())?;
+    if c.done {
+        desk_proc::forget(id);
+    }
+    Ok(c)
+}
+
+#[tauri::command]
+fn desk_proc_write(id: u64, data: String) -> Result<(), String> {
+    span_timed!("desk_proc_write", desk_proc::get(id)?.write(&desk_proc::latin1_to_bytes(&data)))
+}
+
+#[tauri::command]
+fn desk_proc_end(id: u64) -> Result<(), String> {
+    span_timed!("desk_proc_end", desk_proc::get(id)?.end());
+    Ok(())
+}
+
+#[tauri::command]
+fn desk_proc_kill(id: u64, signal: Option<String>) -> Result<bool, String> {
+    let sig = desk_proc::sig_num(signal.as_deref().unwrap_or("SIGTERM")).ok_or("ERR_UNKNOWN_SIGNAL")?;
+    Ok(span_timed!("desk_proc_kill", desk_proc::get(id)?.kill(sig)))
+}
+
+/* ---- cp-unrestricted: TCP listeners for plugins (desk_net.rs) — node net /
+   http servers (slides preview, local-rest-api). Same gate as child_process:
+   the vault's trust flip, checked on every listen; socket ops act only on ids
+   a listener of this app handed out. */
+#[tauri::command]
+fn desk_net_listen(v: State<Vault>, host: Option<String>, port: u16) -> Result<serde_json::Value, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    if !plugins::is_trusted(&cfg_value(), &root) {
+        return Err("EPERM: restricted mode, plugins cannot open servers".into());
+    }
+    let (id, s) = span_timed!("desk_net_listen", desk_net::listen(host.as_deref().unwrap_or(""), port))?;
+    eprintln!("[desk] listen {}:{} id={id}", s.address, s.port);
+    Ok(serde_json::json!({ "id": id, "port": s.port, "address": s.address }))
+}
+
+#[tauri::command]
+async fn desk_net_accept(id: u64, wait_ms: Option<u64>) -> Result<desk_net::Batch, String> {
+    let s = desk_net::srv(id)?;
+    let wait = std::time::Duration::from_millis(wait_ms.unwrap_or(250).min(2000));
+    let b = tauri::async_runtime::spawn_blocking(move || s.accept(wait)).await.map_err(|e| e.to_string())?;
+    if b.closed {
+        desk_net::close_srv(id);
+    }
+    Ok(b)
+}
+
+#[tauri::command]
+fn desk_net_close(id: u64) -> Result<(), String> {
+    span_timed!("desk_net_close", desk_net::close_srv(id));
+    Ok(())
+}
+
+#[tauri::command]
+async fn desk_sock_read(id: u64, wait_ms: Option<u64>) -> Result<desk_net::Data, String> {
+    let c = desk_net::conn(id)?;
+    let wait = std::time::Duration::from_millis(wait_ms.unwrap_or(250).min(2000));
+    tauri::async_runtime::spawn_blocking(move || c.read(wait)).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn desk_sock_write(id: u64, data: String) -> Result<(), String> {
+    span_timed!("desk_sock_write", desk_net::conn(id)?.write(&desk_proc::latin1_to_bytes(&data)))
+}
+
+#[tauri::command]
+fn desk_sock_end(id: u64) -> Result<(), String> {
+    span_timed!("desk_sock_end", desk_net::conn(id)?.end());
+    Ok(())
+}
+
+#[tauri::command]
+fn desk_sock_destroy(id: u64) -> Result<(), String> {
+    span_timed!("desk_sock_destroy", desk_net::forget_conn(id));
+    Ok(())
+}
+
+/* ---- cp-unrestricted: obsidian request / requestUrl for plugins (desk_http.rs).
+   Same gate as child_process and listeners: the vault's trust flip, checked on
+   every request. Stock requestUrl reaches any host without CORS; ours does that
+   for http://, https:// is refused until a TLS client is a pinned dependency. */
+#[tauri::command]
+async fn desk_http_request(v: State<'_, Vault>, req: desk_http::Req) -> Result<desk_http::Resp, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    if !plugins::is_trusted(&cfg_value(), &root) {
+        return Err("EPERM: restricted mode, plugins cannot make requests".into());
+    }
+    let what = format!("{} {}", req.method.as_deref().unwrap_or("GET"), req.url.split('?').next().unwrap_or(""));
+    let r = tauri::async_runtime::spawn_blocking(move || desk_http::request(&req)).await.map_err(|e| e.to_string())?;
+    match &r {
+        Ok(x) => eprintln!("[desk] http {what} -> {}", x.status),
+        Err(e) => eprintln!("[desk] http {what} -> {e}"),
+    }
+    r
+}
+
+/* ---- cp-unrestricted: electron shell for plugins (openExternal / openPath /
+   showItemInFolder), trust-gated like the rest. Stock hands these to the OS
+   opener with the user's rights; so does this (xdg-open, no shell). "/vault/x"
+   is the vault's real path (getBasePath), as for child_process cwd. op "vault"
+   (top5-func: app.openWithDefaultApp) takes a vault path and is confined to the
+   vault (desk_proc::vault_open_target). */
+#[tauri::command]
+fn desk_shell(v: State<Vault>, op: String, target: String) -> Result<(), String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    if !plugins::is_trusted(&cfg_value(), &root) {
+        return Err("EPERM: restricted mode, plugins cannot use the shell".into());
+    }
+    let arg = match op.as_str() {
+        "external" => {
+            let scheme = target.split(':').next().unwrap_or("");
+            let ok = target.contains(':') && scheme.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+            if !ok {
+                return Err(format!("EINVAL: not a URL: {target}"));
+            }
+            std::ffi::OsString::from(&target)
+        }
+        "path" => desk_proc::map_cwd(&root, Some(&target)).into_os_string(),
+        // app.openWithDefaultApp: vault paths only, symlinks resolved and confined to the vault
+        "vault" => desk_proc::vault_open_target(&root, &target)?.into_os_string(),
+        "reveal" => {
+            let p = desk_proc::map_cwd(&root, Some(&target));
+            p.parent().map(|d| d.to_path_buf()).unwrap_or(p).into_os_string()
+        }
+        _ => return Err(format!("EINVAL: unknown shell op {op}")),
+    };
+    eprintln!("[desk] shell {op} {}", arg.to_string_lossy());
+    std::process::Command::new("xdg-open")
+        .arg(&arg)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|mut c| {
+            std::thread::spawn(move || {
+                let _ = c.wait();   // reap it, no zombie
+            });
+        })
+        .map_err(|e| format!("ENOENT: xdg-open: {e}"))
 }
 
 /* ---- themefs R5 (themes): the listing predicate is the oracle's, verbatim
@@ -4439,6 +4878,11 @@ fn watch_tick(v: &Vault, prev: &mut Option<(PathBuf, watcher::Snapshot)>) -> wat
         *prev = None;
         return watcher::Change::default();
     };
+    if !matches!(&*prev, Some((r, _)) if *r == root) {
+        if let Some(s) = v.seed.lock().unwrap().take() {
+            *prev = Some((root.clone(), s)); // bind's pre-index walk, not this tick's
+        }
+    }
     let mut cur = watcher::snapshot(&root);
     let change = match &*prev {
         Some((r, s)) if *r == root => {
@@ -4710,8 +5154,8 @@ fn tab_removed(
 /// The closed set, shared by the command above and the UI (ui/main.js keeps the
 /// same four strings in TAB_CAUSES; a test in this file pins them together so
 /// the two lists cannot drift apart unnoticed).
-const TAB_REMOVAL_CAUSES: [&str; 4] =
-    ["user-close", "external-delete", "external-rename", "pane-collapse"]; // vaultbleed: session-replace died with the in-process vault switch
+const TAB_REMOVAL_CAUSES: [&str; 5] =
+    ["user-close", "external-delete", "external-rename", "pane-collapse", "plugin-detach"]; // vaultbleed: session-replace died with the in-process vault switch
 
 #[tauri::command]
 fn win_gesture(
@@ -5199,7 +5643,7 @@ fn main() {
     // perf-index: one walk + read now, so the first note_open is already warm.
     // vaultbleed: the argv/last-vault boot binds through the SAME set-once
     // bind_vault the picker uses (seed + index build happen inside it).
-    let vault = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new() };
+    let vault = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) };
     if let Some(p) = &init {
         // vaultbleed B: a vault already open in another process is refused —
         // no second backend, no window; the other window stays the only one.
@@ -5239,11 +5683,20 @@ fn main() {
             let _ = WIN_REC.set((rec, (wc.width, wc.height)));
         }
     }
+    // cp-unrestricted: the window is built in setup (page_window), not by Tauri
+    // from the config, so its pages pass through page_csp (CSP by trust state).
+    let page_conf = ctx.config_mut().app.windows.first_mut().map(|wc| {
+        wc.create = false;
+        wc.clone()
+    });
     tauri::Builder::default()
         .plugin(appid::plugin())
         .manage(vault)
         .manage(ZoomLevel(Mutex::new(read_zoom_cfg())))
-        .setup(|app| {
+        .setup(move |app| {
+            if let Some(wc) = &page_conf {
+                page_window(app.handle(), wc)?;
+            }
             spawn_watcher(app.handle().clone());
             // item 14: a switch-started window whose UI never calls switch_ready
             // is still shown (and frees the old window) after SWITCH_FALLBACK
@@ -5373,20 +5826,51 @@ fn main() {
             .expect("img response");
             responder.respond(res)
         })
+        // plugin-loader (recon M1): community plugin main.js, CJS-wrapped and
+        // confined by plugins::serve (rules 1-5 in plugins.rs). Every refusal is
+        // a bodiless 403 — restricted mode, not enabled, escape attempt alike.
+        .register_uri_scheme_protocol(plugins::SCHEME, |ctx, req| {
+            use tauri::Manager;
+            let root = cur_vault(&ctx.app_handle().state::<Vault>());
+            let trusted = root.as_deref().is_some_and(|r| plugins::is_trusted(&cfg_value(), r));
+            let b = tauri::http::Response::builder();
+            match plugins::serve(root.as_deref(), req.uri().path(), trusted) {
+                plugins::Served::Js(body) => b
+                    .status(200)
+                    .header("Content-Type", "text/javascript; charset=utf-8")
+                    .header("X-Content-Type-Options", "nosniff")
+                    .header("Cache-Control", "no-store")
+                    .body(body),
+                plugins::Served::Missing => b.status(404).body(Vec::new()),
+                plugins::Served::Refused(why) => {
+                    eprintln!("[plugin] refused {}: {why}", req.uri().path());
+                    b.status(403).body(Vec::new())
+                }
+            }
+            .expect("plugin response")
+            .map(std::borrow::Cow::Owned)
+        })
         .invoke_handler(tauri::generate_handler![
-            list_notes, list_images, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
+            list_notes, list_images, canvas_io, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
             read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
             snippets_scan, snippets_enabled, snippet_css, set_snippet_enabled,
+            plugins_state, plugins_set, plugin_io, plugin_vfs, desk_proc_spawn, desk_proc_read, desk_proc_write, desk_proc_end, desk_proc_kill,
+            desk_net_listen, desk_net_accept, desk_net_close, desk_sock_read, desk_sock_write, desk_sock_end, desk_sock_destroy,
+            desk_http_request, desk_shell,
+            plugin_store::store_list, plugin_store::store_detail, plugin_store::store_install, plugin_store::store_uninstall,
+            updates::update_check,
             themes_scan, theme_css, get_css_theme, set_css_theme, theme_seed_report, vault_css_watch,
             get_quickfont, set_quickfont, get_fonts, set_font, font_families,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
             win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close,
             tab_removed, insert_datetime,
             zoom, zoom_get, pdf_info,
+            // cp-secrets
+            secrets::secrets_op,
             settings::settings_model
         ])
         .run(ctx)
@@ -5526,6 +6010,47 @@ mod tests {
         let links: Vec<Vec<String>> = d.iter().map(|(_, c)| links_in(c)).collect();
         let refs: Vec<&[String]> = links.iter().map(|l| l.as_slice()).collect();
         index::build_graph(&names, &refs)
+    }
+
+    /// cp-unrestricted: the synchronous fs route answers only a trusted vault, POST only,
+    /// through the same confined core as plugin_vfs (an escape stays refused)
+    #[test]
+    fn vfs_sync_route_is_trust_gated_and_confined() {
+        let root = tmp_vault("vfssync");
+        fs::write(root.join("a.md"), "hi").unwrap();
+        let q = |op: &str, p: &str| format!("{{\"op\":\"{op}\",\"path\":\"{p}\"}}").into_bytes();
+        assert_eq!(vfs_sync_answer(Some(&root), false, true, &q("exists", "a.md")).0, 403);
+        assert_eq!(vfs_sync_answer(None, true, true, &q("exists", "a.md")).0, 403);
+        assert_eq!(vfs_sync_answer(Some(&root), true, false, &q("exists", "a.md")).0, 405);
+        assert_eq!(vfs_sync_answer(Some(&root), true, true, b"nope").0, 400);
+        assert_eq!(vfs_sync_answer(Some(&root), true, true, &q("exists", "a.md")), (200, serde_json::json!({ "ok": true })));
+        assert_eq!(vfs_sync_answer(Some(&root), true, true, &q("exists", "zz.md")), (200, serde_json::json!({ "ok": false })));
+        let (s, v) = vfs_sync_answer(Some(&root), true, true, &q("read", "a.md"));
+        assert_eq!((s, v["ok"].as_str()), (200, Some("aGk=")));
+        let (s, v) = vfs_sync_answer(Some(&root), true, true, &q("read", "/etc/passwd"));
+        assert_eq!(s, 200);
+        assert!(v["err"].as_str().is_some_and(|e| e.starts_with("EPERM")), "{v}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// git-chmod: chmod rides the trusted sync route only, mode masked to 0o777
+    #[test]
+    fn vfs_sync_chmod_is_trusted_masked_and_confined() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tmp_vault("vfssync-chmod");
+        fs::write(root.join("h.sh"), "#!/bin/sh\n").unwrap();
+        fs::set_permissions(root.join("h.sh"), fs::Permissions::from_mode(0o644)).unwrap();
+        let q = |p: &str, m: &str| format!("{{\"op\":\"chmod\",\"path\":\"{p}\",\"mode\":{m}}}").into_bytes();
+        let mode = || fs::metadata(root.join("h.sh")).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(vfs_sync_answer(Some(&root), false, true, &q("h.sh", "493")).0, 403);
+        assert_eq!(mode(), 0o644);
+        assert_eq!(vfs_sync_answer(Some(&root), true, true, &q("h.sh", "\"755\"")).0, 400, "mode must be a number");
+        assert_eq!(vfs_sync_answer(Some(&root), true, true, &q("h.sh", "2541")), (200, serde_json::json!({ "ok": null })));
+        assert_eq!(mode(), 0o755, "0o4755 -> setuid stripped");
+        let (s, v) = vfs_sync_answer(Some(&root), true, true, &q("../x", "493"));
+        assert_eq!(s, 200);
+        assert!(v["err"].as_str().is_some_and(|e| e.starts_with("EPERM")), "{v}");
+        let _ = fs::remove_dir_all(&root);
     }
 
     fn tmp_vault(tag: &str) -> PathBuf {
@@ -8274,7 +8799,7 @@ mod tests {
             .to_string();
         assert_eq!(
             csp,
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+            "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
              img-src 'self' data: opensidian-img:; font-src 'self'; \
              connect-src ipc: http://ipc.localhost",
             "the CSP changed — if that was deliberate, say why in the commit message"
@@ -8286,6 +8811,45 @@ mod tests {
         // no wildcard, no http(s) origin anywhere in the image directive
         assert!(!img.contains('*'), "img-src wildcard re-enables remote beacons: {img}");
         assert!(!img.contains("http"), "img-src names a remote origin: {img}");
+        // plugin-loader: script-src widens by ONE scheme token, ours, plus
+        // 'wasm-unsafe-eval' (WebAssembly compile/instantiate only; Templater's
+        // template parser is wasm). JS eval, new Function and string timers stay
+        // blocked: no 'unsafe-eval' token, no 'unsafe-inline', no blob:/data:.
+        let script = csp.split("; ").find(|d| d.starts_with("script-src ")).unwrap();
+        assert_eq!(script, format!("script-src 'self' {}: 'wasm-unsafe-eval'", plugins::SCHEME));
+        for d in csp.split("; ") {
+            for tok in d.split_whitespace() {
+                assert_ne!(tok, "'unsafe-eval'", "JS eval re-enabled in {d}");
+                assert!(!tok.starts_with("blob:"), "blob: source in {d}");
+            }
+        }
+        assert!(!script.contains("unsafe-inline") && !script.contains("data:") && !script.contains('*'), "{script}");
+    }
+
+    /// cp-unrestricted: restricted = the config CSP unchanged (no eval, no
+    /// blob:); trusted = eval + blob: scripts and workers, nothing else widened
+    #[test]
+    fn csp_by_trust_widens_only_a_trusted_vaults_scripts_and_workers() {
+        const CONF: &str = include_str!("../tauri.conf.json");
+        let base = serde_json::from_str::<serde_json::Value>(CONF).unwrap()["app"]["security"]["csp"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(csp_by_trust(&base, false), base);
+        assert!(!csp_by_trust(&base, false).split_whitespace().any(|t| t == "'unsafe-eval'" || t.starts_with("blob:")));
+        let t = csp_by_trust(&base, true);
+        assert_eq!(
+            t,
+            "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval' 'unsafe-eval' blob:; \
+             style-src 'self' 'unsafe-inline'; img-src 'self' data: opensidian-img:; font-src 'self'; \
+             connect-src ipc: http://ipc.localhost 'self'; worker-src 'self' blob:"
+        );
+        // every directive other than script-src / worker-src / connect-src is byte-identical
+        let other = |c: &str| c.split("; ").filter(|d| !d.starts_with("script-src") && !d.starts_with("worker-src") && !d.starts_with("connect-src")).map(str::to_owned).collect::<Vec<_>>();
+        assert_eq!(other(&t), other(&base));
+        // an existing worker-src is extended, not duplicated; Tauri's own hash tokens survive
+        let w = csp_by_trust("script-src 'self' 'sha256-abc'; worker-src 'self'", true);
+        assert_eq!(w, "script-src 'self' 'sha256-abc' 'unsafe-eval' blob:; worker-src 'self' blob:");
     }
 
     /// S4: picker commands refuse system trees and dot-components, keep the
@@ -9730,7 +10294,7 @@ mod vaultbleed_tests {
         root
     }
     fn vault_at(p: &Path) -> Arc<Vault> {
-        let v = Arc::new(Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new() });
+        let v = Arc::new(Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) });
         bind_vault(&v, p).unwrap();
         v
     }
@@ -9786,6 +10350,28 @@ mod vaultbleed_tests {
         let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b));
     }
 
+    /* census C4: a fresh vault gets `.obsidian/app.json` = `{}`; an existing
+       one (or a symlink in its place) is never rewritten or followed. */
+    #[test]
+    fn vault_init_creates_app_json_only_when_absent() {
+        let a = mk("appjson-fresh", &[("n", "x\n")]);
+        assert!(!a.join(".obsidian").exists());
+        ensure_app_json(&a);
+        assert_eq!(fs::read_to_string(a.join(".obsidian/app.json")).unwrap(), "{}");
+        let b = mk("appjson-kept", &[("n", "x\n")]);
+        fs::create_dir_all(b.join(".obsidian")).unwrap();
+        fs::write(b.join(".obsidian/app.json"), "{\"strictLineBreaks\":true}").unwrap();
+        ensure_app_json(&b);
+        assert_eq!(fs::read_to_string(b.join(".obsidian/app.json")).unwrap(), "{\"strictLineBreaks\":true}");
+        let c = mk("appjson-link", &[("n", "x\n")]);
+        let outside = c.with_extension("outside.json");
+        fs::create_dir_all(c.join(".obsidian")).unwrap();
+        std::os::unix::fs::symlink(&outside, c.join(".obsidian/app.json")).unwrap();
+        ensure_app_json(&c);
+        assert!(!outside.exists(), "a dangling app.json symlink is not written through");
+        let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b), fs::remove_dir_all(&c));
+    }
+
     #[test]
     fn vaultbleed_second_backend_on_an_open_vault_is_refused() {
         // B: two Vaults (= two processes' backends) on ONE directory. The
@@ -9793,9 +10379,9 @@ mod vaultbleed_tests {
         // an index; a second spelling of the path keys the same lock.
         let a = mk("dup-a", &[("onlyA-note", "seed #onlyA\n")]);
         let locks = std::env::temp_dir().join(format!("opensidian-vb-locks-{}", std::process::id()));
-        let v1 = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new() };
+        let v1 = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) };
         bind_vault_locked(&v1, &a, &locks).expect("first backend binds");
-        let v2 = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new() };
+        let v2 = Vault { root: OnceLock::new(), index: Mutex::new(Index::default()), lock: OnceLock::new(), seed: Mutex::new(None) };
         let alias = a.join("..").join(a.file_name().unwrap());
         match bind_vault_locked(&v2, &alias, &locks) {
             Err(BindErr::Lock(vaultlock::LockErr::Busy(_))) => {}
@@ -9856,6 +10442,27 @@ mod vaultbleed_tests {
         assert_eq!(log.len(), 20, "the hook fired once per round");
         assert!(log.iter().all(|r| r.is_err()), "a live process was re-rooted: {log:?}");
         let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b));
+    }
+
+    /* typing-srclong: a note created from outside AFTER bind_vault built the
+       index but BEFORE the watcher's first tick. That tick used to seed its
+       baseline silently from its own walk, which already held the new file,
+       so the create was in neither the index nor any later diff: never
+       reported, never in the tree (the typing phase's "external create of
+       TYPEGATE not in the tree", 4/8 loaded runs at e1542275). The baseline
+       is now the walk bind took before Index::build. */
+    #[test]
+    fn external_create_before_the_first_watcher_tick_is_reported() {
+        let a = mk("seedrace", &[("A", "a\n")]);
+        let v = vault_at(&a);
+        fs::write(a.join("TYPEGATE.md"), "").unwrap(); // the phase's `: > TYPEGATE.md`, ahead of the watcher
+        let mut prev = None;
+        let ch = watch_tick(&v, &mut prev);
+        assert_eq!(ch.added, ["TYPEGATE"], "the first tick after bind must report the create: {ch:?}");
+        assert!(cur_notes(&v).iter().any(|n| n == "TYPEGATE"), "the index must hold it: {:?}", cur_notes(&v));
+        let ch2 = watch_tick(&v, &mut prev);
+        assert!(ch2.is_empty(), "a steady tick reports nothing: {ch2:?}");
+        let _ = fs::remove_dir_all(&a);
     }
 
     /* The command side: write_note reads the root, then takes the index lock.

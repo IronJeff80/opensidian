@@ -3,7 +3,7 @@
 
 
 # opensidian
-Open-source and non-profit under GPLv3, vault-compatible cross-platform markdown notes app. It's based on Rust + Tauri v2 and under heavy development. We're looking for Linux distribution maintainers. Not affiliated with or endorsed by Obsidian or Dynalist Inc.; "Obsidian" is their trademark.
+Open-source and non-profit under GPLv3, vault-compatible cross-platform markdown notes app. It's based on Rust + Tauri v2 and under heavy development. We're looking for Linux distribution maintainers. Not affiliated with or endorsed by Obsidian or Dynalist Inc.; "Obsidian" is their trademark. Opensidian is a clean-room functional clone: it reimplements Obsidian's behaviour from the outside and contains none of its code.
 
 ## Features
 - live preview, source and reading modes
@@ -20,20 +20,20 @@ Open-source and non-profit under GPLv3, vault-compatible cross-platform markdown
 ## Install
 Linux x86_64. Download one:
 
-| Download | Choose it if | Tested on (fresh install, 2026-10-09) |
+| Download | Choose it if | Tested on (fresh install, 2026-10-23) |
 |---|---|---|
-| [slim AppImage](https://github.com/jpzk/opensidian/releases/download/v0.6.2/opensidian-0.6.2-x86_64-slim.AppImage) | you want the smallest file and have WebKitGTK 4.1 | Fedora 44 (`sudo dnf install webkit2gtk4.1`), Ubuntu 26.04 LTS (`sudo apt install libwebkit2gtk-4.1-0`) |
-| [portable AppImage](https://github.com/jpzk/opensidian/releases/download/v0.6.2/opensidian-0.6.2-x86_64-portable.AppImage) | you want nothing to install: WebKit is bundled (needs only the X11/GL/font libraries every desktop has) | Fedora 44, Ubuntu 26.04 LTS |
-| [Flatpak](https://github.com/jpzk/opensidian/releases/download/v0.6.2/opensidian-0.6.2-x86_64.flatpak) | you want it sandboxed; pulls the GNOME 49 runtime from Flathub on first install | Fedora 44, Ubuntu 26.04 LTS (`flatpak` package installed) |
-| [RPM](https://github.com/jpzk/opensidian/releases/download/v0.6.2/opensidian-0.6.2-x86_64.rpm) | you run Fedora and want a system package with a menu entry and icon; dnf pulls WebKitGTK 4.1 for you | Fedora 44 (`sudo dnf install ./opensidian-0.6.2-x86_64.rpm`) |
-| [DEB](https://github.com/jpzk/opensidian/releases/download/v0.6.2/opensidian-0.6.2-x86_64.deb) | you run Debian or Ubuntu and want a system package with a menu entry and icon; apt pulls WebKitGTK 4.1 for you | Debian 13, Ubuntu 26.04 LTS (`sudo apt install ./opensidian-0.6.2-x86_64.deb`) |
+| [slim AppImage](https://github.com/jpzk/opensidian/releases/download/v0.8.0/opensidian-0.8.0-x86_64-slim.AppImage) | you want the smallest file and have WebKitGTK 4.1 | Fedora 44 (`sudo dnf install webkit2gtk4.1`), Ubuntu 26.04 LTS (`sudo apt install libwebkit2gtk-4.1-0`) |
+| [portable AppImage](https://github.com/jpzk/opensidian/releases/download/v0.8.0/opensidian-0.8.0-x86_64-portable.AppImage) | you want nothing to install: WebKit is bundled (needs only the X11/GL/font libraries every desktop has) | Fedora 44, Ubuntu 26.04 LTS |
+| [Flatpak](https://github.com/jpzk/opensidian/releases/download/v0.8.0/opensidian-0.8.0-x86_64.flatpak) | you want it sandboxed; pulls the GNOME 49 runtime from Flathub on first install | Fedora 44, Ubuntu 26.04 LTS (`flatpak` package installed) |
+| [RPM](https://github.com/jpzk/opensidian/releases/download/v0.8.0/opensidian-0.8.0-x86_64.rpm) | you run Fedora and want a system package with a menu entry and icon; dnf pulls WebKitGTK 4.1 for you | Fedora 44 (`sudo dnf install ./opensidian-0.8.0-x86_64.rpm`) |
+| [DEB](https://github.com/jpzk/opensidian/releases/download/v0.8.0/opensidian-0.8.0-x86_64.deb) | you run Debian or Ubuntu and want a system package with a menu entry and icon; apt pulls WebKitGTK 4.1 for you | Debian 13, Ubuntu 26.04 LTS (`sudo apt install ./opensidian-0.8.0-x86_64.deb`) |
 
 ## Verify your download
 `SHA256SUMS` is signed with key `A6E6 9ED6 BC47 79F3 2817  2148 4CC1 AFDE 15B6 4EA3`:
 
 ```sh
-curl -LO https://github.com/jpzk/opensidian/releases/download/v0.6.2/SHA256SUMS \
-     -LO https://github.com/jpzk/opensidian/releases/download/v0.6.2/SHA256SUMS.asc
+curl -LO https://github.com/jpzk/opensidian/releases/download/v0.8.0/SHA256SUMS \
+     -LO https://github.com/jpzk/opensidian/releases/download/v0.8.0/SHA256SUMS.asc
 gpg --keyserver hkps://keys.openpgp.org --recv-keys A6E69ED6BC4779F3281721484CC1AFDE15B64EA3
 gpg --verify SHA256SUMS.asc SHA256SUMS
 sha256sum -c --ignore-missing SHA256SUMS
@@ -82,6 +82,29 @@ To add one, put its `manifest.json` and `theme.css` in `<vault>/.obsidian/themes
 `"name"` in the manifest) and pick it in **Settings ▸ Appearance ▸ Themes**. CSS snippets go in
 `.obsidian/snippets/`. Both reload live. A broken theme shows greyed out with the reason, and the app
 stays on AnuPpuccin.
+
+## Community plugins
+Off by default. Each vault starts in restricted mode: no community plugin code runs.
+
+**Turning it on.** Open **Settings ▸ Community plugins** and switch **Restricted mode** off. The
+choice is per vault and is saved in `~/.opensidian.json`, outside the vault, so a vault you open
+cannot turn its own plugins on.
+
+**What that means.** With restricted mode off, the plugins you enable run code from the internet
+with your user's rights, the same as in Obsidian. They can run programs, open network connections
+and servers, send HTTP requests to any host, and open files and links with your system's default
+apps. There is no per-plugin permission prompt. Enable only plugins you trust.
+
+**Browse.** **Settings ▸ Community plugins ▸ Browse** lists the community plugins. You can search,
+sort, and open a plugin to read its details and README. Install, Update and Uninstall download
+only from GitHub over HTTPS. The sha256 of every installed file is recorded. Installing does not
+enable a plugin; you enable it yourself. Copying a plugin folder into `<vault>/.obsidian/plugins/`
+still works.
+
+**Secrets.** Plugins that store secrets (API keys, tokens) use your system keyring through the
+Secret Service: gnome-keyring, KWallet or KeePassXC. Secrets are never written to a file. Without
+a running keyring, secret storage reports that it is unsupported and those plugins cannot save
+secrets.
 
 ## Donate
 
