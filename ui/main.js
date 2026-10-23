@@ -10330,9 +10330,16 @@ function bufOf(g) {          // R17: the model IS the buffer (g.editor is its mi
 // flushSave) could land their writes and their setBase in either order,
 // leaving base != disk — the same resurrect class as above. Chained, every
 // save reads the disk the previous one wrote.
+// tab-dataloss: every save in flight is ALSO tracked process-wide — a pane
+// close drops its group (and g.saveQ with it) while the write is still on the
+// wire, and a quit must still wait for it (quitFlush).
+const savesInFlight = new Set();
 function saveBuf(g) {
   const p = (g.saveQ || Promise.resolve()).then(() => saveBuf1(g));
-  g.saveQ = p.catch(() => false);
+  const q = p.catch(() => false);
+  g.saveQ = q;
+  savesInFlight.add(q);
+  q.then(() => savesInFlight.delete(q));
   return p;
 }
 async function saveBuf1(g) {
@@ -10447,6 +10454,26 @@ TAURI.event.listen("vault-css-changed", e => onVaultCssChanged(e.payload));  // 
 // R31.1: a real OS drop arrives here, from Rust, never from a DOM drop event.
 // osdrop: the payload is [paths, x, y] (main.rs R31.1), x/y physical px in the webview
 TAURI.event.listen("drop-files", e => { const p = e.payload || []; attachDrop(p[0] || [], { x: p[1], y: p[2] }); });
+/* tab-dataloss: QUIT FLUSHES. The window close (button, Alt+F4, WM) and SIGTERM
+   no longer destroy the page with a debounce timer still armed: the backend
+   holds the quit and sends "app-quit" (main.rs QUIT_EVENT); this flushes every
+   group exactly as a vault switch does (leaveVault: buffers, layout, folds),
+   then waits for every write still in flight — including one a tab or pane
+   close started a moment ago, whose group may already be gone — and only then
+   tells the backend it may exit. The backend bounds the wait (QUIT_GRACE), so
+   nothing here can make the app unkillable. Armed only after the listener is
+   up (quit_arm): before that a close behaves as it always did. */
+let quitting = false;
+async function quitFlush(why) {
+  if (quitting) return;
+  quitting = true;
+  let lost = [];
+  try { lost = await leaveVault(); } catch (e) { /* flush what can be flushed; exit regardless */ }
+  try { while (savesInFlight.size) await Promise.all([...savesInFlight]); } catch (e) { /* each one already ate its error */ }
+  console.log(`[quit] ${why}: flushed, dirty=${lost.length}`);
+  inv("quit_ready", { dirty: lost.length }).catch(() => {});
+}
+TAURI.event.listen("app-quit", e => quitFlush(e.payload || "quit")).then(() => inv("quit_arm")).catch(() => {});
 
 $("vswitch").onclick = showPicker;
 

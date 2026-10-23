@@ -5454,6 +5454,151 @@ fn win_close(win: tauri::Window) -> Result<(), String> {
     win.close().map_err(|e| e.to_string())
 }
 
+/* ---------- tab-dataloss: QUIT FLUSHES (window close + SIGTERM) -------------
+   Root cause (progress.md): the editor's last <=250 ms of typing (<= 2 s in a
+   burst) lives in the webview's debounce timer, and nothing ran it on a quit —
+   the close button destroyed the window and SIGTERM took its default
+   disposition with the timer still armed. Now both paths ASK the webview:
+     1. CloseRequested (the frameless close button -> win_close, Alt+F4, a WM
+        close) is prevented and SIGTERM is caught;
+     2. the UI gets QUIT_EVENT, flushes every group, awaits every write still
+        in flight (a tab close a moment earlier), then calls `quit_ready`;
+     3. `quit_ready` exits. BOUNDED: QUIT_GRACE after the request the process
+        exits anyway, so a wedged webview never makes the app unkillable, and a
+        second SIGTERM exits at once (the usual "TERM twice = I mean it").
+   Armed only once the UI has its listener up (`quit_arm`): a window whose page
+   never loaded (boot failure) closes and dies exactly as before. kill -9 / OOM
+   / power cut still lose the unflushed tail — that is what R28.3's
+   write-while-running rule is for; this covers the COMMON quit. */
+const QUIT_EVENT: &str = "app-quit";
+const QUIT_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+static QUIT_ARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static QUIT_ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static QUIT_T0: OnceLock<std::time::Instant> = OnceLock::new();
+/// write end of the SIGTERM self-pipe (-1 = no handler installed)
+static TERM_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+#[derive(Debug, PartialEq, Eq)]
+enum QuitStep {
+    /// the UI cannot flush (not armed): today's behaviour, no wait
+    Now,
+    /// first request: ask the UI, start the grace timer
+    Ask,
+    /// a request while the UI is already flushing: window -> ignore, TERM -> exit now
+    Repeat,
+}
+fn quit_step(armed: bool, already_asked: bool) -> QuitStep {
+    match (armed, already_asked) {
+        (false, _) => QuitStep::Now,
+        (true, false) => QuitStep::Ask,
+        (true, true) => QuitStep::Repeat,
+    }
+}
+
+/// SIGTERM back to its default disposition and re-raised: the exit status a
+/// TERM'd process has always had
+fn term_default() -> ! {
+    unsafe {
+        libc::signal(libc::SIGTERM, libc::SIG_DFL);
+        libc::raise(libc::SIGTERM);
+    }
+    std::process::exit(143)
+}
+
+/// -> true when the caller must let the close proceed (not armed)
+fn quit_request(app: &tauri::AppHandle, why: &str) -> bool {
+    use std::sync::atomic::Ordering::SeqCst;
+    use tauri::Emitter;
+    let armed = QUIT_ARMED.load(SeqCst);
+    let asked = if armed { QUIT_ASKED.swap(true, SeqCst) } else { false };
+    match quit_step(armed, asked) {
+        QuitStep::Now => {
+            eprintln!("[quit] {why}: UI not armed, no flush to wait for");
+            if why == "SIGTERM" {
+                term_default();
+            }
+            true
+        }
+        QuitStep::Repeat => {
+            if why == "SIGTERM" {
+                eprintln!("[quit] second SIGTERM while flushing: exiting now");
+                term_default();
+            }
+            eprintln!("[quit] {why} while flushing: already quitting");
+            false
+        }
+        QuitStep::Ask => {
+            let _ = QUIT_T0.set(std::time::Instant::now());
+            eprintln!("[quit] {why}: asking the UI to flush (grace {QUIT_GRACE:?})");
+            let _ = app.emit(QUIT_EVENT, why);
+            let h = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(QUIT_GRACE);
+                eprintln!("[quit] UI did not report flushed within {QUIT_GRACE:?}: exiting anyway");
+                h.exit(0);
+            });
+            false
+        }
+    }
+}
+
+/// the UI's listener is up: from now on a quit waits for its flush
+#[tauri::command]
+fn quit_arm() {
+    QUIT_ARMED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// every group flushed and every write in flight settled: exit
+#[tauri::command]
+fn quit_ready(app: tauri::AppHandle, dirty: Option<u32>) {
+    let ms = QUIT_T0.get().map(|t| t.elapsed().as_millis()).unwrap_or(0);
+    eprintln!("[quit] flushed in {ms}ms dirty={}; exiting", dirty.unwrap_or(0));
+    app.exit(0);
+}
+
+extern "C" fn on_term(_: libc::c_int) {
+    // async-signal-safe: one write(2) to the self-pipe, nothing else
+    let fd = TERM_FD.load(std::sync::atomic::Ordering::SeqCst);
+    if fd >= 0 {
+        let b = 1u8;
+        unsafe { libc::write(fd, &b as *const u8 as *const libc::c_void, 1) };
+    }
+}
+
+/// SIGTERM -> self-pipe -> a plain thread -> quit_request. The handler itself
+/// only writes one byte; a caught disposition resets to default across exec, so
+/// processes we spawn (desk_proc) keep the stock SIGTERM.
+fn install_term(app: tauri::AppHandle) {
+    let mut fds = [0 as libc::c_int; 2];
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        eprintln!("[quit] SIGTERM flush unavailable: pipe2 failed");
+        return;
+    }
+    TERM_FD.store(fds[1], std::sync::atomic::Ordering::SeqCst);
+    unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = on_term as extern "C" fn(libc::c_int) as usize;
+        sa.sa_flags = libc::SA_RESTART;
+        libc::sigemptyset(&mut sa.sa_mask);
+        if libc::sigaction(libc::SIGTERM, &sa, std::ptr::null_mut()) != 0 {
+            eprintln!("[quit] SIGTERM flush unavailable: sigaction failed");
+            return;
+        }
+    }
+    let rd = fds[0];
+    std::thread::spawn(move || loop {
+        let mut b = 0u8;
+        let n = unsafe { libc::read(rd, &mut b as *mut u8 as *mut libc::c_void, 1) };
+        if n == 1 {
+            quit_request(&app, "SIGTERM");
+        } else if n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        } else {
+            return;
+        }
+    });
+}
+
 /* ---------- R36 INTERFACE ZOOM (operator, 2026-09-14: "interface wide zoom,
    not only text") ----------------------------------------------------------
    Ctrl+= / Ctrl+- / Ctrl+0, and the three palette commands behind them.
@@ -5713,6 +5858,7 @@ fn main() {
                 page_window(app.handle(), wc)?;
             }
             spawn_watcher(app.handle().clone());
+            install_term(app.handle().clone()); // tab-dataloss: SIGTERM flushes, bounded
             // item 14: a switch-started window whose UI never calls switch_ready
             // is still shown (and frees the old window) after SWITCH_FALLBACK
             if SWITCHED.get().is_some() {
@@ -5781,6 +5927,13 @@ fn main() {
         // half-attached; R31.10.
         .on_window_event(|w, e| {
             winsize_event(w, e); // goal winsize: track + save on close (not the drop)
+            // tab-dataloss: a close waits (bounded) for the UI to flush its edits
+            if let tauri::WindowEvent::CloseRequested { api, .. } = e {
+                use tauri::Manager;
+                if !quit_request(w.app_handle(), "window close") {
+                    api.prevent_close();
+                }
+            }
             if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, position }) = e {
                 use tauri::Emitter;
                 let _ = w.emit(DROP_EVENT, (paths, position.x, position.y));
@@ -5881,7 +6034,7 @@ fn main() {
             themes_scan, theme_css, get_css_theme, set_css_theme, theme_seed_report, vault_css_watch,
             get_quickfont, set_quickfont, get_fonts, set_font, font_families,
             get_hotkeys, set_hotkeys, open_external, save_debounce_ms, attach_files,
-            win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close,
+            win_rect, win_gesture, win_move_proto, win_drag_start, win_minimize, win_toggle_max, win_close, quit_arm, quit_ready,
             tab_removed, insert_datetime,
             zoom, zoom_get, pdf_info,
             // cp-secrets
@@ -5909,6 +6062,30 @@ mod tests {
         assert_eq!(write_delay_ms(Some("0")), 0);
         assert_eq!(write_delay_ms(Some("30001")), 0);
         assert_eq!(write_delay_ms(Some("1500")), 1500);
+    }
+
+    #[test]
+    fn tabdl_quit_step_waits_only_when_armed() {
+        // no listener yet: a quit is today's quit, nothing to wait for
+        assert_eq!(quit_step(false, false), QuitStep::Now);
+        assert_eq!(quit_step(false, true), QuitStep::Now);
+        assert_eq!(quit_step(true, false), QuitStep::Ask);
+        assert_eq!(quit_step(true, true), QuitStep::Repeat);
+        // bounded: a wedged webview can delay a quit, never cancel it
+        assert!(QUIT_GRACE <= std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn tabdl_quit_is_wired() {
+        // both quit paths reach quit_request, and the UI side answers it
+        let src = include_str!("main.rs");
+        assert!(src.contains("quit_request(w.app_handle(), \"window close\")"));
+        assert!(src.contains("install_term(app.handle().clone())"));
+        assert!(src.contains("quit_arm, quit_ready,"));
+        let ui = include_str!("../../ui/main.js");
+        assert!(ui.contains("TAURI.event.listen(\"app-quit\""));
+        assert!(ui.contains("inv(\"quit_ready\""));
+        assert!(ui.contains("savesInFlight.add("));
     }
 
     #[test]
