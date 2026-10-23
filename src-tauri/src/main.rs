@@ -892,10 +892,25 @@ fn write_note(v: State<Vault>, name: String, content: String, otel: Option<perf:
 fn write_note_inner(v: &Vault, name: &str, content: &str) -> Result<(), String> {
     let root = cur_vault(v).ok_or("no vault open")?;
     vault_hook("write_note:pre_lock");
+    write_delay();
     // R11: lock BEFORE the write — the watcher reads+compares under this
     // lock, so it never sees our bytes on disk without them in the index
     let mut ix = v.index.lock().unwrap();
     write_note_in(&root, &mut ix, name, content)
+}
+
+/* tab-dataloss test hook: OPENSIDIAN_WRITE_DELAY_MS makes every note write a SLOW
+   disk (sleep before the bytes go down), so "close a dirty tab, then quit while the
+   write is still in flight" is reproducible without box load. Inert unless set;
+   out-of-range values are ignored (same contract as OPENSIDIAN_SAVE_MS). */
+fn write_delay_ms(v: Option<&str>) -> u64 {
+    v.and_then(|s| s.parse::<u64>().ok()).filter(|n| (1..=30_000).contains(n)).unwrap_or(0)
+}
+fn write_delay() {
+    let ms = write_delay_ms(std::env::var("OPENSIDIAN_WRITE_DELAY_MS").ok().as_deref());
+    if ms > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
 }
 
 /* F1/F3 dataloss: the pure core of a note save, so the durability and the
@@ -5883,6 +5898,17 @@ mod tests {
 
     fn nav(s: &str) -> bool {
         nav_allowed(&tauri::Url::parse(s).unwrap())
+    }
+
+    // tab-dataloss: the slow-write hook is inert unless set to a sane value
+    #[test]
+    fn tabdl_write_delay_inert_unless_set() {
+        assert_eq!(write_delay_ms(None), 0);
+        assert_eq!(write_delay_ms(Some("")), 0);
+        assert_eq!(write_delay_ms(Some("abc")), 0);
+        assert_eq!(write_delay_ms(Some("0")), 0);
+        assert_eq!(write_delay_ms(Some("30001")), 0);
+        assert_eq!(write_delay_ms(Some("1500")), 1500);
     }
 
     #[test]
