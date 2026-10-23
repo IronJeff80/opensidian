@@ -1753,6 +1753,12 @@ function bmDragStart(e, ix) {
   if (e.button !== 0 || bmRenaming !== null) return;
   const src = bmTree[ix];
   if (!src) return;
+  // bug-ui #11: the press is this drag machine's, not WebKit's — without this the travel
+  // text-selected the rows it crossed (and the next press on that selection would start a native
+  // text drag). Same guard as treeDragStart; removed on mouseup.
+  const own = ev => ev.preventDefault();
+  document.addEventListener("selectstart", own, true);
+  document.addEventListener("dragstart", own, true);
   const sx = e.clientX, sy = e.clientY;
   const label = src.label ?? (src.kind === "g" ? src.name : src.name.split("/").pop());
   let ghost = null, line = null, hl = null, srcEl = null, zones = null, raf = 0, last = null;
@@ -1873,6 +1879,8 @@ function bmDragStart(e, ix) {
   const up = async () => {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
+    document.removeEventListener("selectstart", own, true);
+    document.removeEventListener("dragstart", own, true);
     if (raf) { cancelAnimationFrame(raf); raf = 0; if (last) step(); }
     disarm();                              // R5: a release before 0.85s opens nothing
     const d = bmDrop, dragged = !!ghost;
@@ -3882,7 +3890,7 @@ function updateTitle() {          // pane/focus census in the window title (head
       "/" + vpxBg(document.getElementById("wframe")) + "/" + vpxBg(document.querySelector("#bar button")) +
       "/" + vpxBg(document.getElementById("mbox")) + "]"
     : "";
-  let t = "opensidian [panes:" + ps.length + " focused:" + nf +
+  let t = "Opensidian [panes:" + ps.length + " focused:" + nf +
             "@" + (ps.indexOf(fg() && fg().pane) + 1) + "] [fx:" + fx + "]" +
             " [tabs:" + groups().map(g => g.tabs.length).join(",") + "]" + noteTok + themeTok + thmTok + thmpxTok + snipTok + vthemeTok + creloadTok + vbridgeTok + vtgTok + bseedTok + vpxTok + navTok + navgTok + lg + md + gg + gpx + modal +
             " [side:l" + (sideOpen ? 1 : 0) + "r" + (rightOpen ? 1 : 0) +
@@ -10474,7 +10482,7 @@ $("vswitch").onclick = showPicker;
     // the BOOT picker's window stays untitled by the census (no 'panes:', see
     // loadRecent) — so the reason is published as "opensidian [vault:-]
     // [vargerr:...]" only, never the pane census
-    $("p-err").textContent = bootNote; const pt = "opensidian" + vargTok(); document.title = pt; pushTitle(pt); } }
+    $("p-err").textContent = bootNote; const pt = "Opensidian" + vargTok(); document.title = pt; pushTitle(pt); } }
   // R30 / T2: the table AND the nav DOM are warmed off the open path — the nav is
   // 19 entries that never change, so building it at boot into the hidden modal
   // takes the only unavoidable DOM work out of the open keystroke. The pane stays
@@ -12421,7 +12429,7 @@ function psgTok() {
 }
 function psgPublish() {
   if (!psgProbe || vaultPath || $("picker").hidden) return;
-  const t = "opensidian" + vargTok() + psgTok() + sbarTok();   // noscroll: the boot picker's root/element scrollbars too (the pane census never runs here)
+  const t = "Opensidian" + vargTok() + psgTok() + sbarTok();   // noscroll: the boot picker's root/element scrollbars too (the pane census never runs here)
   if (t === psgLast) return;
   psgLast = t; document.title = t; pushTitle(t);
 }
