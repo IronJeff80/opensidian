@@ -7324,7 +7324,7 @@ async function cvEmbedPaint(s, link) {
   for (const n of [...ns.filter(n => n.type === "group"), ...ns.filter(n => n.type !== "group")])   // groups underneath
     el("rect", { x: num(n.x), y: num(n.y), width: Math.max(0, num(n.width)), height: Math.max(0, num(n.height)), rx: 8,
                  class: "cv-emb-node" + (n.type === "group" ? " is-group" : ""),
-                 style: "fill:" + (n.type === "group" ? "transparent" : "var(--background-secondary)") +
+                 style: "fill:" + (n.type === "group" ? "none" : "var(--background-secondary)") +
                         ";stroke:var(--background-modifier-border);stroke-width:2;vector-effect:non-scaling-stroke" + (n.type === "group" ? ";stroke-dasharray:6 4" : "") });
   const side = (n, sd, o) => {
     const x = num(n.x), y = num(n.y), w = num(n.width), h = num(n.height);
