@@ -4209,17 +4209,21 @@ async function closeTabsAfter(g, i) {      // Close tabs after: target + everyth
   // Obsidian's behaviour in that case is UNMEASURED and is not guessed here.
   if (k >= 0 && g.active < 0) { g.active = k; await loadActive(g); }
 }
-async function closeAllTabs(g) {           // Close all: the GROUP SURVIVES (collapseGroup must not run)
+async function closeAllTabs(g) {           // Close all: a split pane goes with its tabs (#8); the lone root pane survives
   await flushSave(g);
   while (g.tabs.length > 1) await closeTab(g, g.tabs.length - 1);
   if (!g.tabs.length) return;
-  /* The last tab cannot go through closeTab: with more than one group that path
-     is R6.5's "empty group leaves the tree" and the group would be REMOVED,
-     which is exactly what Obsidian does not do (R38.6). Same teardown, no collapse.
+  /* #8: in a SPLIT the emptied pane leaves the tree, exactly like the ✕ / Ctrl+W
+     close of a last tab (closeTab's R6.5 path). Kept, it was a zero-tab pane with
+     no tab and no close glyph — nothing could ever remove it. Only the LONE root
+     pane stays: R38.6 was measured on a lone group, and there the group is not
+     removed. That case cannot go through closeTab (it would collapse nothing but
+     must still tear the tab down), so it keeps the hand teardown below.
      DEVIATION, stated: Obsidian leaves an empty leaf whose tab reads `New tab`; we
      have no empty-tab entity (a tab is a note name), so the group survives with
      ZERO tabs — observably [tabs:0] with the pane still there, one tab row
      fewer than Obsidian. docs/recon-tabmenu/README.md records it. */
+  if (groups().length > 1) return closeTab(g, 0, undefined, "closeAll");
   const t = g.tabs[0];
   await act("pane_close", { kind: t.kind || "note", pane_removed: false, groups: groups().length, tabs: 0 }, async () => {
     if (!t.kind) closedTabs.push(t.name);  // R14: undo close tab still works on the last one
@@ -4803,6 +4807,10 @@ function renderTabs(g) {
        bottom edge)            -> tab MOVES there (appended, becomes active)
      - the right EDGE zone of any pane (last 40px, below the strip)
                                -> new row-split carrying the tab (splitWith)
+     - the BOTTOM zone of any pane (last 40px; #17, help.obsidian.md/tabs
+       "split a tab group by dragging a tab to the bottom")
+                               -> new col-split BELOW, carrying the tab.
+       In the corner both apply: the nearer edge wins.
    Source group emptied by the move collapses (same rule as closeTab). */
 const TAB_EDGE = 40;
 function tabDragStart(e, g, i) {
@@ -4810,7 +4818,7 @@ function tabDragStart(e, g, i) {
   const sx = e.clientX, sy = e.clientY;
   let ghost = null, target = null, hl = null, zones = null, raf = 0, last = null, rsR = null;
   const clearHl = () => {
-    if (hl) { hl.classList.remove("drop-strip", "drop-edge"); hl = null; }
+    if (hl) { hl.classList.remove("drop-strip", "drop-edge", "drop-bottom"); hl = null; }
   };
   const sameT = (a, b) => (a ? a.kind + a.g.id : "") === (b ? b.kind + b.g.id : "");
   const step = () => {                       // R20: one span per FRAME; rects cached at drag start, classes only on target change
@@ -4839,12 +4847,16 @@ function tabDragStart(e, g, i) {
           ev.clientY < pr.top || ev.clientY > pr.bottom) continue;
       if (ev.clientY <= z.tb) {
         if (z.g !== g) nt = { kind: "strip", g: z.g };   // own strip: reorder unsupported, no-op
-      } else if (ev.clientX > pr.right - TAB_EDGE) nt = { kind: "edge", g: z.g };
+      } else {
+        const dr = pr.right - ev.clientX, db = pr.bottom - ev.clientY;
+        if (dr < TAB_EDGE && dr <= db) nt = { kind: "edge", g: z.g };
+        else if (db < TAB_EDGE) nt = { kind: "bottom", g: z.g };
+      }
       break;
     }
     if (!sameT(nt, target)) {
       clearHl();
-      if (nt) { hl = nt.kind === "strip" ? nt.g.tabsEl : nt.g.pane; hl.classList.add(nt.kind === "strip" ? "drop-strip" : "drop-edge"); }
+      if (nt) { hl = nt.kind === "strip" ? nt.g.tabsEl : nt.g.pane; hl.classList.add("drop-" + nt.kind); }
     }
     target = nt;
     otel.span("tab_drag_move", { groups: zones.length, target: target ? target.kind : "" }, performance.now() - mT0);
@@ -4881,8 +4893,8 @@ function tabDragStart(e, g, i) {
       focusGroup(t.g);
       await loadActive(t.g);
       renderTabs(t.g);
-    } else {                                 // edge: split, then collapse an
-      await splitWith(t.g, "row", tab);      // emptied source (lone-tab drag to
+    } else {                                 // edge/bottom: split, then collapse an
+      await splitWith(t.g, t.kind === "bottom" ? "col" : "row", tab);  // emptied source (lone-tab drag to
       if (!g.tabs.length) await collapseGroup(g, "tabdrag-edge");  // own edge nets a plain move)
       else { await loadActive(g); renderTabs(g); }
     }

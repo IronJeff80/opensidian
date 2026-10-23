@@ -644,6 +644,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .pane.drop-edge::after { content: ""; position: absolute; top: 32px; right: 0;
                          bottom: 0; width: 40px; pointer-events: none;
                          background: var(--accent-blue-veil) }
+/* #17: the split-down zone — the pane's bottom 40px, same veil as the side zone. */
+.pane.drop-bottom::after { content: ""; position: absolute; left: 0; right: 0;
+                           bottom: 0; height: 40px; pointer-events: none;
+                           background: var(--accent-blue-veil) }
 .content { flex: 1 1 0; display: flex; min-width: 0; min-height: 0; position: relative;
             container: notepane / inline-size }   /* R22: min-width:0. minimalmargin: the query container of the narrow-pane margin clamp (.lp/.preview padding) */
 /* R8.8: one of .editor/.lp/.preview fills the pane (JS toggles display) —
