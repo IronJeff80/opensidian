@@ -469,6 +469,8 @@
       /* ------------------------------------------------ edges */
       renderEdges() {
         const g = this.edgeEl; g.textContent = "";
+        const CE = window.CanvasEdges;   // goal cv-edges: handles, hit strokes, edge selection and editing (canvas-edges.js)
+        if (CE) CE.attach(this, { changed, colorOf, newId });
         // the layer spans the board's content (WebKit clips an outer <svg> to its box even with overflow: visible),
         // its viewBox in canvas coordinates so the paths keep the file's numbers
         let x0 = 0, y0 = 0, x1 = 1, y1 = 1, any = false;
@@ -502,7 +504,9 @@
             const t = sv("text", { class: "canvas-edge-label", x: String(mx), y: String(my), "text-anchor": "middle" }, grp);
             t.textContent = e.label;
           }
+          if (CE) CE.paint(this, e, grp, { p1, p2, c1, c2, fs, ts });
         }
+        if (CE) CE.done(this);
       }
 
       /* ------------------------------------------------ viewport */
