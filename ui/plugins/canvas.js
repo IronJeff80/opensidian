@@ -382,6 +382,7 @@
         this.requestSave = () => { if (this.readonly) return; if (this.view) this.view.dirty = true; this._saveSoon(); changed(); };
         this.wire();
         this.applyTransform();
+        if (window.CanvasNav) window.CanvasNav.attach(this, X, changed);   // goal cv-nav: pan/zoom keys, controls, grid, settings (canvas-nav.js)
         // a view opens hidden (0x0): fit the board the first time it has a size
         this.fitted = false;
         if (typeof ResizeObserver === "function") {
@@ -595,6 +596,7 @@
         });
         w.addEventListener("wheel", e => {
           if (inEditor(e.target) && !(e.ctrlKey || e.metaKey)) return;
+          if (window.CanvasNav && window.CanvasNav.onWheel(this, e)) return;   // goal cv-nav: shift+wheel pans sideways, space+wheel zooms
           e.preventDefault();
           if (e.ctrlKey || e.metaKey) this.zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.002));
           else { this.tx -= e.deltaX; this.ty -= e.deltaY; this.applyTransform(); }
