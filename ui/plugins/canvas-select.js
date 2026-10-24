@@ -215,15 +215,15 @@
     }
     if (ro(c)) return null;
     const sides = sidesAt(n, e);
-    let toggleOff = false;
+    let toggleOff = false, collapse = false;
     if (!c.selection.has(n)) { c.select(n, e.shiftKey); if (!e.shiftKey) toFront(c, n); }
     else if (e.shiftKey && !sides) toggleOff = true;          // decided on release: a shift-DRAG keeps it
-    else if (!e.shiftKey && !sides) toFront(c, n);
+    else if (!e.shiftKey && !sides) { toFront(c, n); collapse = c.selection.size > 1; }   // a plain CLICK (no drag) selects it alone
     if (sides) {
       if (!c.selection.has(n)) c.select(n, false);
       return Object.assign(base, { mode: "resize", sides, start: box(n.data), ratio: n.data.width / Math.max(1, n.data.height) });
     }
-    return Object.assign(base, { mode: "move", toggleOff, alt: !!e.altKey, start: null });
+    return Object.assign(base, { mode: "move", toggleOff, collapse, alt: !!e.altKey, start: null });
   }
   function beginMove(c, d) {
     if (d.alt && !ro(c)) duplicateForDrag(c);
@@ -335,6 +335,7 @@
     if (d.mode === "move" && !d.moved && d.toggleOff && d.node) {   // shift-click on a selected card: out of the selection
       c.selection.delete(d.node); d.node.setSelected(false); selected(c); return;
     }
+    if (d.mode === "move" && !d.moved && d.collapse && d.node) { c.deselectAll(); c.select(d.node, false); return; }
     if (d.moved) c.requestSave();
     refresh(c); notify(c);
   }
