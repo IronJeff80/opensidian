@@ -14,6 +14,9 @@
      write <path>    atomic replace of an EXISTING canvas file
      create <path>   a NEW canvas file (EEXIST if anything is there); the
                      parent folder must exist
+     rename <path>   to the .canvas path in data (EEXIST if taken; parent must exist)
+     trash <path>    move into .trash/ (never over an earlier delete); returns where
+     links           {canvas: [file-card targets]} for every listed canvas
 
    Every path goes through vaultfs::plugin_rel (no absolute / dot / NUL /
    backslash / percent-encoded forms) and must name a `.canvas` leaf with no
@@ -30,6 +33,8 @@ use std::path::{Path, PathBuf};
 /// the largest canvas file read or written (a canvas is JSON text)
 pub const CANVAS_MAX: u64 = 16 << 20;
 pub const EXT: &str = ".canvas";
+/// the vault trash folder a deleted canvas moves to (same as a deleted note)
+pub const TRASH: &str = ".trash";
 
 fn err(op: &str, path: &str, why: &str) -> String {
     format!("{why}, canvas {op} '{path}'")
@@ -98,6 +103,31 @@ pub fn op(root: &Path, op: &str, path: &str, data: Option<&str>) -> Result<Value
     if op == "list" {
         return Ok(json!(list(root)));
     }
+    if op == "links" {
+        // every canvas -> the vault paths its file cards point at (CV-141: a file card is a link of the canvas)
+        let v = Vault::open(root).map_err(|x| vaultfs::plugin_err(op, path, &x))?;
+        let mut m = serde_json::Map::new();
+        for c in list(root) {
+            let Ok(b) = v.p_read(Path::new(&c), CANVAS_MAX) else { continue };
+            let Ok(doc) = serde_json::from_slice::<Value>(&b) else { continue };
+            let mut fs: Vec<String> = doc
+                .get("nodes")
+                .and_then(Value::as_array)
+                .map(|ns| {
+                    ns.iter()
+                        .filter(|n| n.get("type").and_then(Value::as_str) == Some("file"))
+                        .filter_map(|n| n.get("file").and_then(Value::as_str).map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            fs.sort();
+            fs.dedup();
+            if !fs.is_empty() {
+                m.insert(c, json!(fs));
+            }
+        }
+        return Ok(Value::Object(m));
+    }
     let rel = canvas_rel(op, path)?;
     let e = |x: io::Error| vaultfs::plugin_err(op, path, &x);
     let v = Vault::open(root).map_err(e)?;
@@ -127,6 +157,26 @@ pub fn op(root: &Path, op: &str, path: &str, data: Option<&str>) -> Result<Value
                 return Err(err(op, path, "EEXIST: file already exists"));
             }
             v.p_write(&rel, b, false).map(|_| Value::Null).map_err(e)
+        }
+        "rename" => {
+            // data = the new vault-relative .canvas path; never over an existing entry, parent must exist
+            let to = data.ok_or_else(|| err(op, path, "EINVAL: missing data"))?;
+            let trel = canvas_rel(op, to)?;
+            match v.p_stat(&rel).map_err(e)? {
+                s if s.kind == "file" => {}
+                _ => return Err(err(op, path, "EISDIR: not a file")),
+            }
+            if exists(&v, &trel).map_err(e)? {
+                return Err(err(op, to, "EEXIST: file already exists"));
+            }
+            v.p_rename(&rel, &trel).map(|_| Value::Null).map_err(e)
+        }
+        "trash" => {
+            // move to <vault>/.trash/<stem>.canvas (stem.1.canvas, ... if taken); returns the trash path
+            let stem = rel.file_name().and_then(|s| s.to_str()).map(|s| s[..s.len() - EXT.len()].to_string()).unwrap_or_default();
+            let tdir = Path::new(TRASH);
+            v.mkdir_p(tdir).map_err(e)?;
+            v.trash(&rel, tdir, &stem, &EXT[1..]).map(|d| Value::String(d.display().to_string())).map_err(e)
         }
         _ => Err(format!("ENOSYS: canvas op {op:?} does not exist")),
     }
@@ -230,5 +280,49 @@ mod tests {
         assert!(op(&root, "write", "B.canvas", Some(&big)).unwrap_err().starts_with("EFBIG"));
         assert_eq!(fs::read(root.join("B.canvas")).unwrap(), vec![0xff, 0xfe, 0x00]);
         assert!(op(&root, "write", "B.canvas", None).is_err());
+    }
+    #[test]
+    fn canvasfs_rename_keeps_bytes_and_never_overwrites() {
+        let (root, out) = fresh("rename");
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::write(root.join("A.canvas"), "{\"nodes\":[]}\n").unwrap();
+        fs::write(root.join("Taken.canvas"), "keep").unwrap();
+        op(&root, "rename", "A.canvas", Some("sub/B.canvas")).unwrap();
+        assert!(!root.join("A.canvas").exists());
+        assert_eq!(fs::read_to_string(root.join("sub/B.canvas")).unwrap(), "{\"nodes\":[]}\n");
+        assert!(op(&root, "rename", "sub/B.canvas", Some("Taken.canvas")).unwrap_err().starts_with("EEXIST"));
+        assert_eq!(fs::read_to_string(root.join("Taken.canvas")).unwrap(), "keep");
+        for to in ["B.md", ".trash/B.canvas", "../outside/B.canvas", "nodir/B.canvas"] {
+            assert!(op(&root, "rename", "sub/B.canvas", Some(to)).is_err(), "rename to {to:?}");
+        }
+        assert!(op(&root, "rename", "sub/B.canvas", None).is_err());
+        assert!(root.join("sub/B.canvas").exists());
+        assert!(fs::read_dir(&out).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn canvasfs_trash_moves_into_dot_trash() {
+        let (root, out) = fresh("trash");
+        fs::write(root.join("D.canvas"), "one").unwrap();
+        assert_eq!(op(&root, "trash", "D.canvas", None).unwrap(), json!(".trash/D.canvas"));
+        fs::write(root.join("D.canvas"), "two").unwrap();
+        assert_eq!(op(&root, "trash", "D.canvas", None).unwrap(), json!(".trash/D.1.canvas"));
+        assert!(!root.join("D.canvas").exists());
+        assert_eq!(fs::read_to_string(root.join(".trash/D.canvas")).unwrap(), "one");
+        assert_eq!(fs::read_to_string(root.join(".trash/D.1.canvas")).unwrap(), "two");
+        fs::write(out.join("T.canvas"), "outside").unwrap();
+        symlink(out.join("T.canvas"), root.join("L.canvas")).unwrap();
+        assert!(op(&root, "trash", "L.canvas", None).is_err());
+        assert!(op(&root, "trash", "Gone.canvas", None).is_err());
+        assert_eq!(fs::read_to_string(out.join("T.canvas")).unwrap(), "outside");
+    }
+
+    #[test]
+    fn canvasfs_links_lists_file_cards() {
+        let (root, _) = fresh("links");
+        fs::write(root.join("S.canvas"), r#"{"nodes":[{"id":"f","type":"file","file":"Note.md"},{"id":"g","type":"file","file":"Note.md"},{"id":"t","type":"text","text":"Other.md"}]}"#).unwrap();
+        fs::write(root.join("Bad.canvas"), "not json").unwrap();
+        fs::write(root.join("E.canvas"), "{\"nodes\":[]}").unwrap();
+        assert_eq!(op(&root, "links", "", None).unwrap(), json!({"S.canvas": ["Note.md"]}));
     }
 }

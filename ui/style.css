@@ -480,6 +480,11 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
                 border: 1px solid var(--border-focus-ring); border-radius: 3px;
                 font: inherit; padding: 0 4px; outline: none }
 .bmrow:hover { background: var(--bg-surface) }
+/* bug-ui #11: the bookmark list is a drag surface, not prose — a press-and-drag moves a row and
+   selects nothing (the explorer and tab strip are unselectable too); the inline rename field keeps
+   its own text selection. */
+#bmlist { user-select: none }
+#bmlist .bmren { user-select: text }
 /* bmdrag drop feedback — geometry as MEASURED in the bmdrag recon
    (docs/recon-bmdrag/README): the between-rows/background indicator is a 3px line spanning the
    pane (cases 1/3 — Obsidian's own render wobbles a pixel on subpixel offset, so
@@ -644,6 +649,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .pane.drop-edge::after { content: ""; position: absolute; top: 32px; right: 0;
                          bottom: 0; width: 40px; pointer-events: none;
                          background: var(--accent-blue-veil) }
+/* #17: the split-down zone — the pane's bottom 40px, same veil as the side zone. */
+.pane.drop-bottom::after { content: ""; position: absolute; left: 0; right: 0;
+                           bottom: 0; height: 40px; pointer-events: none;
+                           background: var(--accent-blue-veil) }
 .content { flex: 1 1 0; display: flex; min-width: 0; min-height: 0; position: relative;
             container: notepane / inline-size }   /* R22: min-width:0. minimalmargin: the query container of the narrow-pane margin clamp (.lp/.preview padding) */
 /* R8.8: one of .editor/.lp/.preview fills the pane (JS toggles display) —
@@ -778,8 +787,15 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 #p-recent .p-newwin { position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
             background: none; border: 0; color: var(--text-chrome-muted); cursor: pointer; font-size: 15px }
 #p-recent .p-newwin:hover { color: var(--text-chrome) }
-#p-close { position: absolute; top: 10px; right: 12px; background: none;
-           border: 0; color: var(--text-chrome-muted); font-size: 15px; cursor: pointer }
+/* bug-ui #14: the picker close X is the same control as Settings' #sclose — same 12px stroked svg,
+   same button box, same muted colour + hover, and the same place relative to its card's edge:
+   #sclose sits 1px border + 12px header padding from the right, centred in the 35px header below the
+   1px top border (centre 18.5px). #pcard has no border, so the numbers are written out. */
+#p-close { position: absolute; top: 18.5px; right: 13px; transform: translateY(-50%); background: none;
+           border: 0; color: var(--text-chrome-muted); font-size: 14px; cursor: pointer;
+           display: inline-flex; align-items: center; justify-content: center }
+#p-close svg { display: block }
+#p-close:hover { color: var(--text-chrome) }
 #bar button svg, #bmbar button svg { width: 16px; height: 16px; display: block; margin: 0 auto }
 #vswitch svg { width: 13px; height: 13px; vertical-align: -2px; margin-right: 6px }
 
@@ -1195,6 +1211,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 .fcands { max-height: 360px; overflow-y: auto; border-top: 1px solid var(--bg-surface) }
 .sbtn { padding: 4px 10px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 4px; white-space: nowrap }
 .sbtn.acc { background: var(--interactive-accent); border-color: var(--interactive-accent); color: var(--bg-ribbon) }
+/* bug-ui #9: a clickable in Settings shows the hand, never the text I-beam the UA hands a
+   <span role=button> (cursor:auto over text). Disabled controls keep the arrow. */
+.sbtn, .supdlink, #sbox [role=button], #sbox button { cursor: pointer }
+#sbox [aria-disabled="true"], #sbox .srow.dis .sbtn { cursor: default }
 .supd { margin-top: 4px }
 .sicons { flex: none; display: flex; align-items: center; gap: 19px; color: var(--text-chrome-faint) }
 .sico { width: 16px; height: 16px; display: flex; align-items: center; justify-content: center;

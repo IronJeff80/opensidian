@@ -199,7 +199,9 @@
         if (this.isEditing) return;
         this.contentEl.textContent = "";
         const t = el("div", "canvas-text", this.contentEl);
-        t.textContent = this.data.text;        // plain text: a canvas never injects markup
+        t.textContent = this.data.text;        // plain text first; canvas-cards.js swaps in the sanitized Markdown render
+        const cc = window.__osCanvasCards;
+        if (cc) cc.text(this, { app, X, deps });
       }
       isEditable() { return true; }
       startEditing() {
@@ -254,6 +256,8 @@
         this.labelEl.textContent = baseName(p) + (this.subpath || "");
         this.contentEl.textContent = "";
         const f = this.file;
+        const cc = window.__osCanvasCards;   // media / other files (canvas-cards.js); false = a note, a canvas or missing: painted below
+        if (cc && cc.file(this, { app, X, deps, file: f, missing: !f && modelOn() })) return;
         const reg = app.embedRegistry, mdc = reg && reg.embedByExtension && Object.prototype.hasOwnProperty.call(reg.embedByExtension, "md") ? reg.embedByExtension.md : null;
         if (f && f.extension === "md" && typeof mdc === "function") {
           const host = el("div", "canvas-file-embed", this.contentEl);
@@ -266,7 +270,7 @@
             child.showPreview = () => node.stopEditing();
             this.child = child;
             this.addChild(child);
-            if (typeof child.loadFile === "function") child.loadFile().catch(e => console.error("[canvas] file node load:", e));
+            if (typeof child.loadFile === "function") child.loadFile().then(() => changed(), e => console.error("[canvas] file node load:", e));   // the census reads the painted note
           }
           return;
         }
@@ -330,6 +334,8 @@
         const a = el("div", "canvas-link", this.contentEl);
         a.textContent = this.data.url;          // shown, never loaded: a canvas does not fetch the web
         a.title = this.data.url;
+        const cc = window.__osCanvasCards;    // Ctrl/Cmd-click -> open_external (canvas-cards.js)
+        if (cc) cc.link(this, { app, X, deps });
       }
     }
 
@@ -337,6 +343,8 @@
       renderContent() {
         this.labelEl.textContent = this.data.label || "";
         this.contentEl.textContent = "";
+        const cc = window.__osCanvasCards;    // background image + in-place rename (canvas-cards.js)
+        if (cc) cc.group(this, { app, X, deps });
       }
     }
     const NODE_CLASS = { text: TextNode, file: FileNode, link: LinkNode, group: GroupNode };
@@ -395,6 +403,7 @@
         for (const d of doc.nodes) this.addNode(new NODE_CLASS[d.type](this, d));
         for (const e of doc.edges) this.edges.set(e.id, e);
         this.renderEdges();
+        if (window.CanvasHistory) window.CanvasHistory.record(this, "import", changed);   // goal cv-history: a newly opened document starts a clean history
       }
       // the document as it is now: the parsed root (unknown fields kept), its nodes in board order,
       // the edges whose two ends are still on the board
@@ -410,6 +419,7 @@
         if (node.data.type === "group") this.groupEl.appendChild(node.containerEl); else this.nodeEl.appendChild(node.containerEl);
         node.load();
         node.render();
+        if (window.CanvasHistory) window.CanvasHistory.record(this, "add", changed);
         return node;
       }
       createTextNode(o) {
@@ -445,6 +455,7 @@
         node.detach();
         this.renderEdges();
         this.requestSave();
+        if (window.CanvasHistory) window.CanvasHistory.record(this, "remove", changed);
       }
       deleteSelection() { for (const n of [...this.selection]) this.removeNode(n); }
       select(node, add) {

@@ -1,12 +1,12 @@
 {
   "productName": "opensidian",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "identifier": "dev.koto.opensidian",
   "build": { "frontendDist": "../ui" },
   "app": {
     "withGlobalTauri": true,
     "security": { "csp": "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: opensidian-img:; font-src 'self'; connect-src ipc: http://ipc.localhost" },
-    "windows": [{ "title": "opensidian", "width": 1100, "height": 700, "minWidth": 300, "minHeight": 200, "decorations": false }]
+    "windows": [{ "title": "Opensidian", "width": 1100, "height": 700, "minWidth": 300, "minHeight": 200, "decorations": false }]
   },
   "bundle": { "active": false }
 }
