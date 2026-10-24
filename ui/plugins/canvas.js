@@ -462,6 +462,7 @@
         if (!add) for (const n of this.selection) if (n !== node) n.setSelected(false);
         if (!add) this.selection.clear();
         if (node) { this.selection.add(node); node.setSelected(true); }
+        if (window.CanvasSelect) window.CanvasSelect.selected(this);   // goal cv-select: toolbar + bounding box follow the selection
       }
       deselectAll() { this.select(null, false); }
 
@@ -545,6 +546,8 @@
       wire() {
         const w = this.wrapperEl;
         let drag = null;
+        const S = window.CanvasSelect;   // goal cv-select: selecting, moving and resizing live in canvas-select.js
+        if (S) S.install(this, changed);
         const nodeOf = t => { const c = t && t.closest ? t.closest(".canvas-node") : null; return c && this.nodes.get(c.dataset.nodeId) || null; };
         const inEditor = t => !!(t && t.closest && t.closest("textarea, .markdown-source-view, [contenteditable=true]"));
         w.addEventListener("pointerdown", e => {
@@ -553,6 +556,7 @@
           const n = nodeOf(e.target);
           w.focus({ preventScroll: true });
           if (this.readonly && n) return;
+          if (S) { drag = S.down(this, e, n); if (drag) { try { w.setPointerCapture(e.pointerId); } catch (_) {} } e.preventDefault(); return; }
           const mode = n && e.target.classList.contains("canvas-node-resizer") ? "resize" : n && e.button === 0 ? "move" : "pan";
           if (n) { if (!this.selection.has(n)) this.select(n, e.shiftKey); } else this.deselectAll();
           drag = { mode, x: e.clientX, y: e.clientY, moved: false, tx: this.tx, ty: this.ty, node: n,
@@ -562,6 +566,7 @@
         });
         w.addEventListener("pointermove", e => {
           if (!drag) return;
+          if (drag.sel) { S.move(this, drag, e); return; }
           const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
           if (!drag.moved && Math.abs(dx) + Math.abs(dy) < 3) return;
           drag.moved = true;
@@ -575,6 +580,7 @@
           if (!drag) return;
           const d = drag; drag = null;
           try { w.releasePointerCapture(e.pointerId); } catch (_) {}
+          if (d.sel) { S.up(this, d, e); return; }
           if (d.moved && d.mode !== "pan") this.requestSave();
         };
         w.addEventListener("pointerup", end);
@@ -595,6 +601,7 @@
         }, { passive: false });
         w.addEventListener("keydown", e => {
           if (inEditor(e.target)) return;
+          if (S && S.onKey(this, e)) return;
           if ((e.key === "Delete" || e.key === "Backspace") && this.selection.size && !this.readonly) { e.preventDefault(); e.stopPropagation(); this.deleteSelection(); }
           else if (e.key === "Escape" && this.selection.size) { e.stopPropagation(); this.deselectAll(); }
         });
