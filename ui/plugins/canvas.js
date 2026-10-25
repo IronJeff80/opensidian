@@ -206,6 +206,8 @@
       isEditable() { return true; }
       startEditing() {
         if (this.isEditing) return;
+        const cf = window.__osCanvasFiles;    // goal cv-files CV-025: the note editor (CM6) first, this textarea is the fallback
+        if (cf && cf.startEditing(this, { app, X, deps })) return;
         this.isEditing = true;
         this.containerEl.classList.add("is-editing");
         this.contentEl.textContent = "";
@@ -218,6 +220,8 @@
       }
       stopEditing() {
         if (!this.isEditing) return;
+        const cf = window.__osCanvasFiles;
+        if (cf && cf.stopEditing(this, { app, X, deps })) return;
         const v = this.textareaEl ? this.textareaEl.value : this.data.text;
         this.isEditing = false; this.textareaEl = null;
         this.containerEl.classList.remove("is-editing");
@@ -256,6 +260,8 @@
         this.labelEl.textContent = baseName(p) + (this.subpath || "");
         this.contentEl.textContent = "";
         const f = this.file;
+        const cf = window.__osCanvasFiles;   // goal cv-files: PDF + canvas file cards (canvas-files.js); false = not ours
+        if (cf && cf.file(this, { app, X, deps, file: f, missing: !f && modelOn() })) return;
         const cc = window.__osCanvasCards;   // media / other files (canvas-cards.js); false = a note, a canvas or missing: painted below
         if (cc && cc.file(this, { app, X, deps, file: f, missing: !f && modelOn() })) return;
         const reg = app.embedRegistry, mdc = reg && reg.embedByExtension && Object.prototype.hasOwnProperty.call(reg.embedByExtension, "md") ? reg.embedByExtension.md : null;
@@ -655,7 +661,11 @@
         try { text = await io("read", p); } catch (e) { if (this.path === p) this.setError("This canvas could not be read: " + errText(e)); return; }
         if (this.path !== p) return;
         let doc;
-        try { doc = parseCanvas(text); } catch (e) { this.setError("This canvas could not be opened: " + errText(e) + ". The file was left unchanged."); return; }
+        try { doc = parseCanvas(text); } catch (e) { this.setError("This canvas could not be opened: " + errText(e) + ". The file was left unchanged.");
+          const cf = window.__osCanvasFiles;   // goal cv-files CV-020: an "Open read-only" button when only dangling edges refused it
+          if (cf) try { cf.refused(this, text, { app, X, deps, model, changed }); } catch (er) { console.error("[canvas] read-only offer:", er); }
+          return;
+        }
         this.lastText = text;
         this.canvas.importData(doc);
         this.canvas.fitted = false;
