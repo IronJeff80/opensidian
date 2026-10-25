@@ -3406,14 +3406,19 @@ function xiAgain() {
      stream of calls in consecutive frames (a pan, a drag) is not rebuilt every frame
      either — that alone is a frame budget: it publishes UT_TRAIL ms after the stream
      goes quiet, and at least every UT_MAXW ms while it lasts.
-   A timer backs every rAF so a window that gets no frames still publishes. */
+   A timer backs every rAF so a window that gets no frames still publishes.
+   title-fresh: the trailing rule applies ONLY while a canvas pan/drag over a big board is live
+   (CanvasPerf.live(), ui/plugins/canvas-perf.js). A heavy census anywhere else (a loaded box
+   makes an ordinary census cost > UT_HEAVY) publishes within a frame like any other; when the
+   gesture ends the next frame (or the trail timer) publishes the final state. */
 const UT_HEAVY = 8, UT_TRAIL = 120, UT_MAXW = 1000;
+const cvLive = () => { const P = window.CanvasPerf; try { return !!(P && P.live && P.live()); } catch (_) { return false; } };
 let utRan = false, utDue = false, utRaf = 0, utRafT = 0, utCost = 0, utLast = -1e9, utTrailT = 0, utFirst = 0;
 function utFrame() {             // a new frame: the next call may publish again
   if (utRaf) { cancelAnimationFrame(utRaf); utRaf = 0; }
   clearTimeout(utRafT); utRafT = 0;
   utRan = false;
-  if (utDue && !utTrailT) { utDue = false; updateTitleNow(); }
+  if (utDue && (!utTrailT || !cvLive())) { utDue = false; updateTitleNow(); }
 }
 function utArm() {
   if (!utRaf) utRaf = requestAnimationFrame(utFrame);
@@ -3421,7 +3426,7 @@ function utArm() {
 }
 function updateTitle() {
   const now = performance.now();
-  if (utCost > UT_HEAVY && now - utLast < UT_TRAIL) {   // heavy census under a stream: trail it
+  if (utCost > UT_HEAVY && now - utLast < UT_TRAIL && cvLive()) {   // heavy census under a LIVE canvas pan/drag: trail it
     utDue = true;
     if (!utTrailT) utFirst = now;
     clearTimeout(utTrailT);
