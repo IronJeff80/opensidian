@@ -2099,6 +2099,14 @@ function noteMenu(e, nm) {                 // right-click a tree note row
     item("Open in new window", null, "Single-window app: there is no second window to open into");   // REQ-16 EXCEPTION
     sep(); }
   mkItem(bmCache.includes(nm) ? "Remove bookmark" : "Bookmark", () => toggleBm(nm));
+  /* CVR-A-087: the row names the note, so its menu can rename it. The rename verb
+     addresses the focused tab's note (F2 / palette), so the row's note is shown
+     there first; the disk move and the link prompt stay cmdRename's. */
+  mkItem("Rename...", async () => {
+    await rowOpen(nm);
+    const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
+    if (t && !t.kind && t.name === nm) cmdRename();
+  });
   /* R24.7: Delete lives HERE, on the explorer row, because that is where the
      user is when they decide a note is finished — and it opens a question, not
      a deletion. askDelete does no I/O of its own beyond counting the inbound
@@ -8808,6 +8816,16 @@ async function applyRename(old, nn) {   // post-rename bookkeeping (F2 / cmdRena
   }
   const mi = mruList.indexOf(old);
   if (mi >= 0) mruList[mi] = nn;
+  /* CVR-A-089: a note MOVED to another folder (same name, new path — the explorer
+     drag, "Move file to") takes the canvas file cards that name it along at once,
+     with no prompt: a card holds a vault path, and the old one now names nothing.
+     A RENAME (new basename) still relinks the cards only on the R34 consent
+     (runUpdateLinks0, CV-143). */
+  const bn = s => s.split("/").pop();
+  if (bn(old) === bn(nn) && window.__osCanvasFiles) {
+    try { await window.__osCanvasFiles.relink(old, nn, { inv, app: PLG && PLG.app }); }
+    catch (err) { say("Canvas file cards not updated — " + String(err && err.message || err)); }
+  }
   for (const h of groups()) renderTabs(h);
   await refreshTree();
   /* R9.8: the note's name changed, so the rust side rewrote its entry in
