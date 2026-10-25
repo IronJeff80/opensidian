@@ -143,6 +143,17 @@ body.os-has-plugin-status #main .status { bottom: 30px }
 .canvas-control { padding: 2px 8px; cursor: pointer }
 .canvas-error { margin: 24px; padding: 16px; border: 1px solid var(--text-error, #e93147); border-radius: 8px; color: var(--text-normal, #ddd) }
 .canvas-error-title { font-weight: 600; color: var(--text-error, #e93147); margin-bottom: 6px }
+/* cv-export: the "Export as image" dialog (ui/plugins/canvas-export.js) */
+.cvx-modal { min-width: 420px }
+.cvx-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 8px 0 }
+.cvx-label { color: var(--text-normal, #ddd) }
+.cvx-ctl { display: flex; gap: 4px }
+.cvx-opt { padding: 3px 10px; cursor: pointer }
+.cvx-opt.is-active { background: var(--interactive-accent, #7f6df2); color: var(--text-on-accent, #fff) }
+.cvx-size { font-family: var(--font-monospace, monospace) }
+.cvx-warn { min-height: 1.2em; color: var(--text-error, #e93147); font-size: 12px }
+.cvx-foot { display: flex; justify-content: flex-end; margin-top: 8px }
+.cvx-go { padding: 4px 16px; cursor: pointer }
 /* top5-func: a plugin setting tab's SettingTab.icon in the Settings sidebar (ui/plugins/settings.js nav) */
 .snavi-icon { display: inline-flex; width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px }
 .snavi-icon > svg { width: 14px; height: 14px }

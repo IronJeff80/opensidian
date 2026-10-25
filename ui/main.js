@@ -5277,6 +5277,8 @@ function runUpdateLinks(old, nn) {          // perfhunt: rename_links = link rew
 async function runUpdateLinks0(old, nn) {    // the CONSENTED half, and the only caller of update_links
   try { await inv("update_links", { old, new: nn }); }
   catch (err) { say(String(err && err.message || err)); }
+  // goal cv-files CV-143: canvas file cards follow the note too — same consent, canvas_io relink (ui/plugins/canvas-files.js)
+  if (window.__osCanvasFiles) try { await window.__osCanvasFiles.relink(old, nn, { inv, app: PLG && PLG.app }); } catch (err) { say("Canvas file cards not updated — " + String(err && err.message || err)); }
   // Bookkeeping ONLY, deliberately: the rewrite changed text in OTHER notes, and
   // reloading them here would discard any unsaved buffer they hold (some group's
   // dirty tab is not this rename's business). F2's rename does the same and no
@@ -6188,9 +6190,10 @@ function renderNode(node, prefix, depth, out) {
     // The tree DOM is rebuilt only when the note/folder list changes (refreshTree).
     row.dataset.folder = full;                  // R24.6: the drop target's identity, off the DOM
     row.oncontextmenu = e => folderMenu(e, full);   // goal canvas-core: New canvas in this folder
+    row.addEventListener("mousedown", e => treeDragStart(e, full, true));   // cv-drop CV-100: a folder row drags onto a board (plugin drop only, never a move)
     const kids = document.createElement("div");
     kids.className = "tkids" + (open ? "" : " collapsed");
-    row.onclick = () => act("folder_toggle", { depth: full.split("/").length, open: !unfold.has(full), notes: node.dirs.get(d).notes.length, rows: kids.childElementCount }, () => {
+    row.onclick = () => treeClickEaten() ? undefined : act("folder_toggle", { depth: full.split("/").length, open: !unfold.has(full), notes: node.dirs.get(d).notes.length, rows: kids.childElementCount }, () => {
       const o = !unfold.has(full);              // o = it was collapsed, so it opens now
       o ? unfold.add(full) : unfold.delete(full);
       lsTouch();
@@ -6278,15 +6281,15 @@ function treeClickEaten() {              // a completed drag must not also open/
    HTML5 contract) gets the drop — anything else is the old "dropped on
    nothing", and the app's own panes never see a synthetic DOM drag. */
 let treePlgDrag = null;
-function treePlgDragStart(nm) {
+function treePlgDragStart(nm, dir) {         // cv-drop: dir = a folder row (dragFolder payload)
   if (!PLG || !PLG.app.dragManager) return null;
-  const f = PLG.app.vault.getAbstractFileByPath(wsPathOut(nm));
-  if (!(f instanceof PLG.X.TFile)) return null;
+  const f = PLG.app.vault.getAbstractFileByPath(dir ? nm : wsPathOut(nm));
+  if (!(f instanceof (dir ? PLG.X.TFolder : PLG.X.TFile))) return null;
   let dt;
   try { dt = new DataTransfer(); } catch (_) { return null; }
   const dm = PLG.app.dragManager;
   let data;
-  try { data = dm.dragFile({ dataTransfer: dt }, f, "file-explorer"); } catch (_) { return null; }
+  try { data = dir ? dm.dragFolder({ dataTransfer: dt }, f, "file-explorer") : dm.dragFile({ dataTransfer: dt }, f, "file-explorer"); } catch (_) { return null; }
   dm.draggable = data;
   return { dt, data, end() { if (dm.draggable === data) dm.draggable = null; } };
 }
@@ -6309,7 +6312,7 @@ function treePlgDrop(pd, ev) {
   } catch (e) { console.warn("[tree] plugin drop:", e); return false; }
   finally { pd.end(); }
 }
-function treeDragStart(e, nm) {
+function treeDragStart(e, nm, dir) {
   if (e.button !== 0) return;
   // top5-func: the press is this machine's, not WebKit's. Without this the travel selected text
   // across the panes, and the NEXT press on that selection started a native text drag that
@@ -6332,7 +6335,7 @@ function treeDragStart(e, nm) {
       ghost.textContent = base;
       document.body.appendChild(ghost);
       dragTok = "-:" + base;             // a drag is UP with no destination yet
-      treePlgDrag = treePlgDragStart(nm);
+      treePlgDrag = treePlgDragStart(nm, dir);
       updateTitle();
       // rects cached ONCE (R20): a per-frame getBoundingClientRect over every
       // folder row is a layout read per mousemove on a 500-row explorer.
@@ -6341,6 +6344,7 @@ function treeDragStart(e, nm) {
         .map(el => ({ el, f: el.dataset.folder, r: el.getBoundingClientRect() }))
         .filter(z => z.r.height > 0 && z.f != null);
       zones.push({ el: $("tree"), f: "", r: $("tree").getBoundingClientRect() });   // the vault ROOT
+      if (dir) zones = [];               // cv-drop: a folder is no move source (R24.5) — only a plugin view takes it
     }
     ghost.style.transform = "translate3d(" + (ev.clientX + 10) + "px," + (ev.clientY + 12) + "px,0)";
     let nt = null;
@@ -6377,6 +6381,7 @@ function treeDragStart(e, nm) {
     const pd = treePlgDrag; treePlgDrag = null;
     if (ghost && !t && pd && treePlgDrop(pd, ev)) { treeEat = 1; updateTitle(); return; }   // a plugin view took it
     if (pd) pd.end();
+    if (dir) { if (ghost) treeEat = performance.now(); updateTitle(); return; }   // cv-drop: a folder dropped on nothing moves nothing
     if (!ghost || !t) { updateTitle(); return; }   // plain click, or dropped on nothing
     treeEat = 1;                                   // the mouseup's click is not an "open this note"
     await moveNoteTo(nm, t.f);
@@ -7440,6 +7445,21 @@ function canvasTok() {
   if (v.canvas.selection.size) t += " [cvhsel:" + [...v.canvas.selection].slice(0, 16).map(n => esc(n.id)).join(",") + "]";
   // goal cv-cards: [cvcard:<id>|...] per painted card, [cvcard:@pan|tx,ty], [cvext:<url>] (ui/plugins/canvas-cards.js)
   if (window.__osCanvasCards) try { t += window.__osCanvasCards.census(v); } catch (_) {}
+  // cv-select tokens: [cvsel:n=] [cvz:<card paint order>] [cvopt:grid=|obj=|step=] [cvbox:x,y,w,h] [cvstb:<buttons>@x,y]
+  // [cvstbb:<button>@x,y|...] [cvpal:<1..6|clear>@x,y|...] (ui/plugins/canvas-select.js)
+  if (window.CanvasSelect) try { t += window.CanvasSelect.census(v); } catch (_) {}
+  // goal cv-nav: [cvnz:<zoom>|tx|ty] [cvctl:<control>=x,y|...] [cvgrid:sz=|z=] [cvnopt:g=|o=|ro=] [cvset:n=|<toggle>=x,y] [cvhelp:n=] [cvjump:n=]
+  if (window.CanvasNav) try { t += window.CanvasNav.census(v); } catch (_) {}
+  // cv-menus tokens: [cvtool:text@x,y|note@x,y|media@x,y] [cvmpick:<kind>|n=|<first>] [cvmprompt:<kind>|<value>] [cvmrow:<note>@x,y|...] (ui/plugins/canvas-menus.js)
+  if (window.CanvasMenus) try { t += window.CanvasMenus.census(v); } catch (_) {}
+  // cv-edges tokens: [cve:] [cvhandle:] [cvehov:] [cvesel:] [cvetb:] [cvepal:] [cvedir:] [cvelab:] [cvemenu:] [cvefit:] (ui/plugins/canvas-edges.js)
+  if (window.CanvasEdges) try { t += window.CanvasEdges.census(v); } catch (_) {}
+  // cv-drop tokens: [cvdrop:<copied>/<refused>] [cvdropf:<folder>|n=|cap=] [cvdropmsg:<text>] (ui/plugins/canvas-drop.js)
+  if (window.CanvasDrop) try { t += window.CanvasDrop.census(); } catch (_) {}
+  // cv-export tokens: [cvxdlg:] the open export dialog, [cvexport:] the last export, [cvxrefused:] the last refused size (ui/plugins/canvas-export.js)
+  if (window.CanvasExport) try { t += window.CanvasExport.census(v); } catch (_) {}
+  // goal cv-files: [cvcard:<id>|kind=pdf|...] [cvfile:...] [cvfprompt:url|...] [cvfcopy:] (ui/plugins/canvas-files.js)
+  if (window.__osCanvasFiles) try { t += window.__osCanvasFiles.census(v); } catch (_) {}
   return t;
 }
 function folderMenu(e, f) {                 // right-click an explorer folder row: New canvas in that folder
@@ -7599,6 +7619,9 @@ function dropAt(at) {
    somewhere we guessed is the worse failure — it writes to the vault for an
    action the user cannot see the result of. */
 async function attachDrop(paths, at) {
+  // cv-drop CV-101: a board under the drop point (no point: the active leaf) takes the paths as file cards
+  const cvb = window.CanvasDrop ? window.CanvasDrop.claim(at) : null;
+  if (cvb) return window.CanvasDrop.attach(cvb, paths, at, { inv, refresh: refreshTree, say: dropSay, update: updateTitle });
   if (at) dropAt(at);              // osdrop: a real drop inserts at the drop point
   if (!state || !fg()) return dropSay("open a note first");
   const g = fg(), t = g.active >= 0 ? g.tabs[g.active] : null;
@@ -8491,6 +8514,10 @@ const CMDS = [
   ["file-explorer:new-file-in-new-pane", "Create note to the right",  ["ctrl+shift+n"],         async () => { await splitWith(fg(), "row", null); await cmdNewNote(); }],
   ["file-explorer:new-folder", "Create new folder",                   [],                       () => { $("fnew").hidden = false; $("fname").value = ""; $("fname").focus(); }],
   ["canvas:new-file",          "Create new canvas",                   [],                       () => cmdNewCanvas(cvActiveFolder())],
+  // goal cv-files CV-149 (REDUCED): there is no empty-tab surface (zero tabs = a blank pane), so the
+  // "New canvas" action of an empty workspace is a palette row offered only while no tab is open
+  ["canvas:new-file-no-tab",   "New canvas",                          [],                       () => cmdNewCanvas(""),
+    () => !!(CANVAS && CANVAS.isRegistered()) && groups().every(g => !g.tabs.length)],
   ["editor:delete-paragraph",  "Delete paragraph",                    ["ctrl+d"],               () => edLine(() => null)],
   ["editor:insert-attachment", "Insert attachment",                   [],                       cmdAttach],
   ["editor:follow-link",       "Follow link under cursor",            ["alt+enter"],            () => { const n = linkAtCaret(); if (n) navigate(fg(), n); }],
@@ -10430,10 +10457,21 @@ function showPicker() {
   loadRecent();
 }
 /* R1.6: recent-vault rows under the create/open actions — click reopens */
+// vb-recent: the rows are built OFF-DOM and swapped in ONE step after the await. The old form
+// cleared #p-recent, then awaited recent_vaults: the picker showed an empty list mid-load and any
+// updateTitle() in that window published a partial [precent:] (the vaultbleed "X not in the recent
+// rows" flake). While a load is in flight #p-recent carries data-loading and census.js publishes
+// [precent:~loading] / [prow:~loading] instead of a list; a newer call supersedes an older one.
+let recentGen = 0;
 async function loadRecent() {
-  const ul = $("p-recent");
-  ul.innerHTML = "";
-  for (const p of await inv("recent_vaults")) {
+  const ul = $("p-recent"), gen = ++recentGen;
+  ul.dataset.loading = "1";
+  let ps;
+  try { ps = await inv("recent_vaults"); }
+  catch (e) { if (gen === recentGen) delete ul.dataset.loading; throw e; }
+  if (gen !== recentGen) return;           // a newer loadRecent owns the list
+  const frag = document.createDocumentFragment();
+  for (const p of ps) {
     const li = document.createElement("li");
     li.innerHTML = "<b></b><span></span>";
     li.querySelector("b").textContent = base(p);
@@ -10445,8 +10483,10 @@ async function loadRecent() {
       nw.onclick = e => { e.stopPropagation(); openVault(p, false); };
       li.appendChild(nw);
     }
-    ul.appendChild(li);
+    frag.appendChild(li);
   }
+  ul.replaceChildren(frag);
+  delete ul.dataset.loading;
   if (vaultPath) { try { updateTitle(); } catch (_) {} }   // brand: publish [precent:] once the rows exist (async); never at the boot picker, whose window must stay untitled by the census
 }
 async function browseTo(p) {

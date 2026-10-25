@@ -206,6 +206,8 @@
       isEditable() { return true; }
       startEditing() {
         if (this.isEditing) return;
+        const cf = window.__osCanvasFiles;    // goal cv-files CV-025: the note editor (CM6) first, this textarea is the fallback
+        if (cf && cf.startEditing(this, { app, X, deps })) return;
         this.isEditing = true;
         this.containerEl.classList.add("is-editing");
         this.contentEl.textContent = "";
@@ -218,6 +220,8 @@
       }
       stopEditing() {
         if (!this.isEditing) return;
+        const cf = window.__osCanvasFiles;
+        if (cf && cf.stopEditing(this, { app, X, deps })) return;
         const v = this.textareaEl ? this.textareaEl.value : this.data.text;
         this.isEditing = false; this.textareaEl = null;
         this.containerEl.classList.remove("is-editing");
@@ -256,6 +260,8 @@
         this.labelEl.textContent = baseName(p) + (this.subpath || "");
         this.contentEl.textContent = "";
         const f = this.file;
+        const cf = window.__osCanvasFiles;   // goal cv-files: PDF + canvas file cards (canvas-files.js); false = not ours
+        if (cf && cf.file(this, { app, X, deps, file: f, missing: !f && modelOn() })) return;
         const cc = window.__osCanvasCards;   // media / other files (canvas-cards.js); false = a note, a canvas or missing: painted below
         if (cc && cc.file(this, { app, X, deps, file: f, missing: !f && modelOn() })) return;
         const reg = app.embedRegistry, mdc = reg && reg.embedByExtension && Object.prototype.hasOwnProperty.call(reg.embedByExtension, "md") ? reg.embedByExtension.md : null;
@@ -382,6 +388,7 @@
         this.requestSave = () => { if (this.readonly) return; if (this.view) this.view.dirty = true; this._saveSoon(); changed(); };
         this.wire();
         this.applyTransform();
+        if (window.CanvasNav) window.CanvasNav.attach(this, X, changed);   // goal cv-nav: pan/zoom keys, controls, grid, settings (canvas-nav.js)
         // a view opens hidden (0x0): fit the board the first time it has a size
         this.fitted = false;
         if (typeof ResizeObserver === "function") {
@@ -462,12 +469,15 @@
         if (!add) for (const n of this.selection) if (n !== node) n.setSelected(false);
         if (!add) this.selection.clear();
         if (node) { this.selection.add(node); node.setSelected(true); }
+        if (window.CanvasSelect) window.CanvasSelect.selected(this);   // goal cv-select: toolbar + bounding box follow the selection
       }
       deselectAll() { this.select(null, false); }
 
       /* ------------------------------------------------ edges */
       renderEdges() {
         const g = this.edgeEl; g.textContent = "";
+        const CE = window.CanvasEdges;   // goal cv-edges: handles, hit strokes, edge selection and editing (canvas-edges.js)
+        if (CE) CE.attach(this, { changed, colorOf, newId });
         // the layer spans the board's content (WebKit clips an outer <svg> to its box even with overflow: visible),
         // its viewBox in canvas coordinates so the paths keep the file's numbers
         let x0 = 0, y0 = 0, x1 = 1, y1 = 1, any = false;
@@ -501,7 +511,9 @@
             const t = sv("text", { class: "canvas-edge-label", x: String(mx), y: String(my), "text-anchor": "middle" }, grp);
             t.textContent = e.label;
           }
+          if (CE) CE.paint(this, e, grp, { p1, p2, c1, c2, fs, ts });
         }
+        if (CE) CE.done(this);
       }
 
       /* ------------------------------------------------ viewport */
@@ -545,14 +557,18 @@
       wire() {
         const w = this.wrapperEl;
         let drag = null;
+        const S = window.CanvasSelect;   // goal cv-select: selecting, moving and resizing live in canvas-select.js
+        if (S) S.install(this, changed);
         const nodeOf = t => { const c = t && t.closest ? t.closest(".canvas-node") : null; return c && this.nodes.get(c.dataset.nodeId) || null; };
         const inEditor = t => !!(t && t.closest && t.closest("textarea, .markdown-source-view, [contenteditable=true]"));
         w.addEventListener("pointerdown", e => {
+          if (window.CanvasTouch && window.CanvasTouch.onPointer(this, e)) return;   // goal cv-touch: touch pointers (canvas-touch.js)
           if (e.button !== 0 && e.button !== 1) return;
           if (inEditor(e.target)) return;
           const n = nodeOf(e.target);
           w.focus({ preventScroll: true });
           if (this.readonly && n) return;
+          if (S) { drag = S.down(this, e, n); if (drag) { try { w.setPointerCapture(e.pointerId); } catch (_) {} } e.preventDefault(); return; }
           const mode = n && e.target.classList.contains("canvas-node-resizer") ? "resize" : n && e.button === 0 ? "move" : "pan";
           if (n) { if (!this.selection.has(n)) this.select(n, e.shiftKey); } else this.deselectAll();
           drag = { mode, x: e.clientX, y: e.clientY, moved: false, tx: this.tx, ty: this.ty, node: n,
@@ -561,7 +577,9 @@
           e.preventDefault();
         });
         w.addEventListener("pointermove", e => {
+          if (window.CanvasTouch && window.CanvasTouch.onPointer(this, e)) return;   // goal cv-touch: touch pointers (canvas-touch.js)
           if (!drag) return;
+          if (drag.sel) { S.move(this, drag, e); return; }
           const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
           if (!drag.moved && Math.abs(dx) + Math.abs(dy) < 3) return;
           drag.moved = true;
@@ -572,9 +590,11 @@
           this.renderEdges();
         });
         const end = e => {
+          if (window.CanvasTouch && window.CanvasTouch.onPointer(this, e)) return;   // goal cv-touch: touch pointers (canvas-touch.js)
           if (!drag) return;
           const d = drag; drag = null;
           try { w.releasePointerCapture(e.pointerId); } catch (_) {}
+          if (d.sel) { S.up(this, d, e); return; }
           if (d.moved && d.mode !== "pan") this.requestSave();
         };
         w.addEventListener("pointerup", end);
@@ -589,15 +609,19 @@
         });
         w.addEventListener("wheel", e => {
           if (inEditor(e.target) && !(e.ctrlKey || e.metaKey)) return;
+          if (window.CanvasNav && window.CanvasNav.onWheel(this, e)) return;   // goal cv-nav: shift+wheel pans sideways, space+wheel zooms
           e.preventDefault();
           if (e.ctrlKey || e.metaKey) this.zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.002));
           else { this.tx -= e.deltaX; this.ty -= e.deltaY; this.applyTransform(); }
         }, { passive: false });
         w.addEventListener("keydown", e => {
           if (inEditor(e.target)) return;
+          if (S && S.onKey(this, e)) return;
           if ((e.key === "Delete" || e.key === "Backspace") && this.selection.size && !this.readonly) { e.preventDefault(); e.stopPropagation(); this.deleteSelection(); }
           else if (e.key === "Escape" && this.selection.size) { e.stopPropagation(); this.deselectAll(); }
         });
+        // goal cv-menus: the card / board context menus, the card toolbar and explorer drops live in canvas-menus.js
+        if (window.CanvasMenus) window.CanvasMenus.install(this, { X, app, deps, changed, NODE_CLASS });
       }
       destroy() { if (this._ro) this._ro.disconnect(); this._saveSoon.cancel(); this.clear(); this.view = null; }
     }
@@ -637,7 +661,11 @@
         try { text = await io("read", p); } catch (e) { if (this.path === p) this.setError("This canvas could not be read: " + errText(e)); return; }
         if (this.path !== p) return;
         let doc;
-        try { doc = parseCanvas(text); } catch (e) { this.setError("This canvas could not be opened: " + errText(e) + ". The file was left unchanged."); return; }
+        try { doc = parseCanvas(text); } catch (e) { this.setError("This canvas could not be opened: " + errText(e) + ". The file was left unchanged.");
+          const cf = window.__osCanvasFiles;   // goal cv-files CV-020: an "Open read-only" button when only dangling edges refused it
+          if (cf) try { cf.refused(this, text, { app, X, deps, model, changed }); } catch (er) { console.error("[canvas] read-only offer:", er); }
+          return;
+        }
         this.lastText = text;
         this.canvas.importData(doc);
         this.canvas.fitted = false;

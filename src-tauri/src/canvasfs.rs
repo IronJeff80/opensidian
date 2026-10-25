@@ -17,6 +17,8 @@
      rename <path>   to the .canvas path in data (EEXIST if taken; parent must exist)
      trash <path>    move into .trash/ (never over an earlier delete); returns where
      links           {canvas: [file-card targets]} for every listed canvas
+     relink          data {from,to}: every file card naming `from` now names `to`
+                     (only those string tokens change); returns the canvases written
 
    Every path goes through vaultfs::plugin_rel (no absolute / dot / NUL /
    backslash / percent-encoded forms) and must name a `.canvas` leaf with no
@@ -99,6 +101,94 @@ fn exists(v: &Vault, rel: &Path) -> io::Result<bool> {
     }
 }
 
+/// `text` with the "file" value of every file card (an object directly in the root's "nodes" array whose
+/// "type" is "file") equal to `from` replaced by `to`; None when the text is not JSON or nothing matched.
+/// A byte splice of those string tokens only: whitespace, key order, number spelling and every other
+/// value stay exactly as they were.
+fn relink_text(text: &str, from: &str, to: &str) -> Option<String> {
+    serde_json::from_str::<serde::de::IgnoredAny>(text).ok()?;
+    struct Obj {
+        key: Option<String>,
+        want_key: bool,
+        card: bool,
+        typ: Option<String>,
+        file: Option<(usize, usize, String)>,
+    }
+    enum F {
+        O(Obj),
+        A,
+    }
+    let b = text.as_bytes();
+    let (mut st, mut cuts, mut i): (Vec<F>, Vec<(usize, usize)>, usize) = (Vec::new(), Vec::new(), 0);
+    while i < b.len() {
+        match b[i] {
+            b'{' => {
+                let card = st.len() == 2
+                    && matches!(st[1], F::A)
+                    && matches!(&st[0], F::O(o) if o.key.as_deref() == Some("nodes"));
+                st.push(F::O(Obj { key: None, want_key: true, card, typ: None, file: None }));
+            }
+            b'[' => st.push(F::A),
+            b'}' => {
+                if let Some(F::O(o)) = st.pop() {
+                    if let (true, Some("file"), Some((s, e, f))) = (o.card, o.typ.as_deref(), o.file) {
+                        if f == from {
+                            cuts.push((s, e));
+                        }
+                    }
+                }
+            }
+            b']' => {
+                st.pop();
+            }
+            b':' => {
+                if let Some(F::O(o)) = st.last_mut() {
+                    o.want_key = false;
+                }
+            }
+            b',' => {
+                if let Some(F::O(o)) = st.last_mut() {
+                    o.want_key = true;
+                    o.key = None;
+                }
+            }
+            b'"' => {
+                let s = i;
+                i += 1;
+                while i < b.len() && b[i] != b'"' {
+                    i += if b[i] == b'\\' { 2 } else { 1 };
+                }
+                let e = i + 1;
+                let val: String = serde_json::from_str(text.get(s..e)?).ok()?;
+                if let Some(F::O(o)) = st.last_mut() {
+                    if o.want_key {
+                        o.key = Some(val);
+                    } else if o.card && o.key.as_deref() == Some("type") {
+                        o.typ = Some(val);
+                    } else if o.card && o.key.as_deref() == Some("file") {
+                        o.file = Some((s, e, val));
+                    }
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if cuts.is_empty() {
+        return None;
+    }
+    let rep = serde_json::to_string(to).ok()?;
+    let mut out = String::with_capacity(text.len() + cuts.len() * rep.len());
+    let mut at = 0;
+    for (s, e) in cuts {
+        out.push_str(&text[at..s]);
+        out.push_str(&rep);
+        at = e;
+    }
+    out.push_str(&text[at..]);
+    Some(out)
+}
+
 pub fn op(root: &Path, op: &str, path: &str, data: Option<&str>) -> Result<Value, String> {
     if op == "list" {
         return Ok(json!(list(root)));
@@ -127,6 +217,36 @@ pub fn op(root: &Path, op: &str, path: &str, data: Option<&str>) -> Result<Value
             }
         }
         return Ok(Value::Object(m));
+    }
+    if op == "relink" {
+        // CV-143: data = {"from": <vault path>, "to": <vault path>}; every listed canvas whose FILE cards name
+        // `from` gets those "file" values set to `to`, every other byte as it was. Called only after the
+        // user's R34 consent (main.js runUpdateLinks0). Returns the canvases written, sorted.
+        let d = data.ok_or_else(|| err(op, path, "EINVAL: missing data"))?;
+        let m: Value = serde_json::from_str(d).map_err(|_| err(op, path, "EINVAL: data is not {from,to}"))?;
+        let (Some(from), Some(to)) = (m.get("from").and_then(Value::as_str), m.get("to").and_then(Value::as_str)) else {
+            return Err(err(op, path, "EINVAL: data is not {from,to}"));
+        };
+        for p in [from, to] {
+            vaultfs::plugin_rel(p).map_err(|x| vaultfs::plugin_err(op, p, &x))?;
+        }
+        let v = Vault::open(root).map_err(|x| vaultfs::plugin_err(op, path, &x))?;
+        let mut wrote = Vec::new();
+        if from == to {
+            return Ok(json!(wrote));
+        }
+        for c in list(root) {
+            let Ok(rel) = canvas_rel(op, &c) else { continue };
+            let Ok(b) = v.p_read(&rel, CANVAS_MAX) else { continue };
+            let Ok(text) = String::from_utf8(b) else { continue };
+            let Some(out) = relink_text(&text, from, to) else { continue };
+            if out.len() as u64 > CANVAS_MAX {
+                return Err(err(op, &c, "EFBIG: canvas too large"));
+            }
+            v.p_write(&rel, out.as_bytes(), false).map_err(|x| vaultfs::plugin_err(op, &c, &x))?;
+            wrote.push(c);
+        }
+        return Ok(json!(wrote));
     }
     let rel = canvas_rel(op, path)?;
     let e = |x: io::Error| vaultfs::plugin_err(op, path, &x);
@@ -298,6 +418,35 @@ mod tests {
         assert!(op(&root, "rename", "sub/B.canvas", None).is_err());
         assert!(root.join("sub/B.canvas").exists());
         assert!(fs::read_dir(&out).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn canvasfs_relink_rewrites_file_cards_only_byte_exact() {
+        let (root, out) = fresh("relink");
+        // odd spacing, a subpath, an escaped spelling of the same path, a text card and an x-key naming it too
+        let src = "{\"nodes\":[ {\"id\":\"f1\" , \"type\":\"file\",\"file\":\"Note.md\",\"subpath\":\"#H\",\"x\":1.50},\n\
+                   {\"file\":\"No\\u0074e.md\",\"type\":\"file\",\"id\":\"f2\"},{\"id\":\"f3\",\"type\":\"file\",\"file\":\"Other.md\"},\n\
+                   {\"id\":\"t\",\"type\":\"text\",\"text\":\"Note.md\",\"file\":\"Note.md\"},{\"id\":\"g\",\"type\":\"group\",\"x-o\":{\"type\":\"file\",\"file\":\"Note.md\"}}],\n\
+                   \"edges\":[],\"x-root\":{\"nodes\":[{\"type\":\"file\",\"file\":\"Note.md\"}]}}";
+        let want = src.replacen("\"file\":\"Note.md\",\"subpath\"", "\"file\":\"d/Re named.md\",\"subpath\"", 1).replacen("\"No\\u0074e.md\"", "\"d/Re named.md\"", 1);
+        fs::write(root.join("S.canvas"), src).unwrap();
+        fs::write(root.join("Bad.canvas"), "{\"nodes\":[{\"type\":\"file\",\"file\":\"Note.md\"}").unwrap();
+        fs::write(root.join("U.canvas"), "{\"nodes\":[{\"id\":\"a\",\"type\":\"file\",\"file\":\"Other.md\"}]}").unwrap();
+        fs::write(out.join("T.canvas"), "{\"nodes\":[{\"id\":\"a\",\"type\":\"file\",\"file\":\"Note.md\"}]}").unwrap();
+        symlink(out.join("T.canvas"), root.join("L.canvas")).unwrap();
+        let d = r#"{"from":"Note.md","to":"d/Re named.md"}"#;
+        assert_eq!(op(&root, "relink", "", Some(d)).unwrap(), json!(["S.canvas"]));
+        assert_eq!(fs::read_to_string(root.join("S.canvas")).unwrap(), want);
+        assert_eq!(op(&root, "relink", "", Some(d)).unwrap(), json!([]));   // nothing left to point
+        assert_eq!(fs::read_to_string(root.join("Bad.canvas")).unwrap(), "{\"nodes\":[{\"type\":\"file\",\"file\":\"Note.md\"}");
+        assert_eq!(fs::read_to_string(root.join("U.canvas")).unwrap(), "{\"nodes\":[{\"id\":\"a\",\"type\":\"file\",\"file\":\"Other.md\"}]}");
+        assert!(fs::read_to_string(out.join("T.canvas")).unwrap().contains("\"Note.md\""));
+        for bad in [None, Some("{}"), Some("[]"), Some(r#"{"from":"/etc/x","to":"a.md"}"#), Some(r#"{"from":"a.md","to":"../a.md"}"#)] {
+            assert!(op(&root, "relink", "", bad).is_err(), "relink {bad:?}");
+        }
+        let v: Value = serde_json::from_str(&fs::read_to_string(root.join("S.canvas")).unwrap()).unwrap();
+        assert_eq!(v["nodes"][0]["file"], json!("d/Re named.md"));
+        assert_eq!(v["nodes"][3]["file"], json!("Note.md"));
     }
 
     #[test]
