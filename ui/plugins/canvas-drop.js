@@ -178,14 +178,19 @@
   }
   function onPasteKey(e) {
     if (e.defaultPrevented || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || String(e.key).toLowerCase() !== "v") return;
-    if (!app || inEd(e.target)) return;
-    const c = boardAt(e.target); if (!c || ro(c)) return;
+    if (!app) { last.paste = "key|no-app"; return; }
+    if (inEd(e.target)) return;
+    // the keydown lands on the focused element: a card, the wrapper, or body (a click on the empty board focuses nothing)
+    const top = e.target === document.body || e.target === document.documentElement;
+    const c = boardAt(e.target) || (top ? activeBoard() : null);
+    if (!c || ro(c)) { if (top) { last.paste = "key|no-board"; ping(c); } return; }
     pasteFor = { c, back: document.activeElement };
     const k = catcherEl();
     k.textContent = "";
     k.focus({ preventScroll: true });
     try { const r = document.createRange(); r.selectNodeContents(k); const s = getSelection(); s.removeAllRanges(); s.addRange(r); } catch (_) {}
-    setTimeout(giveBack, 0);              // the paste (if any) ran inside this key's default action
+    last.paste = "key|armed";
+    setTimeout(() => { if (pasteFor && last.paste === "key|armed") { last.paste = "key|no-paste-event"; ping(c); } giveBack(); }, 0);   // the paste (if any) ran inside this key's default action
   }
   function b64(buf) {
     const u = new Uint8Array(buf); let s = "";
@@ -219,6 +224,16 @@
   const invG = () => { try { return typeof inv === "function" ? inv : null; } catch (_) { return null; } };   // main.js (global lexical)
   function ping(c) { try { if (typeof updateTitle === "function") updateTitle(); } catch (_) {} }
   document.addEventListener("keydown", onPasteKey);
+  // the paste lands where the engine puts it: the catcher when the focus move took, else the old focus (body / the
+  // board wrapper) — a paste outside any editor while a board is up is the board's
+  document.addEventListener("paste", e => {
+    if (!app || e.defaultPrevented || (catcher && e.target === catcher) || inEd(e.target)) return;
+    const top = e.target === document.body || e.target === document.documentElement;
+    const c = (pasteFor && pasteFor.c) || boardAt(e.target) || (top ? activeBoard() : null);
+    if (!c) return;
+    if (!pasteFor) pasteFor = { c, back: null };
+    onPaste(e);
+  }, true);
 
   document.addEventListener("dragover", onDragOver);
   document.addEventListener("drop", onDrop);
