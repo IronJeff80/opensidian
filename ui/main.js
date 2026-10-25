@@ -6384,7 +6384,7 @@ function treeSelClear() {
 function treeRange(row) {
   if (!document.getElementById("tree-sel-css")) {   // the row style (stock: .is-selected, the selection tint)
     const st = document.createElement("style"); st.id = "tree-sel-css";
-    st.textContent = "#tree .trow.is-selected { background: var(--nav-item-background-selected, var(--text-selection, rgba(138, 92, 245, 0.2))) }";
+    st.textContent = "#tree .trow.is-selected { background: var(--nav-item-background-selected, var(--text-selection)) }";
     document.head.appendChild(st);
   }
   const rows = [...document.querySelectorAll("#tree .trow.note, #tree .trow.cvfile, #tree .trow.file")].filter(r => r.getClientRects().length > 0);
