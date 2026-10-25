@@ -7548,10 +7548,11 @@ function canvasTok() {
       if (cme) {
         const cc = cme.querySelector(".cm-content") || cme, ls = [...cme.querySelectorAll(".cm-line")];
         const big = l => { let m = fpx(l); for (const x of l.querySelectorAll("*")) if (String(x.textContent).trim()) m = Math.max(m, fpx(x)); return Math.round(m); };
-        let cl = 0;
-        try { const w = VW.EditorView.findFromDOM(cme); cl = w.state.doc.lineAt(w.state.selection.main.head).number; } catch (_) {}
+        let cl = 0, fo = 0;
+        try { const w = VW.EditorView.findFromDOM(cme); cl = w.state.doc.lineAt(w.state.selection.main.head).number; fo = w.hasFocus ? 1 : 0; } catch (_) {}
+        const ae = document.activeElement, aen = ae ? esc(String(ae.tagName || "").toLowerCase() + "." + String(ae.className || "").split(/\s+/)[0]).slice(0, 30) : "";
         s += "|bd=" + Math.round(fpx(cc)) + "|mono=" + (/mono/i.test(getComputedStyle(cc).fontFamily) ? 1 : 0) + "|h1=" + (ls[0] ? big(ls[0]) : 0) +
-             "|cl=" + cl + "|l1=" + (ls[0] ? txt(ls[0]) : "") + "|l2=" + (ls[1] ? txt(ls[1]) : "");
+             "|cl=" + cl + "|l1=" + (ls[0] ? txt(ls[0]) : "") + "|l2=" + (ls[1] ? txt(ls[1]) : "") + "|fo=" + fo + "|ae=" + aen;
       }
       t += s + "]";
     }
