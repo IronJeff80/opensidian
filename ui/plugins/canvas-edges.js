@@ -33,6 +33,7 @@
   const HIT = 16;          // screen px: width of an edge's invisible hit stroke
   const HANDLE = 14;       // screen px: connection / end handle diameter
   const NEAR = 20;         // screen px: a card's handles stay painted this far outside it
+  const OUT = 5;           // screen px: a connection handle sits this far outside its side, so the border band inside stays resize
   const SNAP = 24;         // screen px: a drop this close to a side attaches to that side
   const SIDES = ["top", "right", "bottom", "left"];
   const NORMAL = { top: [0, -1], right: [1, 0], bottom: [0, 1], left: [-1, 0] };
@@ -69,7 +70,7 @@
       ".canvas-edge-overlay { position: absolute; left: 0; top: 0; width: 0; height: 0; pointer-events: none; z-index: 2 }",
       ".canvas-edge-handle, .canvas-edge-end { position: absolute; box-sizing: border-box; border-radius: 50%; pointer-events: auto; cursor: crosshair;" +
         " background: var(--background-primary, #1e1e1e); border: 2px solid var(--interactive-accent, #7f6df2) }",
-      ".canvas-edge-handle { z-index: 1 }",
+      ".canvas-edge-handle { z-index: 1; pointer-events: none }",   // hit-tested in onDown (handleAt), so a press inside the card stays a resize
       ".canvas-edge-end { z-index: 2; background: var(--interactive-accent, #7f6df2); cursor: move }",
       ".canvas-edge-preview { position: absolute; overflow: visible; pointer-events: none }",
       ".canvas-edge-preview path { fill: none; stroke: var(--interactive-accent, #7f6df2); stroke-width: 2px; stroke-dasharray: 6 4 }",
@@ -154,6 +155,19 @@
     if (edgeDist <= SNAP / (c.zoom || 1) && best <= Math.max(d.width, d.height) / 2 + SNAP / (c.zoom || 1)) return s;
     return other ? facing(d, other) : s;
   }
+  // a connection handle's centre: the side's midpoint pushed OUT screen px outward
+  const handlePos = (c, d, side) => { const a = anchor(d, side), o = OUT / (c.zoom || 1); return [a[0] + NORMAL[side][0] * o, a[1] + NORMAL[side][1] * o]; };
+  // the painted handle under a press, or null. Handles take no pointer events (CSS) and a press
+  // INSIDE the card is never a handle press: the card's border band is canvas-select's resize zone
+  // (resize from any edge), the part of the handle outside the card is the connect grab.
+  function handleAt(c, ev) {
+    const S = c._cve, d = !c.readonly && S.hnode && nodeData(c, S.hnode);
+    if (!d || !S.handlesEl.firstChild) return null;
+    const p = pt(c, ev), z = c.zoom || 1;
+    if (p[0] >= d.x && p[0] <= d.x + d.width && p[1] >= d.y && p[1] <= d.y + d.height) return null;
+    for (const s of SIDES) { const h = handlePos(c, d, s); if (Math.hypot(h[0] - p[0], h[1] - p[1]) * z <= HANDLE / 2 + 1) return { node: d.id, side: s }; }
+    return null;
+  }
   const pt = (c, ev) => { const q = c.toCanvas(ev.clientX, ev.clientY); return [q.x, q.y]; };
 
   /* ------------------------------------------------------------ painting */
@@ -181,7 +195,7 @@
     };
     S.handlesEl.textContent = "";
     const hn = S.hnode && nodeData(c, S.hnode);
-    if (hn && !c.readonly && !(S.drag && S.drag.kind)) for (const s of SIDES) dot("canvas-edge-handle", S.handlesEl, anchor(hn, s), { node: hn.id, side: s });
+    if (hn && !c.readonly && !(S.drag && S.drag.kind)) for (const s of SIDES) dot("canvas-edge-handle", S.handlesEl, handlePos(c, hn, s), { node: hn.id, side: s });
     S.endsEl.textContent = "";
     if (!c.readonly && !(S.drag && S.drag.moved)) for (const id of new Set([S.hover, S.sel])) {
       const g = id && S.geo.get(id); if (!g) continue;
@@ -330,7 +344,7 @@
     if (S.menu && !(t.closest && t.closest(".canvas-edge-menu"))) closeMenu(c);
     if (t.closest && t.closest(".canvas-edge-menu, .canvas-edge-pin")) { ev.stopPropagation(); return; }
     if (S.label) commitLabel(c);
-    const isH = t.classList && t.classList.contains("canvas-edge-handle"), isE = t.classList && t.classList.contains("canvas-edge-end");
+    const isE = t.classList && t.classList.contains("canvas-edge-end"), hh = isE ? null : handleAt(c, ev), isH = !!hh;
     const id = isE ? t.dataset.edge : edgeOf(c, t);
     if (!isH && !id) { if (S.sel) { S.sel = null; S.pop = null; refresh(c); ping(c); } return; }
     ev.stopPropagation();
@@ -338,7 +352,7 @@
     ev.preventDefault();
     try { c.wrapperEl.focus({ preventScroll: true }); } catch (_) {}
     if (c.readonly) { if (id) select(c, id); return; }
-    if (isH) return startDrag(c, ev, { kind: "new", node: t.dataset.node, side: t.dataset.side });
+    if (isH) return startDrag(c, ev, { kind: "new", node: hh.node, side: hh.side });
     if (isE) { select(c, id); return startDrag(c, ev, { kind: "end", id, end: t.dataset.end }); }
     // a press on the edge: select; a second press on it within 450ms opens the label editor
     const now = Date.now(), pr = S.press;
