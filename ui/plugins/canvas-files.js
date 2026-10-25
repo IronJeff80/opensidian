@@ -212,6 +212,7 @@
   const dhs = t => { try { const w = t.closest(".canvas-wrapper") || t.closest(".view-content"); for (const l of (ST.app ? ST.app.workspace.getLeavesOfType("canvas") : [])) { const c = l.view && l.view.canvas; if (c && l.view.containerEl.contains(t)) { const s = window.CanvasHistory.state(c); return s.u + "/" + s.r + (c.readonly ? "ro" : ""); } } } catch (e) { return "x"; } return "?"; };
   for (const ty of ["pointerdown", "pointerup", "click", "mousedown", "mouseup"]) window.addEventListener(ty, e => {
     DBG.log.push(ty.slice(0, 2) + ty.slice(-2) + ":" + dcls(e.target) + (e.defaultPrevented ? "!" : ""));
+    if (ty === "click" && e.target && e.target.closest && e.target.closest(".os-notice-message, .notice")) DBG.log.push("NT=" + String(e.target.textContent).slice(0, 90).replace(/[^A-Za-z0-9 .:/_-]/g, "_"));
     if (ty === "click" && e.target && e.target.closest && e.target.closest(".mod-undo")) { const t = e.target; DBG.log.push("U<" + dhs(t)); setTimeout(() => DBG.log.push("U>" + dhs(t)), 50); }
     if (DBG.log.length > 40) DBG.log.splice(0, 20);
   }, true);
@@ -413,7 +414,7 @@
       let hit = "-";
       if (vis(u)) { const r = u.getBoundingClientRect(); hit = nm(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); }
       t += " [cvfdbg:hit=" + hit + "|ae=" + nm(document.activeElement) + "|dis=" + (u ? (u.disabled ? 1 : 0) : "-") + "|ro=" + (v.canvas.readonly ? 1 : 0) +
-           "|mods=" + document.querySelectorAll(".modal-container").length + "|ev=" + esc(DBG.log.slice(-16).join(",")) + "]";
+           "|mods=" + document.querySelectorAll(".modal-container").length + "|ev=" + esc(DBG.log.slice(-6).join(",")) + "]";
     }
     return t;
   }
