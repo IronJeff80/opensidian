@@ -428,7 +428,7 @@
     try {
       cm.addCommand({ id: "canvas:export-image", name: "Canvas: Export as image", checkCallback: chk => {
         const c = boardOf();
-        if (!c || !c.nodes.size) return false;                     // listed whenever a board is the active view
+        if (!c) return false;                     // listed whenever a board is the active view
         if (chk) return true;
         if (!c.nodes.size) { notice("Nothing to export: this canvas is empty."); return true; }   // no dialog
         openDialog(c);
