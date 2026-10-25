@@ -23,9 +23,12 @@
    board shows (computed style of each card), edges from the geometry canvas.js
    already rendered (the SVG path d -> Path2D, the arrow polygons, the labels).
    No DOM snapshot (an SVG foreignObject can taint the canvas in WebKit).
-   canvas.toBlob("image/png") -> app.vault.createBinary at the first free name
-   ("<canvas>.png", "<canvas> 1.png", ...): the confined vault VFS, never a path
-   outside the vault, never an overwrite.
+   canvas.toBlob("image/png") -> the core command canvas_attach (src-tauri canvasfs.rs:
+   vault-confined, create-new only, not trust-gated, so it works in a restricted
+   vault) at the first free name in the VAULT ROOT ("<canvas>.png", "<canvas> 1.png",
+   ...), the name shown in the dialog; a notice says where it went. Never a path
+   outside the vault, never an overwrite. (No native save dialog: that would need a
+   host path outside the vault.)
 
    Load order (index.html): canvas.js -> ... -> canvas-edges.js -> canvas-export.js
    -> main.js. canvas.js does not call in: this file registers its command itself
@@ -276,10 +279,32 @@
     return false;
   }
   async function freePath(c) {
-    const cp = (c.view && c.view.path) || "Canvas.canvas", base = cp.replace(/\.canvas$/i, "");
-    let p = app.vault.getAvailablePath(base, "png");
+    const cp = (c.view && c.view.path) || "Canvas.canvas", base = cp.split("/").pop().replace(/\.canvas$/i, "") || "Canvas";
+    let p = base + ".png";
     for (let i = 1; await taken(p); i++) p = base + " " + i + ".png";
     return p;
+  }
+  const invoke = () => { try { if (typeof inv === "function") return inv; } catch (_) {} const T = window.__TAURI__; return T && T.core ? T.core.invoke : null; };   // main.js global lexical
+  function b64Of(u8) {
+    let s = "";
+    for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+    return btoa(s);
+  }
+  // canvas_attach is create-new only (EEXIST when taken). A name taken between the pick and the write
+  // moves on to "<stem> 1.png", "<stem> 2.png", ... without trusting taken(): in a restricted vault
+  // the adapter may not see every file.
+  async function attach(path, data) {
+    const I = invoke();
+    if (!I) throw new Error("no core command bridge");
+    const stem = path.replace(/( \d+)?\.png$/i, "");
+    for (let i = 0; ; i++) {
+      try { return await I("canvas_attach", { path, dataB64: data }); }
+      catch (e) {
+        const m = String((e && e.message) || e);
+        if (!/^EEXIST/.test(m) || i >= 200) throw new Error(m);
+        path = stem + " " + (i + 1) + ".png";
+      }
+    }
   }
   const notice = m => { try { if (X && X.Notice) new X.Notice(m); } catch (_) {} };
   function refuse(c, sz) {
@@ -300,7 +325,7 @@
     const bytes = await bytesOf(await blobOf(cv));
     let path = o.to;
     if (!path || await taken(path)) path = await freePath(c);   // never an overwrite
-    await app.vault.createBinary(path, bytes);
+    path = await attach(path, b64Of(bytes));
     nExp++;
     last = { glyphs: st.glyphs, bars: st.bars, w: sz.w, h: sz.h + band, file: path, n: nExp, dpr: dprOf() };
     notice("Canvas exported to " + path);

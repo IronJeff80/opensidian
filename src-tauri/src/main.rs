@@ -871,6 +871,15 @@ fn canvas_io(v: State<Vault>, op: String, path: Option<String>, data: Option<Str
     span_timed!(otel => "canvas_io", canvasfs::op(&root, &op, path.as_deref().unwrap_or(""), data.as_deref()))
 }
 
+/// canvas_attach (canvasfs::attach): a NEW png/jpg/jpeg/gif/webp file in the
+/// vault from base64 bytes — export as image, pasted images. Vault-confined,
+/// create-new only, NOT gated on plugin trust (same class as canvas_io).
+#[tauri::command]
+fn canvas_attach(v: State<Vault>, path: String, data_b64: String, otel: Option<perf::Ctx>) -> Result<String, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    span_timed!(otel => "canvas_attach", canvasfs::attach(&root, &path, &data_b64))
+}
+
 #[tauri::command]
 fn read_note(v: State<Vault>, name: String, otel: Option<perf::Ctx>) -> String {
     span_timed!(otel =>
@@ -6023,7 +6032,7 @@ fn main() {
             .map(std::borrow::Cow::Owned)
         })
         .invoke_handler(tauri::generate_handler![
-            list_notes, list_images, canvas_io, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
+            list_notes, list_images, canvas_io, canvas_attach, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
