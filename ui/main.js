@@ -5561,7 +5561,6 @@ async function loadActive(g) {
     return;
   }
   if (t && t.kind === "gg") {       // R9.7: global graph as a main tab
-    await new Promise(r => setTimeout(r, 600));   // NEGCTL TEMP title-hdr: widen the model->header gap; reverted before final
     cancelAnimationFrame(g.sim);    // the sim is restarted, but from the tab's KEPT layout + camera (ggkeep)
     await startGraph(g, {
       keep: t,                      // ggkeep: the tab carries its live layout across a switch (t.gk)
