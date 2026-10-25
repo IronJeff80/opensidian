@@ -474,10 +474,14 @@
       deselectAll() { this.select(null, false); }
 
       /* ------------------------------------------------ edges */
-      renderEdges() {
-        const g = this.edgeEl; g.textContent = "";
+      // ids (optional): re-path only the edges touching these cards; absent = every edge (canvas-perf.js may still
+      // narrow a drag move to the moved cards, and falls back to everything when the layer is not the last full render)
+      renderEdges(ids) {
+        const g = this.edgeEl;
         const CE = window.CanvasEdges;   // goal cv-edges: handles, hit strokes, edge selection and editing (canvas-edges.js)
-        if (CE) CE.attach(this, { changed, colorOf, newId });
+        const PF = window.CanvasPerf;    // goal cv-perf: partial re-render during a drag (canvas-perf.js)
+        const part = PF ? PF.partial(this, ids) : null;
+        if (!part) { g.textContent = ""; if (CE) CE.attach(this, { changed, colorOf, newId }); }
         // the layer spans the board's content (WebKit clips an outer <svg> to its box even with overflow: visible),
         // its viewBox in canvas coordinates so the paths keep the file's numbers
         let x0 = 0, y0 = 0, x1 = 1, y1 = 1, any = false;
@@ -489,7 +493,7 @@
         g.setAttribute("viewBox", [x0, y0, x1 - x0, y1 - y0].join(" "));
         g.setAttribute("width", String(x1 - x0)); g.setAttribute("height", String(y1 - y0));
         g.style.left = x0 + "px"; g.style.top = y0 + "px";
-        for (const e of this.edges.values()) {
+        for (const e of part || this.edges.values()) {
           const a = this.nodes.get(e.fromNode), b = this.nodes.get(e.toNode);
           if (!a || !b) continue;
           const fs = e.fromSide || sideFacing(a.data, b.data), ts = e.toSide || sideFacing(b.data, a.data);
@@ -512,7 +516,9 @@
             t.textContent = e.label;
           }
           if (CE) CE.paint(this, e, grp, { p1, p2, c1, c2, fs, ts });
+          if (PF) PF.painted(this, e, grp, part);
         }
+        if (PF) PF.rendered(this, part);
         if (CE) CE.done(this);
       }
 
@@ -520,6 +526,7 @@
       applyTransform() {
         this.canvasEl.style.transform = "translate(" + this.tx + "px," + this.ty + "px) scale(" + this.zoom + ")";
         this.wrapperEl.dataset.zoom = String(Math.round(this.zoom * 1000) / 1000);
+        if (window.CanvasPerf) window.CanvasPerf.cull(this);   // goal cv-perf: off-screen cards on a big board are not painted (canvas-perf.js)
       }
       toCanvas(cx, cy) {
         const r = this.wrapperEl.getBoundingClientRect();
@@ -579,7 +586,8 @@
         w.addEventListener("pointermove", e => {
           if (window.CanvasTouch && window.CanvasTouch.onPointer(this, e)) return;   // goal cv-touch: touch pointers (canvas-touch.js)
           if (!drag) return;
-          if (drag.sel) { S.move(this, drag, e); return; }
+          const PF = window.CanvasPerf;   // goal cv-perf: the edge render inside this move re-paths only the moved cards' edges
+          if (drag.sel) { if (PF) PF.drag(this, drag); try { S.move(this, drag, e); } finally { if (PF) PF.drag(this, null); } return; }
           const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
           if (!drag.moved && Math.abs(dx) + Math.abs(dy) < 3) return;
           drag.moved = true;
@@ -587,7 +595,8 @@
           const cx = dx / this.zoom, cy = dy / this.zoom;
           if (drag.mode === "move") for (const o of drag.start) o.s.moveTo({ x: o.x + cx, y: o.y + cy });
           else { const o = drag.start.find(o => o.s === drag.node); if (o) o.s.resize({ width: o.w + cx, height: o.h + cy }); }
-          this.renderEdges();
+          if (PF) PF.drag(this, drag);
+          try { this.renderEdges(drag.mode === "move" ? drag.start.map(o => o.s.id) : [drag.node.id]); } finally { if (PF) PF.drag(this, null); }
         });
         const end = e => {
           if (window.CanvasTouch && window.CanvasTouch.onPointer(this, e)) return;   // goal cv-touch: touch pointers (canvas-touch.js)

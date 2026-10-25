@@ -7460,6 +7460,8 @@ function canvasTok() {
   if (window.CanvasExport) try { t += window.CanvasExport.census(v); } catch (_) {}
   // goal cv-files: [cvcard:<id>|kind=pdf|...] [cvfile:...] [cvfprompt:url|...] [cvfcopy:] (ui/plugins/canvas-files.js)
   if (window.__osCanvasFiles) try { t += window.__osCanvasFiles.census(v); } catch (_) {}
+  // goal cv-perf: [cvperf:vis=|total=|eupd=|emin=|emax=|moves=] painted cards and the last drag's edge re-paths (ui/plugins/canvas-perf.js)
+  if (window.CanvasPerf) try { t += window.CanvasPerf.census(v); } catch (_) {}
   return t;
 }
 function folderMenu(e, f) {                 // right-click an explorer folder row: New canvas in that folder
