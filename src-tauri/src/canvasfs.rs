@@ -189,6 +189,14 @@ fn relink_text(text: &str, from: &str, to: &str) -> Option<String> {
     Some(out)
 }
 
+/// the empty JSON Canvas document: an object with no keys, or only an empty "nodes" and/or "edges" array
+fn is_empty_doc(b: &[u8]) -> bool {
+    match serde_json::from_slice::<Value>(b) {
+        Ok(Value::Object(m)) => m.iter().all(|(k, v)| (k == "nodes" || k == "edges") && v.as_array().is_some_and(|a| a.is_empty())),
+        _ => false,
+    }
+}
+
 pub fn op(root: &Path, op: &str, path: &str, data: Option<&str>) -> Result<Value, String> {
     if op == "list" {
         return Ok(json!(list(root)));
@@ -272,7 +280,10 @@ pub fn op(root: &Path, op: &str, path: &str, data: Option<&str>) -> Result<Value
             v.p_write(&rel, b, false).map(|_| Value::Null).map_err(e)
         }
         "create" => {
+            // a new canvas holding the empty document is made as an EMPTY file (0 bytes); the board writes {} when
+            // it is first left (CVR-A-004)
             let b = body()?;
+            let b: &[u8] = if is_empty_doc(b) { b"" } else { b };
             if exists(&v, &rel).map_err(e)? {
                 return Err(err(op, path, "EEXIST: file already exists"));
             }
@@ -401,10 +412,13 @@ mod tests {
         let (root, _) = fresh("create");
         fs::create_dir_all(root.join("sub")).unwrap();
         op(&root, "create", "sub/N.canvas", Some("{\"nodes\":[],\"edges\":[]}")).unwrap();
-        assert_eq!(fs::read_to_string(root.join("sub/N.canvas")).unwrap(), "{\"nodes\":[],\"edges\":[]}");
+        // the empty document is created as a 0-byte file (CVR-A-004)
+        assert_eq!(fs::read_to_string(root.join("sub/N.canvas")).unwrap(), "");
+        op(&root, "create", "sub/M.canvas", Some("{\"nodes\":[{\"id\":\"a\"}],\"edges\":[]}")).unwrap();
+        assert_eq!(fs::read_to_string(root.join("sub/M.canvas")).unwrap(), "{\"nodes\":[{\"id\":\"a\"}],\"edges\":[]}");
         let e = op(&root, "create", "sub/N.canvas", Some("{}")).unwrap_err();
         assert!(e.starts_with("EEXIST"), "{e}");
-        assert_eq!(fs::read_to_string(root.join("sub/N.canvas")).unwrap(), "{\"nodes\":[],\"edges\":[]}");
+        assert_eq!(fs::read_to_string(root.join("sub/N.canvas")).unwrap(), "");
         assert!(op(&root, "write", "Ghost.canvas", Some("{}")).is_err());
         assert!(!root.join("Ghost.canvas").exists());
         // the parent is not created

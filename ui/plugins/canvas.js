@@ -30,20 +30,24 @@
   }
 
   /* text -> the document {nodes:[], edges:[], ...unknown}, or throws
-     CanvasFormatError naming the first violation. An empty (or all-space) file
-     is an empty canvas — a new canvas is created that way. */
+     CanvasFormatError naming the first violation. An EMPTY (0-byte) file is an empty canvas with no
+     "nodes"/"edges" keys — a new canvas is created that way; an all-space file is not JSON and is refused. */
   function parseCanvas(text) {
     if (typeof text !== "string") throw new CanvasFormatError("canvas text is not a string");
-    if (!text.trim()) return { nodes: [], edges: [] };
     let doc;
-    try { doc = JSON.parse(text); } catch (e) { throw new CanvasFormatError("not valid JSON: " + (e && e.message)); }
+    try { doc = text === "" ? {} : JSON.parse(text); } catch (e) { throw new CanvasFormatError("not valid JSON: " + (e && e.message)); }
     validateCanvas(doc);
-    if (!("nodes" in doc)) doc.nodes = [];
-    if (!("edges" in doc)) doc.edges = [];
+    // a root without "nodes"/"edges" ({} — what a new board becomes) gets them in memory; ABSENT remembers which,
+    // so an unedited board writes them back absent (CVR-A-004/040)
+    const absent = ["nodes", "edges"].filter(k => !(k in doc));
+    for (const k of absent) doc[k] = [];
+    if (absent.length) Object.defineProperty(doc, ABSENT, { value: absent, configurable: true });
     for (const n of doc.nodes) tailKeys(n, NODE_TAIL);
     for (const e of doc.edges) tailKeys(e, EDGE_TAIL);
     return doc;
   }
+
+  const ABSENT = Symbol("canvas.absentRootKeys");
 
   function validateCanvas(doc) {
     const bad = m => { throw new CanvasFormatError(m); };
@@ -413,14 +417,21 @@
         btn("mod-zoom-out", "Zoom out", "−", () => this.zoomBy(0.8));
         btn("mod-zoom-fit", "Zoom to fit", "Fit", () => this.zoomToFit());
         this._saveSoon = debounced(() => { if (this.view && this.view.save) this.view.save().catch(e => console.error("[canvas] save:", e)); }, 400);
-        this.requestSave = () => { if (this.readonly) return; if (this.view) this.view.dirty = true; this._saveSoon(); changed(); };
+        this.requestSave = () => { if (this.readonly) return; if (this.view) this.view.dirty = this.view.edited = true; this._saveSoon(); changed(); };
         this.wire();
         this.applyTransform();
         if (window.CanvasNav) window.CanvasNav.attach(this, X, changed);   // goal cv-nav: pan/zoom keys, controls, grid, settings (canvas-nav.js)
         // a view opens hidden (0x0): fit the board the first time it has a size
         this.fitted = false;
         if (typeof ResizeObserver === "function") {
-          this._ro = new ResizeObserver(() => { const r = this.wrapperEl.getBoundingClientRect(); if (!this.fitted && r.width && r.height && this.nodes.size) { this.fitted = true; this.zoomToFit(); } });
+          // shown -> hidden (another tab took the pane) is LEAVING the board: it is written then (CVR-A-004/040/055)
+          this._shown = false;
+          this._ro = new ResizeObserver(() => {
+            const r = this.wrapperEl.getBoundingClientRect();
+            if (r.width && r.height) this._shown = true;
+            else if (this._shown) { this._shown = false; if (this.view && this.view.leave) this.view.leave().catch(e => console.error("[canvas] save on leave:", e)); }
+            if (!this.fitted && r.width && r.height && this.nodes.size) { this.fitted = true; this.zoomToFit(); }
+          });
           this._ro.observe(this.wrapperEl);
         }
       }
@@ -431,6 +442,7 @@
         for (const n of this.nodes.values()) n.detach();
         this.nodes.clear(); this.edges.clear(); this.selection.clear();
         this.edgeEl.textContent = "";
+        this.updateHint();
       }
       importData(doc) {
         this.clear();
@@ -448,6 +460,28 @@
         d.edges = [...this.edges.values()].filter(e => this.nodes.has(e.fromNode) && this.nodes.has(e.toNode));
         return d;
       }
+      /* the document as it goes to disk: getData(), except that a root key "nodes"/"edges" the file did not have
+         stays absent while the board was never edited and it is empty — an untouched new board is written {} */
+      diskData() {
+        const d = this.getData(), absent = (this.view && this.view.edited) ? [] : (d[ABSENT] || []);
+        const skip = absent.filter(k => Array.isArray(d[k]) && !d[k].length);
+        if (!skip.length) return d;
+        const o = {};
+        for (const k of Object.keys(d)) if (!skip.includes(k)) o[k] = d[k];
+        return o;
+      }
+      /* an empty, editable board shows a short usage hint in its middle (CVR-A-040); a card hides it */
+      updateHint() {
+        const show = !this.nodes.size && !this.readonly;
+        if (show && !this.hintEl) {
+          const h = this.hintEl = el("div", "canvas-empty-hint", this.wrapperEl);
+          h.style.cssText = "position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);pointer-events:none;text-align:center;" +
+            "color:var(--text-faint,#888);font-size:14px;line-height:1.7;user-select:none";
+          for (const t of ["Double-click the board to add a text card", "Drag notes or media in from the file explorer", "Drag the background to pan, scroll to move around"])
+            el("div", "canvas-empty-hint-line", h).textContent = t;
+        }
+        if (this.hintEl) this.hintEl.hidden = !show;
+      }
       ids() { return new Set([...this.nodes.keys(), ...this.edges.keys()]); }
       addNode(node) {
         this.nodes.set(node.id, node);
@@ -455,6 +489,7 @@
         node.load();
         node.render();
         if (window.CanvasHistory) window.CanvasHistory.record(this, "add", changed);
+        this.updateHint();
         return node;
       }
       createTextNode(o) {
@@ -491,6 +526,7 @@
         node.detach();
         this.renderEdges();
         this.requestSave();
+        this.updateHint();
         if (window.CanvasHistory) window.CanvasHistory.record(this, "remove", changed);
       }
       deleteSelection() { for (const n of [...this.selection]) this.removeNode(n); }
@@ -674,7 +710,7 @@
       constructor(leaf) {
         super(leaf);
         this.navigation = true; this.icon = "lucide-layout-dashboard";
-        this.path = null; this.kept = {}; this.file = null; this.lastText = null; this.broken = null; this.dirty = false;
+        this.path = null; this.kept = {}; this.file = null; this.lastText = null; this.broken = null; this.dirty = false; this.edited = false;
         this.contentEl.classList.add("canvas-view");
         this.canvas = new Canvas(this);
         this.contentEl.appendChild(this.canvas.wrapperEl);
@@ -688,12 +724,12 @@
         const p = state ? pathOf(state.file) : "";
         if (p && state && typeof state === "object") { const k = {}; for (const key of Object.keys(state)) if (key !== "file") k[key] = state[key]; this.kept = JSON.parse(JSON.stringify(k)); }
         if (!p || p === this.path) return;
-        await this.flush();
+        await this.flush(true);
         await this.loadPath(p);
       }
       async loadPath(p) {
         this.path = p; this.file = vaultFile(p) || { path: p, name: p.split("/").pop(), basename: baseName(p), extension: "canvas" };
-        this.lastText = null; this.dirty = false;
+        this.lastText = null; this.dirty = false; this.edited = false;
         this.canvas.clear(); this.setError(null);
         // goal cv-model: the vault FILE model comes up with the first board (deps.model = api-vault ensureFiles) — the
         // pickers list it and a card whose file is not in it shows as missing, with no community plugin enabled
@@ -709,6 +745,7 @@
         }
         this.lastText = text;
         this.canvas.importData(doc);
+        this.canvas.updateHint();
         this.canvas.fitted = false;
         requestAnimationFrame(() => { const c = this.canvas; if (this.path === p && c && c.wrapperEl.getBoundingClientRect().width) { c.fitted = true; c.zoomToFit(); } changed(); });
         try { if (this.leaf && this.leaf.updateHeader) this.leaf.updateHeader(); } catch (_) {}
@@ -726,12 +763,14 @@
         this.errorEl = box;
         changed();
       }
-      async save() {
+      /* write the board when it changed (dirty), or — force, on LEAVING the board — whenever its stock-layout text
+         differs from the file: an opened canvas is re-serialised when it is left, edited or not (CVR-A-055) */
+      async save(force) {
         const p = this.path;
-        if (!p || this.broken || this.lastText == null || !this.dirty) return;
+        if (!p || this.broken || this.lastText == null || (!this.dirty && !force)) return;
         this.dirty = false;
         let text;
-        try { text = serializeCanvas(this.canvas.getData()); }
+        try { text = serializeCanvas(this.canvas.diskData()); }
         catch (e) { console.error("[canvas] not saved:", e); if (deps.notify) deps.notify("Canvas not saved — " + errText(e)); return; }
         if (text === this.lastText) return;
         const f = vaultFile(p);
@@ -741,8 +780,10 @@
         this.saves = (this.saves || 0) + 1;    // a write that reached the file (census: [cv:...|saves=])
         changed();
       }
-      async flush() { this.canvas._saveSoon.cancel(); for (const n of this.canvas.nodes.values()) if (n.isEditing) try { n.stopEditing(); } catch (_) {} await this.save(); }
-      async onClose() { try { await this.flush(); } catch (e) { console.error(e); } this.canvas.destroy(); }
+      async flush(force) { this.canvas._saveSoon.cancel(); for (const n of this.canvas.nodes.values()) if (n.isEditing) try { n.stopEditing(); } catch (_) {} await this.save(force); }
+      // the board is hidden by another tab: write it now (a card being edited stays in edit)
+      async leave() { this.canvas._saveSoon.cancel(); await this.save(true); }
+      async onClose() { try { await this.flush(true); } catch (e) { console.error(e); } this.canvas.destroy(); }
     }
 
     /* ---------------------------------------------------------- the core plugin
