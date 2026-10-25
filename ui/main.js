@@ -15,6 +15,10 @@ const PLG = window.__osPluginHost && __osPluginHost.app && __osPluginHost.api ? 
 const PLGNW = window.__osPluginHost && typeof __osPluginHost.noteWritten === "function" ? __osPluginHost.noteWritten : null;
 // goal cv-model: the plugin vault's FILE model alone (api-vault host.vaultModel: no window.app, no plugin runtime), captured before the seal for Canvas
 const PLGVM = window.__osPluginHost && typeof __osPluginHost.vaultModel === "function" ? __osPluginHost.vaultModel : null;
+// goal cv-journeys: re-list the model's image / PDF / audio / video files (api-vault host.vaultSync) when the explorer re-lists them
+const PLGVS = window.__osPluginHost && typeof __osPluginHost.vaultSync === "function" ? __osPluginHost.vaultSync : null;
+// goal cv-journeys: the app's own note rename reaches the file model (api-vault host.noteMoved: the watcher never reports it)
+const PLGNM = window.__osPluginHost && typeof __osPluginHost.noteMoved === "function" ? __osPluginHost.noteMoved : null;
 const inv = (c, a) => { const x = otel.ctx(); return TAURI.core.invoke(c, x ? Object.assign({ otel: x }, a) : a); };
 /* perf-spans shim over otel: mark(name, t0, extra) = a span that started at
    t0 and ends now; push(name, ms, extra) = an already-measured span (graph
@@ -2099,6 +2103,14 @@ function noteMenu(e, nm) {                 // right-click a tree note row
     item("Open in new window", null, "Single-window app: there is no second window to open into");   // REQ-16 EXCEPTION
     sep(); }
   mkItem(bmCache.includes(nm) ? "Remove bookmark" : "Bookmark", () => toggleBm(nm));
+  /* CVR-A-087: the row names the note, so its menu can rename it. The rename verb
+     addresses the focused tab's note (F2 / palette), so the row's note is shown
+     there first; the disk move and the link prompt stay cmdRename's. */
+  mkItem("Rename...", async () => {
+    await rowOpen(nm);
+    const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
+    if (t && !t.kind && t.name === nm) cmdRename();
+  });
   /* R24.7: Delete lives HERE, on the explorer row, because that is where the
      user is when they decide a note is finished — and it opens a question, not
      a deletion. askDelete does no I/O of its own beyond counting the inbound
@@ -5255,7 +5267,14 @@ async function renameThenAsk0(old, nn, sp) {
   try { blast = await inv("move_note", { old, new: nn }); }
   catch (err) { say(String(err && err.message || err)); updateTitle(); return false; }
   await applyRename(old, nn);
-  const links = blast && blast.links || 0, files = blast && blast.files || 0;
+  let links = blast && blast.links || 0, files = blast && blast.files || 0;
+  // goal cv-journeys: a canvas whose FILE cards name the note links to it (CV-141 canvas_io links) — it counts in
+  // the radius like a note does, so a note that only a board points at still gets the question, and the consented
+  // half (runUpdateLinks0) relinks the cards. Without it a board kept "Note.md" after the rename (J12).
+  try {
+    const cl = await inv("canvas_io", { op: "links", path: "" }), from = old + ".md";
+    for (const k of Object.keys(cl || {})) if (Array.isArray(cl[k]) && cl[k].includes(from)) { files++; links++; }
+  } catch (_) {}
   sp.attrs.links = links; sp.attrs.files = files;
   if (!files) { updateTitle(); return true; }   // R34.3: nothing links in -> NO modal, ever
   let consent = false;
@@ -6207,12 +6226,12 @@ async function lsLoad() {
   }
 }
 
-function buildTree(folders, notes, canvases) {
-  const root = { dirs: new Map(), notes: [], canvases: [] };
+function buildTree(folders, notes, canvases, others) {
+  const root = { dirs: new Map(), notes: [], canvases: [], others: [] };
   const dirAt = path => {
     let n = root;
     for (const part of path.split("/")) {
-      if (!n.dirs.has(part)) n.dirs.set(part, { dirs: new Map(), notes: [], canvases: [] });
+      if (!n.dirs.has(part)) n.dirs.set(part, { dirs: new Map(), notes: [], canvases: [], others: [] });
       n = n.dirs.get(part);
     }
     return n;
@@ -6225,6 +6244,10 @@ function buildTree(folders, notes, canvases) {
   for (const p of canvases || []) {        // goal canvas-core: "sub/Board.canvas", listed beside the notes
     const i = p.lastIndexOf("/");
     (i < 0 ? root : dirAt(p.slice(0, i))).canvases.push(p);
+  }
+  for (const p of others || []) {          // goal cv-journeys: images, PDFs, audio, video — the files a canvas card shows
+    const i = p.lastIndexOf("/");
+    (i < 0 ? root : dirAt(p.slice(0, i))).others.push(p);
   }
   return root;
 }
@@ -6275,18 +6298,20 @@ function renderNode(node, prefix, depth, out) {
   /* goal canvas-core: .canvas files sort in among the notes by their name without the extension
      (the notes keep exactly their old order; a tie puts the note first); a canvas row opens the canvas view, carries data-canvas
      (never data-note: no note verb addresses it) and a CANVAS tag after its name */
-  const files = [...node.notes.map(n => [n, 0]), ...(node.canvases || []).map(p => [p, 1])]
-    .map(([n, c]) => [n, c, c ? n.replace(/\.canvas$/i, "") : n])
+  // goal cv-journeys: the other files (kind 2) sort in the same way, by their name without the extension
+  const files = [...node.notes.map(n => [n, 0]), ...(node.canvases || []).map(p => [p, 1]), ...(node.others || []).map(p => [p, 2])]
+    .map(([n, c]) => [n, c, c === 1 ? n.replace(/\.canvas$/i, "") : c === 2 ? n.replace(/\.[^./]+$/, "") : n])
     .sort((a, b) => a[2] < b[2] ? -1 : a[2] > b[2] ? 1 : a[1] - b[1]);
   for (const [nm, isCanvas] of files) {
-    if (isCanvas) { out.appendChild(canvasRow(nm, depth)); continue; }
+    if (isCanvas === 1) { out.appendChild(canvasRow(nm, depth)); continue; }
+    if (isCanvas === 2) { out.appendChild(fileRow(nm, depth)); continue; }
     const row = document.createElement("div");
     row.className = "trow note";                // .active: treeHighlight()
     row.innerHTML = treeGuides(depth) + '<span class="tc"></span>' +
       '<span class="tn"></span>';
     row.querySelector(".tn").textContent = nm.split("/").pop();
     row.dataset.note = nm;
-    row.onclick = e => { if (treeClickEaten()) return; rowOpen(nm, e); };     // opentab REQ-1/3/5/7: replace in place; ctrl = new tab
+    row.onclick = e => { if (treeClickEaten()) return; if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); treeAnchor = wsPathOut(nm); rowOpen(nm, e); };     // opentab REQ-1/3/5/7: replace in place; ctrl = new tab; cv-journeys: shift = range select
     row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); rowOpen(nm, e); } };   // opentab REQ-6: middle = new tab
     row.oncontextmenu = e => noteMenu(e, nm);   // R9.4: bookmark toggle
     row.addEventListener("mousedown", e => treeDragStart(e, nm));   // R24.6: drag onto a folder row = move
@@ -6295,15 +6320,33 @@ function renderNode(node, prefix, depth, out) {
   }
 }
 
+/* goal cv-journeys: an image / PDF / audio / video row. Stock lists every file type it supports in the explorer,
+   named without its extension and tagged with it (PNG, PDF, MP3, ...). Here the row is a DRAG SOURCE for a board
+   (the file card) and nothing else: it carries data-file (never data-note: no note verb addresses it), opens no
+   view (the app has none for these types) and is no move source (R24.6 moves notes). */
+function fileRow(p, depth) {
+  const row = document.createElement("div");
+  row.className = "trow file";
+  row.innerHTML = treeGuides(depth) + '<span class="tc"></span><span class="tn"></span><span class="ttag"></span>';
+  const base = p.split("/").pop(), d = base.lastIndexOf(".");
+  row.querySelector(".tn").textContent = d > 0 ? base.slice(0, d) : base;   // names never hit innerHTML
+  row.querySelector(".ttag").textContent = d > 0 ? base.slice(d + 1).toUpperCase() : "";
+  row.dataset.file = p;
+  row.addEventListener("mousedown", e => treeDragStart(e, p, "file"));
+  row.onclick = e => { if (treeClickEaten()) return; if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); treeAnchor = p; };   // shift = range select; it opens no view
+  return row;
+}
+
 function canvasRow(p, depth) {
   const row = document.createElement("div");
   row.className = "trow cvfile";   // NOT "canvas": that is the board element's class (plugins.css .canvas = absolute)
   row.innerHTML = treeGuides(depth) + '<span class="tc"></span><span class="tn"></span><span class="ttag">CANVAS</span>';
   row.querySelector(".tn").textContent = p.split("/").pop().replace(/\.canvas$/i, "");   // names never hit innerHTML
   row.dataset.canvas = p;
-  row.onclick = () => openCanvas(p);
+  row.onclick = () => { if (treeClickEaten()) return; treeSelClear(); treeAnchor = p; openCanvas(p); };   // CVR-A-090: the click a drag ends with is not an open; a board row is a range anchor, never a shift target
   row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); openCanvas(p); } };
   row.oncontextmenu = e => canvasFileMenu(e, p);
+  row.addEventListener("mousedown", e => treeDragStart(e, p));   // CVR-A-090: drag onto a folder row = move (cvMoveTo)
   return row;
 }
 
@@ -6337,6 +6380,38 @@ function treeClickEaten() {              // a completed drag must not also open/
   treeEat = 0;                           // one click only, and stale marks expire by time:
   return !!t && performance.now() - t < 400;   // a drop on a FOLDER row generates no row click
 }
+/* goal cv-journeys: explorer multi-select, as stock 1.13.7 does it (measured black-box, docs/negctl-cv-journeys):
+   Ctrl+click still opens a new tab (opentab), SHIFT+click selects the RANGE of file rows from the active file's
+   row (the anchor; none = the clicked row) to the clicked row and opens nothing; any plain click or a navigation
+   clears it. A drag that starts on a selected row carries the whole selection (dragManager.dragFiles) — a board
+   lays one file card per file. Folder rows are never selected. */
+let treeSel = [];                        // vault paths, in row order
+let treeAnchor = null;                   // the last row plainly clicked (stock: the file it opened = the active file)
+const treeRowPath = r => r.dataset.note != null ? wsPathOut(r.dataset.note) : r.dataset.canvas != null ? r.dataset.canvas : r.dataset.file != null ? r.dataset.file : null;
+function treeSelClear() {
+  if (!treeSel.length) return;
+  treeSel = [];
+  for (const r of document.querySelectorAll("#tree .trow.is-selected")) { r.classList.remove("is-selected"); delete r.dataset.selp; }
+}
+function treeRange(row) {
+  if (!document.getElementById("tree-sel-css")) {   // the row style (stock: .is-selected, the selection tint)
+    const st = document.createElement("style"); st.id = "tree-sel-css";
+    st.textContent = "#tree .trow.is-selected { background: var(--nav-item-background-selected, var(--text-selection)) }";
+    document.head.appendChild(st);
+  }
+  const rows = [...document.querySelectorAll("#tree .trow.note, #tree .trow.cvfile, #tree .trow.file")].filter(r => r.getClientRects().length > 0);
+  let af = null;
+  try { af = PLG && PLG.app.workspace.getActiveFile && PLG.app.workspace.getActiveFile(); } catch (_) {}
+  const ap = af ? af.path : (cur() ? wsPathOut(cur()) : null);
+  let a = treeAnchor != null ? rows.findIndex(r => treeRowPath(r) === treeAnchor) : -1;   // a board view is no FileView here: getActiveFile misses it
+  if (a < 0) a = rows.findIndex(r => treeRowPath(r) === ap);
+  const b = rows.indexOf(row);
+  if (b < 0) return;
+  if (a < 0) a = b;
+  treeSelClear();
+  for (const r of rows.slice(Math.min(a, b), Math.max(a, b) + 1)) { const p = treeRowPath(r); if (p == null) continue; r.classList.add("is-selected"); r.dataset.selp = p; treeSel.push(p); }
+  updateTitle();                         // census [tsel:]
+}
 /* top5-func: the explorer drag and the plugins. Stock drags a note with an HTML5
    drag whose payload is app.dragManager.draggable for as long as the drag is up
    (Excalidraw reads draggable.type/.title/.files in its dragover/drop). This
@@ -6348,15 +6423,28 @@ function treeClickEaten() {              // a completed drag must not also open/
    HTML5 contract) gets the drop — anything else is the old "dropped on
    nothing", and the app's own panes never see a synthetic DOM drag. */
 let treePlgDrag = null;
-function treePlgDragStart(nm, dir) {         // cv-drop: dir = a folder row (dragFolder payload)
+function treePlgDragStart(nm, kind) {        // cv-drop: kind true = a folder row (dragFolder payload); cv-journeys: "file" = a file row (nm is its vault path)
   if (!PLG || !PLG.app.dragManager) return null;
-  const f = PLG.app.vault.getAbstractFileByPath(dir ? nm : wsPathOut(nm));
+  const dir = kind === true;
+  const f = PLG.app.vault.getAbstractFileByPath(dir || kind === "file" ? nm : wsPathOut(nm));
   if (!(f instanceof (dir ? PLG.X.TFolder : PLG.X.TFile))) return null;
   let dt;
   try { dt = new DataTransfer(); } catch (_) { return null; }
   const dm = PLG.app.dragManager;
   let data;
   try { data = dir ? dm.dragFolder({ dataTransfer: dt }, f, "file-explorer") : dm.dragFile({ dataTransfer: dt }, f, "file-explorer"); } catch (_) { return null; }
+  dm.draggable = data;
+  return { dt, data, end() { if (dm.draggable === data) dm.draggable = null; } };
+}
+function treePlgDragFiles(paths) {          // cv-journeys: a multi-row selection -> dragManager.dragFiles (every path a TFile, else no plugin payload)
+  if (!PLG || !PLG.app.dragManager) return null;
+  const fs = paths.map(p => PLG.app.vault.getAbstractFileByPath(p));
+  if (!fs.length || fs.some(f => !(f instanceof PLG.X.TFile))) return null;
+  let dt;
+  try { dt = new DataTransfer(); } catch (_) { return null; }
+  const dm = PLG.app.dragManager;
+  let data;
+  try { data = dm.dragFiles({ dataTransfer: dt }, fs, "file-explorer"); } catch (_) { return null; }
   dm.draggable = data;
   return { dt, data, end() { if (dm.draggable === data) dm.draggable = null; } };
 }
@@ -6379,7 +6467,7 @@ function treePlgDrop(pd, ev) {
   } catch (e) { console.warn("[tree] plugin drop:", e); return false; }
   finally { pd.end(); }
 }
-function treeDragStart(e, nm, dir) {
+function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file" = a file row (cv-journeys), else a note
   if (e.button !== 0) return;
   // top5-func: the press is this machine's, not WebKit's. Without this the travel selected text
   // across the panes, and the NEXT press on that selection started a native text drag that
@@ -6390,7 +6478,7 @@ function treeDragStart(e, nm, dir) {
   const sx = e.clientX, sy = e.clientY;
   const base = nm.split("/").pop();
   const par = nm.includes("/") ? nm.slice(0, nm.lastIndexOf("/")) : "";
-  let ghost = null, target = null, hl = null, zones = null, raf = 0, last = null;
+  let ghost = null, target = null, hl = null, zones = null, raf = 0, last = null, multi = null;
   const clearHl = () => { if (hl) { hl.classList.remove("drop-into"); hl = null; } };
   const step = () => {
     raf = 0;
@@ -6399,10 +6487,12 @@ function treeDragStart(e, nm, dir) {
       if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) < 6) return;
       ghost = document.createElement("div");
       ghost.id = "tabghost";
-      ghost.textContent = base;
+      // cv-journeys: a drag from a row of a multi-row selection carries the selection (no move: zones go)
+      multi = treeSel.length > 1 && treeSel.includes(dir === "file" ? nm : dir === true ? null : wsPathOut(nm)) ? treeSel.slice() : null;
+      ghost.textContent = multi ? multi.length + " files" : base;
       document.body.appendChild(ghost);
-      dragTok = "-:" + base;             // a drag is UP with no destination yet
-      treePlgDrag = treePlgDragStart(nm, dir);
+      dragTok = "-:" + ghost.textContent;   // a drag is UP with no destination yet
+      treePlgDrag = multi ? treePlgDragFiles(multi) : treePlgDragStart(nm, dir);
       updateTitle();
       // rects cached ONCE (R20): a per-frame getBoundingClientRect over every
       // folder row is a layout read per mousemove on a 500-row explorer.
@@ -6411,7 +6501,7 @@ function treeDragStart(e, nm, dir) {
         .map(el => ({ el, f: el.dataset.folder, r: el.getBoundingClientRect() }))
         .filter(z => z.r.height > 0 && z.f != null);
       zones.push({ el: $("tree"), f: "", r: $("tree").getBoundingClientRect() });   // the vault ROOT
-      if (dir) zones = [];               // cv-drop: a folder is no move source (R24.5) — only a plugin view takes it
+      if (dir || multi) zones = [];      // cv-drop: a folder is no move source (R24.5) — only a plugin view takes it; nor is a selection
     }
     ghost.style.transform = "translate3d(" + (ev.clientX + 10) + "px," + (ev.clientY + 12) + "px,0)";
     let nt = null;
@@ -6448,10 +6538,11 @@ function treeDragStart(e, nm, dir) {
     const pd = treePlgDrag; treePlgDrag = null;
     if (ghost && !t && pd && treePlgDrop(pd, ev)) { treeEat = 1; updateTitle(); return; }   // a plugin view took it
     if (pd) pd.end();
-    if (dir) { if (ghost) treeEat = performance.now(); updateTitle(); return; }   // cv-drop: a folder dropped on nothing moves nothing
+    if (dir || multi) { if (ghost) treeEat = performance.now(); updateTitle(); return; }   // cv-drop: a folder (or a selection) dropped on nothing moves nothing
     if (!ghost || !t) { updateTitle(); return; }   // plain click, or dropped on nothing
     treeEat = 1;                                   // the mouseup's click is not an "open this note"
-    await moveNoteTo(nm, t.f);
+    if (/\.canvas$/i.test(nm)) await cvMoveTo(nm, t.f);   // CVR-A-090: a canvas row moves through canvas_io
+    else await moveNoteTo(nm, t.f);
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
@@ -6492,11 +6583,13 @@ let treeSig = "", treeRows = new Map(), treeActive = null;
 function treeHighlight() {
   const r = treeRows.get(cur()) || null;
   if (r === treeActive) return;
+  treeSelClear();                        // cv-journeys: a navigation ends a multi-row selection (stock)
   if (treeActive) treeActive.classList.remove("active");
   if (r) r.classList.add("active");
   treeActive = r;
 }
 async function refreshTree() {
+  const mediaP = inv("canvas_io", { op: "media", path: "" }).catch(() => []);   // goal cv-journeys: audio / video rows, in parallel
   const [folders, notes, imgs] =
     await Promise.all([inv("list_folders"), inv("list_notes"), inv("list_images")]);
   notesCache = notes;
@@ -6506,11 +6599,15 @@ async function refreshTree() {
   // registered (off = no view opens them, as a file type nothing handles is not listed)
   let canvases = [];
   if (CANVAS && CANVAS.isRegistered()) { try { canvases = await inv("canvas_io", { op: "list", path: "" }); } catch (_) { canvases = []; } }
-  const sig = folders.join("\n") + "\0" + notes.join("\n") + "\0" + canvases.join("\n");
+  // goal cv-journeys: images + PDFs (list_images) and audio / video (canvas_io media) are listed too, as stock does
+  const media = await mediaP;
+  const others = [...(imgs || []), ...(media || [])];
+  const sig = folders.join("\n") + "\0" + notes.join("\n") + "\0" + canvases.join("\n") + "\0" + others.join("\n");
   if (sig === treeSig && tree.childElementCount) { treeHighlight(); return; }
-  treeSig = sig; treeRows = new Map(); treeActive = null;
+  if (PLGVS && others.join("\n") !== treeSig.split("\0")[3]) await PLGVS();   // a new image (a paste, a drop) is a TFile before its card paints
+  treeSig = sig; treeRows = new Map(); treeActive = null; treeSel = [];
   tree.innerHTML = "";
-  renderNode(buildTree(folders, notes, canvases), "", 0, tree);
+  renderNode(buildTree(folders, notes, canvases, others), "", 0, tree);
   treeHighlight();
 }
 
@@ -6914,7 +7011,7 @@ function mruTouch(name) {
   if (i >= 0) mruList.splice(i, 1);
   mruList.unshift(name);
 }
-function qsItems() {                 // switcher source: MRU first, rest a-z
+function qsItems() {                 // switcher source: MRU first, rest a-z, then the vault's canvases
   const rest = notesCache.filter(n => !mruList.includes(n)).sort();
   return [...mruList.filter(n => notesCache.includes(n)), ...rest].map(n => ({
     label: n, hint: "",
@@ -6925,8 +7022,21 @@ function qsItems() {                 // switcher source: MRU first, rest a-z
         await loadActive(g);
       } else await openInTab(n);
     },
-  }));
+  })).concat(qsCanvases.map(p => ({  // CVR-A-067: a .canvas row is the board's vault path; Enter opens the board, never a note
+    label: p, hint: "", canvas: true,
+    run: async () => { await openCanvas(p); },
+  })));
 }
+/* CVR-A-067: the canvases the switcher offers, read when it opens (canvas_io list; empty while the Canvas
+   core plugin is off, as the explorer lists none then). */
+let qsCanvases = [];
+async function qsCanvasList() {
+  if (!CANVAS || !CANVAS.isRegistered()) return [];
+  try { return (await inv("canvas_io", { op: "list", path: "" })).slice().sort(); } catch (_) { return []; }
+}
+const qslSafe = s => String(s).replace(/[|\]\[]/g, "_");
+CENSUS.push(() => modalKind === "qs" ? " [qsl:" + mdItems.map(it => qslSafe(it.label)).join("|") + "]" : "");   // cvf-explorer CVR-A-067: the switcher's offered rows, in order
+CENSUS.push(() => " [tabt:" + groups().map(g => [...g.tabsEl.querySelectorAll(".tab .t")].map(e => e.textContent.replace(/^\u{1F517} /u, "").replace(/[[\]|;]/g, "")).join(";")).join("|") + "]");   // cvf-explorer CVR-A-086: the painted tab titles, per pane (";" between tabs, "|" between panes)
 /* listtoggle A3 (found by the gate phase, not by reading): the palette input
    TAKES the DOM selection, so a palette command that reads the editor
    selection (Ed.sel) found none and was a silent no-op — "Toggle bullet list"
@@ -7137,8 +7247,10 @@ $("minput").onkeydown = async e => {
   }
 };
 $("modal").onmousedown = e => { if (e.target === $("modal")) closeModal(); };
-function cmdQuickSwitch() {
-  modalKind === "qs" ? closeModal() : qsModal.open();   // through the prototype: a plugin may wrap open
+async function cmdQuickSwitch() {
+  if (modalKind === "qs") return closeModal();
+  qsCanvases = await qsCanvasList();   // CVR-A-067: canvases are switcher rows too
+  if (modalKind !== "qs") qsModal.open();   // through the prototype: a plugin may wrap open
 }
 /* cp-hover-editor: the core-plugin hooks plugins read through app.internalPlugins.plugins, shapes recorded
    black-box from stock 1.13.7 (harness api-probes.d/hover.js, part hover).
@@ -7150,8 +7262,9 @@ class QuickSwitcherModal {
     this.app = app; this.inputEl = $("minput"); this.instructionsEl = $("mfoot");
     this.scope = PLG ? new PLG.X.Scope() : null;
     const tfile = n => { const f = PLG && PLG.app.vault.getAbstractFileByPath(wsPathOut(n)); return PLG && f instanceof PLG.X.TFile ? f : null; };
+    const tfileP = p => { const f = PLG && PLG.app.vault.getAbstractFileByPath(p); return PLG && f instanceof PLG.X.TFile ? f : null; };   // a canvas row is a path
     this.chooser = {
-      get values() { return mdSrc === qsItems ? mdItems.map(it => ({ type: "file", file: tfile(it.label) })) : null; },
+      get values() { return mdSrc === qsItems ? mdItems.map(it => ({ type: "file", file: it.canvas ? tfileP(it.label) : tfile(it.label) })) : null; },
       get selectedItem() { return mdSel; },
     };
   }
@@ -7282,9 +7395,9 @@ function cvActiveFolder() {
   return "";
 }
 // open a .canvas file in a canvas tab of the focused group (the view type must be registered: core plugin on)
-async function openCanvas(path) {
+async function openCanvas(path, how) {     // how: "split" -> a new pane to the right (CVR-A-083 Open to the right)
   if (!CANVAS || !CANVAS.isRegistered()) { say("Canvas is turned off (Settings › Community plugins › Core plugins)", "canvas"); return null; }
-  const leaf = PLG.app.workspace.getLeaf("tab");
+  const leaf = how === "split" ? PLG.app.workspace.getLeaf("split", "vertical") : PLG.app.workspace.getLeaf("tab");
   await leaf.setViewState({ type: "canvas", state: { file: path }, active: true });
   return leaf;
 }
@@ -7308,31 +7421,94 @@ async function cmdNewCanvas(folder) {
   say("Could not find a free name for the new canvas", "canvas");
   return null;
 }
-function canvasFileMenu(e, p) {             // right-click a .canvas row in the explorer
+function canvasFileMenu(e, p) {             // right-click a .canvas row in the explorer (CVR-A-083: the file menu, six groups)
   e.preventDefault();
   e.stopPropagation();
   closeMenu();
   const m = document.createElement("div");
   m.className = "ctxmenu";
   const { item, sep } = bmMenuItems(m);
-  item("Open in new tab", () => openCanvas(p));
+  const here = p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "";
+  item("Open in new tab",    () => openCanvas(p));
+  item("Open to the right",  () => openCanvas(p, "split"));
+  item("Open in new window", null, "Single-window app: there is no second window to open into");
   sep();
-  item("New canvas", () => cmdNewCanvas(p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : ""));
+  item("Make a copy", () => cvCopy(p));
+  const mv = document.createElement("div");
+  mv.textContent = "Move file to...";
+  m.appendChild(mv);
+  mv.onmousedown = ev => ev.stopPropagation();
+  mv.onclick = async () => {                // the menu stays open and becomes the folder list (the note menu's in-place picker)
+    let fl = [];
+    try { fl = await inv("list_folders"); } catch (_) { fl = []; }
+    m.innerHTML = "";
+    if (here) item("(vault root)", () => cvMoveTo(p, ""));
+    for (const f of fl) if (f !== here) item(f, () => cvMoveTo(p, f));
+    if (!m.children.length) item("(no other folder)", null, "The vault has no other folder");
+    setTimeout(() => clampMenu(m), 0);
+    updateTitle();
+  };
+  item("Bookmark", null, "Bookmarks hold note names (.obsidian/bookmarks.json, R9.4); a canvas is not a note");
+  sep();
+  item("Copy path", null, "Missing subsystem: a programmatic clipboard write (clipboard access exists only inside real copy/paste events, ui/editor.js)");
+  sep();
+  item("Open version history", null, "Missing subsystem: file history — no revisions are kept");
+  sep();
+  item("Open in default app", null, "Missing subsystem: a file-path opener — open_external takes a URL, not a vault path");
+  item("Show in system explorer", null, "Missing subsystem: a file-manager handler");
   sep();
   item("Rename...", () => cvRename(p));     // cv-vault CV-147
   item("Delete", () => cvDelete(p));       // cv-vault CV-148
   m.dataset.mt = "canvas:" + p.replace(/[|\]]/g, "");
   placeMenu(m, e.clientX, e.clientY);
 }
+/* CVR-A-083 Make a copy: "<name> 1.canvas" (the next free number) beside the original, the same bytes,
+   created O_EXCL through canvas_io, then opened. */
+async function cvCopy(p) {
+  let body;
+  try { body = await inv("canvas_io", { op: "read", path: p }); } catch (err) { say(String(err && err.message || err), "canvas"); return null; }
+  const base = p.replace(/\.canvas$/i, "");
+  for (let i = 1; i < 100; i++) {
+    const np = base + " " + i + ".canvas";
+    try { await inv("canvas_io", { op: "create", path: np, data: body }); }
+    catch (err) { if (/EEXIST/.test(String(err && err.message || err))) continue; say(String(err && err.message || err), "canvas"); return null; }
+    await refreshTree();
+    await openCanvas(np);
+    return np;
+  }
+  say("Could not find a free name for the copy", "canvas");
+  return null;
+}
+/* CVR-A-083 Move file to: canvas_io rename into <folder>/ (same file name; never over an existing entry).
+   Every open tab on the canvas stays and follows it to the new path (cvRetarget). */
+async function cvMoveTo(p, folder) {
+  const np = (folder ? String(folder).replace(/\/+$/, "") + "/" : "") + p.split("/").pop();
+  if (np === p) return null;
+  return (await cvRetarget(p, np)) ? np : null;
+}
 /* goal cv-vault CV-147/148: rename and delete a canvas from its explorer row. Rename reuses the rename prompt
    (#rnbox, [modal:rn]) with the name minus ".canvas", same folder; delete reuses the confirmation (#delbox,
-   [modal:del]) and moves the file to .trash (canvas_io trash). An open canvas tab on the file is closed first
-   (its pending save lands), and after a rename the canvas reopens under its new path. */
+   [modal:del]) and moves the file to .trash (canvas_io trash). An open canvas tab on the file is closed before a
+   delete (its pending save lands); a rename keeps every tab and points it at the new path (cvRetarget, CVR-A-086). */
 const cvLeavesOf = p => { try { return PLG.app.workspace.getLeavesOfType("canvas").filter(l => l.view && l.view.path === p); } catch (_) { return []; } };
 async function cvCloseLeaves(p) {
   const ls = cvLeavesOf(p);
   for (const l of ls) { try { if (l.view.flush) await l.view.flush(); } catch (_) {} try { await l.detach(); } catch (_) {} }
   return ls.length;
+}
+/* CVR-A-086: rename / move a canvas through canvas_io and keep every tab on it: each leaf lands its pending save
+   first, then after the rename it is pointed at the new path in place (CanvasView.setState loads it), so the tab
+   count stays and every tab retitles. A failed rename leaves the leaves where they were. */
+async function cvRetarget(old, np) {
+  const ls = cvLeavesOf(old);
+  for (const l of ls) { try { if (l.view.flush) await l.view.flush(); } catch (_) {} }
+  try { await inv("canvas_io", { op: "rename", path: old, data: np }); }
+  catch (err) { say(String(err && err.message || err), "canvas"); await refreshTree(); return false; }
+  await refreshTree();
+  for (const l of ls) { try { await l.setViewState({ type: "canvas", state: Object.assign({}, l.view.getState(), { file: np }) }); } catch (err) { console.error("[canvas] retarget:", err); } }
+  for (const h of groups()) renderTabs(h);
+  updateTitle();
+  return true;
 }
 let cvRenamePending = null;
 function cvRename(p) {
@@ -7358,12 +7534,7 @@ $("rnbox").addEventListener("keydown", async e => {     // capture on the box: r
   const dir = old.includes("/") ? old.slice(0, old.lastIndexOf("/") + 1) : "";
   const np = dir + nn + ".canvas";
   if (np === old) return;
-  const reopen = await cvCloseLeaves(old);
-  try { await inv("canvas_io", { op: "rename", path: old, data: np }); }
-  catch (err) { say(String(err && err.message || err), "canvas"); await refreshTree(); if (reopen) await openCanvas(old); return; }
-  await refreshTree();
-  if (reopen) await openCanvas(np);
-  updateTitle();
+  await cvRetarget(old, np);
 }, true);
 function cvDelete(p) {
   openDelete(p, 0, 0);
@@ -8764,6 +8935,7 @@ function cmdPalette() {
    consented link rewrite are renameThenAsk's (R24.3), the same tail the inline
    title uses, then tabs/hist/mru follow the name */
 async function applyRename(old, nn) {   // post-rename bookkeeping (F2 / cmdRename, the R34 title rename, and R24.6's drag-move)
+  if (PLGNM) try { PLGNM(old, nn); } catch (e) { console.error("[plugin] noteMoved:", e); }   // cv-journeys: before the tree refresh repaints a board
   for (const h of groups()) for (const tb of h.tabs) {
     if (tb.kind) continue;
     if (tb.name === old) { tb.name = nn; if (tb.view) setInlineTitle(tb.view, nn); }   // #20: the rendered title follows the FILE, in every retained view
@@ -8771,6 +8943,21 @@ async function applyRename(old, nn) {   // post-rename bookkeeping (F2 / cmdRena
   }
   const mi = mruList.indexOf(old);
   if (mi >= 0) mruList[mi] = nn;
+  /* CVR-A-089: a note MOVED to another folder (same name, new path — the explorer
+     drag, "Move file to") takes the canvas file cards that name it along at once,
+     with no prompt: a card holds a vault path, and the old one now names nothing.
+     A RENAME (new basename) still relinks the cards only on the R34 consent
+     (runUpdateLinks0, CV-143). */
+  const bn = s => s.split("/").pop();
+  if (bn(old) === bn(nn) && window.__osCanvasFiles) {
+    /* the board's file model hears only the watcher, and an app move is an own write the watcher
+       reports as nothing: without this the relinked card names a path the model has never seen
+       and the reopened board paints it missing. LATER: a host rename hook in api-vault (the old
+       entry lingers until then). */
+    if (PLGNW) try { PLGNW(nn, true); } catch (e) { console.error("[plugin] noteWritten:", e); }
+    try { await window.__osCanvasFiles.relink(old, nn, { inv, app: PLG && PLG.app }); }
+    catch (err) { say("Canvas file cards not updated — " + String(err && err.message || err)); }
+  }
   for (const h of groups()) renderTabs(h);
   await refreshTree();
   /* R9.8: the note's name changed, so the rust side rewrote its entry in

@@ -45,6 +45,10 @@ pub struct Index {
     /// with `names` (see `suffix_map`) — add_edge/drop_edge look a link up
     /// here instead of scanning every name per link
     res: HashMap<String, usize>,
+    /// CVR-A-088: the vault root `build` walked, so `rename_blast` can count the
+    /// canvas file cards that name the renamed note (canvases are not notes and
+    /// never enter `notes`; they are read only when a rename is counted)
+    root: Option<PathBuf>,
     /// R29.6: sorted vault-relative image paths (with extension). NOT notes —
     /// they never enter `notes`, they only answer "does this embed resolve?"
     /// for BOTH renderers, so the two agree by construction.
@@ -549,6 +553,7 @@ impl Index {
         imgs.sort();
         ix.images = imgs;
         ix.notes = read_parse_all(root, notes).into_iter().collect();
+        ix.root = Some(root.to_path_buf());
         ix.refresh_names();
         ix.rebuild_backlinks();
         ix
@@ -793,8 +798,66 @@ impl Index {
                 files += 1;
             }
         }
+        // CVR-A-088: a canvas whose file card names the note is a file the rename
+        // affects too — each such card is one link, each such canvas one file. The
+        // match is the canvas relink op's: the card's "file" equals `<old>.md`.
+        if let Some(root) = &self.root {
+            let from = format!("{old}.md");
+            let mut cvs = Vec::new();
+            canvas_walk(root, &mut cvs, 0);
+            for p in cvs {
+                let hits = canvas_cards_naming(&p, &from);
+                if hits > 0 {
+                    links += hits;
+                    files += 1;
+                }
+            }
+        }
         (links, files)
     }
+}
+
+/// CVR-A-088: the vault's .canvas files, same policy as `walk` — dot entries and
+/// symlinks are not part of the vault; depth-bounded
+fn canvas_walk(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
+    if depth > 64 {
+        return;
+    }
+    let Ok(rd) = fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') {
+            continue;
+        }
+        let p = e.path();
+        let Ok(m) = fs::symlink_metadata(&p) else { continue };
+        if m.is_symlink() {
+            continue;
+        }
+        if m.is_dir() {
+            canvas_walk(&p, out, depth + 1);
+        } else if m.is_file() && name.ends_with(".canvas") && m.len() <= CANVAS_COUNT_MAX {
+            out.push(p);
+        }
+    }
+}
+
+/// a canvas larger than this is not counted (canvasfs refuses to read it as well)
+const CANVAS_COUNT_MAX: u64 = 16 << 20;
+
+/// how many file cards of the canvas at `p` name `file`; an unreadable or
+/// non-JSON-Canvas file counts 0
+fn canvas_cards_naming(p: &Path, file: &str) -> usize {
+    let Ok(s) = fs::read_to_string(p) else { return 0 };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) else { return 0 };
+    let Some(nodes) = v.get("nodes").and_then(|n| n.as_array()) else { return 0 };
+    nodes
+        .iter()
+        .filter(|n| {
+            n.get("type").and_then(|t| t.as_str()) == Some("file")
+                && n.get("file").and_then(|f| f.as_str()) == Some(file)
+        })
+        .count()
 }
 
 /// basename links are safe to rewrite only when no OTHER note carries old's
