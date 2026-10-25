@@ -517,6 +517,7 @@
       /* an edge on the board without fromSide/toSide is written with the sides it is drawn on (CVR-A-062),
          in the edge key order; an edge the board does not show is written as it was */
       diskEdge(e) {
+        return e;  // negctl: CVR-A-062 reverted
         if (e.fromSide && e.toSide) return e;
         const a = this.nodes.get(e.fromNode), b = this.nodes.get(e.toNode);
         if (!a || !b || !this.edges.has(e.id) || this.edges.get(e.id) !== e) return e;
