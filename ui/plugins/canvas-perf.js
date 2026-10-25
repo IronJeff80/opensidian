@@ -13,8 +13,8 @@
      are the moved cards'. Only when the edge layer still holds exactly the edges of the last
      full render; anything else (a duplicate-drag added edges, an edge was removed) falls back
      to the full render. painted() swaps each re-pathed <g> in place, so paint order is kept.
-   - census pings: while a board of BIG+ cards is live, the host census republishes at most once
-     per frame (see coalesce()).
+   - census pings are not coalesced here: the host (ui/main.js updateTitle) builds its census at
+     most once per frame app-wide, and trails a heavy one while a pan or drag streams pings.
    The stylesheet goes in once at load: inserting it under an open 500-card board would restyle
    the whole document in the middle of the open.
    census (ui/main.js canvasTok): [cvperf:vis=<painted cards>|total=<cards>|eupd=<edges the last
@@ -57,7 +57,6 @@
     s.total = N;
     if (N < BIG || c.fitted === false) { if (s.culled.size || s.eoff.size) uncullAll(s); s.vis = N; s.evis = s.gmap.size; return; }
     size(c, s);
-    if (!hooked || !bigs.has(c)) coalesce(c);
     const z = c.zoom || 1, W = s.w, H = s.h;
     if (!W || !H) { if (s.culled.size || s.eoff.size) uncullAll(s); s.vis = N; s.evis = s.gmap.size; return; }   // a hidden board: cull nothing until it has a size
     const x0 = (-c.tx - MARGIN * W) / z, x1 = (W - c.tx + MARGIN * W) / z;
@@ -87,39 +86,6 @@
   }
 
 
-  /* ------------------------------------------------ census pings
-     Every viewport change asks the host to republish its whole title census (deps.changed:
-     cv-nav after each applyTransform, cv-cards after each wheel, ...), several times per frame,
-     and one republish on this board costs a frame budget of its own. While a big board is
-     live they are coalesced: the first ping of a frame runs at once (one-off actions stay
-     synchronous), the rest become ONE trailing ping in the next frame — the census still
-     shows the latest state, at most a frame later. Small boards keep every ping. */
-  const bigs = new Set();
-  let hooked = false;
-  function bigLive() {
-    for (const c of bigs) { if (c.wrapperEl && c.wrapperEl.isConnected && c.nodes.size >= BIG) return true; if (!c.wrapperEl || !c.wrapperEl.isConnected) bigs.delete(c); }
-    return false;
-  }
-  function coalesce(c) {
-    bigs.add(c);
-    let deps = null;
-    for (const n of c.nodes.values()) { const x = n._ccCtx && n._ccCtx.deps; if (x) { deps = x; break; } }
-    if (!deps || typeof deps.changed !== "function") return;
-    hooked = true;
-    if (deps.changed._cvp) return;
-    const orig = deps.changed;
-    let ran = false, due = false, armed = 0;
-    const arm = () => { if (!armed) armed = requestAnimationFrame(tick); };
-    function tick() { armed = 0; ran = false; if (due) { due = false; ran = true; arm(); orig.call(deps); } }
-    const wrapped = function () {
-      if (!bigLive()) return orig.apply(this, arguments);
-      if (ran) { due = true; arm(); return; }
-      ran = true; arm();
-      return orig.apply(this, arguments);
-    };
-    wrapped._cvp = true;
-    deps.changed = wrapped;
-  }
   /* ------------------------------------------------ partial edges */
   // canvas.js pointermove: drag(canvas, d) before the move, drag(canvas, null) after it
   function drag(c, d) {

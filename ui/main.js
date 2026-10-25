@@ -3396,9 +3396,53 @@ function xiAgain() {
   xiPending = true;
   requestAnimationFrame(() => { xiPending = false; updateTitle(); });
 }
-function updateTitle() {          // pane/focus census in the window title (headless probe)
+/* title-frame: the census is built at most once per animation frame, app-wide.
+   updateTitle() is the scheduler every caller already uses; updateTitleNow() is the
+   explicit flush (hold releases, anything that must publish in this task).
+   - the first call of a frame publishes synchronously (one-off actions stay
+     synchronous — scrollsync reads the mode right after a switcher open);
+   - further calls in that frame become ONE trailing publish in the next frame;
+   - a HEAVY census (last build > UT_HEAVY ms, e.g. a 500-card board, ~25 ms) fed by a
+     stream of calls in consecutive frames (a pan, a drag) is not rebuilt every frame
+     either — that alone is a frame budget: it publishes UT_TRAIL ms after the stream
+     goes quiet, and at least every UT_MAXW ms while it lasts.
+   A timer backs every rAF so a window that gets no frames still publishes. */
+const UT_HEAVY = 8, UT_TRAIL = 120, UT_MAXW = 1000;
+let utRan = false, utDue = false, utRaf = 0, utRafT = 0, utCost = 0, utLast = -1e9, utTrailT = 0, utFirst = 0;
+function utFrame() {             // a new frame: the next call may publish again
+  if (utRaf) { cancelAnimationFrame(utRaf); utRaf = 0; }
+  clearTimeout(utRafT); utRafT = 0;
+  utRan = false;
+  if (utDue && !utTrailT) { utDue = false; updateTitleNow(); }
+}
+function utArm() {
+  if (!utRaf) utRaf = requestAnimationFrame(utFrame);
+  if (!utRafT) utRafT = setTimeout(utFrame, 100);
+}
+function updateTitle() {
+  const now = performance.now();
+  if (utCost > UT_HEAVY && now - utLast < UT_TRAIL) {   // heavy census under a stream: trail it
+    utDue = true;
+    if (!utTrailT) utFirst = now;
+    clearTimeout(utTrailT);
+    utTrailT = setTimeout(() => { utTrailT = 0; if (utDue) { utDue = false; updateTitleNow(); } },
+      Math.max(0, Math.min(UT_TRAIL, utFirst + UT_MAXW - now)));
+    utLast = now;
+    return;
+  }
+  if (utRan) { utDue = true; utArm(); utLast = now; return; }
+  updateTitleNow();
+}
+function updateTitleNow() {      // flush: publish the census in this task
   if (fHold > 0) return;          // a find reveal is in flight: fGo republishes when it lands
   if (twHold > 0) { twDue = true; return; }   // a tab switch is in flight: switchTab republishes after its paint
+  if (utTrailT) { clearTimeout(utTrailT); utTrailT = 0; }
+  utDue = false;
+  const t0 = performance.now();
+  try { utBuild(); }
+  finally { const t1 = performance.now(); utCost = t1 - t0; utLast = t1; utRan = true; utArm(); }
+}
+function utBuild() {             // pane/focus census in the window title (headless probe)
   rTrack();                      // lgpanes: keep rLeaf current even with the right sidebar closed
   const ps = [...document.querySelectorAll("#main .pane")];
   const nf = document.querySelectorAll("#main .pane.focused").length;
@@ -5593,7 +5637,7 @@ function twOpen(fn) {
   return async sp => {
     twHold++;
     try { return await fn(sp); }
-    finally { if (--twHold === 0 && twDue) { twDue = false; updateTitle(); } }
+    finally { if (--twHold === 0 && twDue) { twDue = false; updateTitleNow(); } }
   };
 }
 async function switchTab(g, i) {
@@ -5608,7 +5652,7 @@ async function switchTab(g, i) {
   } finally {
     // act() queued its paint end (rAF -> setTimeout) before returning: this rAF + timeout run after it
     requestAnimationFrame(() => setTimeout(() => {
-      if (--twHold === 0 && twDue) { twDue = false; updateTitle(); }
+      if (--twHold === 0 && twDue) { twDue = false; updateTitleNow(); }
     }, 0));
   }
 }
@@ -12422,7 +12466,7 @@ function fGo(g, d) {                   // R26.11 + R26.13
   const n = st.hits.length;
   st.idx = (st.idx + d + n) % n;       // past the last match IS the first: the cycle wraps
   let rel = false;
-  const release = () => { if (rel) return; rel = true; fHold--; updateTitle(); };
+  const release = () => { if (rel) return; rel = true; fHold--; updateTitleNow(); };
   fHold++;
   setTimeout(release, 500);
   try { fPaint(g); } catch (e) { release(); throw e; }
