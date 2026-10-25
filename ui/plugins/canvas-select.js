@@ -148,15 +148,21 @@
 
   /* ---------------------------------------------- selection */
   function selected(c) { const s = S(c); if (!s) return; s.palette = false; refresh(c); notify(c); }
-  // the card goes to the top of the stack: last in nodes[] (the file's paint order) and last painted.
-  // Groups keep their own layer under the edges and the cards.
+  // z-raise policy (goal cvf-keys, CVR-A-111/A-148/A-038). A click only PAINTS the card on top (last in
+  // the card layer): no write, no undo step, nodes[] untouched. The file's paint order (nodes[]) follows
+  // only a real mutation: raise() puts the touched cards last in nodes[] right before that edit's save,
+  // so the edit and the reorder are one write and one undo step. Groups keep their own layer and their
+  // place in nodes[].
   function toFront(c, n) {
     if (!n || isGroup(n) || ro(c)) return;
-    const ids = [...c.nodes.keys()];
-    if (ids[ids.length - 1] === n.id && c.nodeEl.lastElementChild === n.containerEl) return;
-    c.nodes.delete(n.id); c.nodes.set(n.id, n);
-    c.nodeEl.appendChild(n.containerEl);
-    c.requestSave();
+    if (c.nodeEl.lastElementChild !== n.containerEl) c.nodeEl.appendChild(n.containerEl);
+  }
+  function raise(c, nodes) {
+    const ns = [...nodes].filter(n => n && !isGroup(n) && c.nodes.get(n.id) === n);
+    if (!ns.length) return;
+    const pos = new Map([...c.nodeEl.children].map((x, i) => [x, i]));
+    ns.sort((a, b) => (pos.has(a.containerEl) ? pos.get(a.containerEl) : -1) - (pos.has(b.containerEl) ? pos.get(b.containerEl) : -1));
+    for (const n of ns) { c.nodes.delete(n.id); c.nodes.set(n.id, n); }
   }
   function selectAll(c) {
     c.deselectAll();
@@ -336,7 +342,11 @@
       c.selection.delete(d.node); d.node.setSelected(false); selected(c); return;
     }
     if (d.mode === "move" && !d.moved && d.collapse && d.node) { c.deselectAll(); c.select(d.node, false); return; }
-    if (d.moved) c.requestSave();
+    if (d.moved) {
+      if (d.mode === "move" && d.start) raise(c, d.start.map(o => o.m));
+      else if (d.mode === "resize") raise(c, [d.node]);
+      c.requestSave();
+    }
     refresh(c); notify(c);
   }
 
