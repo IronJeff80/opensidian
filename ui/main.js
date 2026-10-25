@@ -7445,6 +7445,8 @@ function canvasTok() {
   if (window.CanvasSelect) try { t += window.CanvasSelect.census(v); } catch (_) {}
   // goal cv-nav: [cvnz:<zoom>|tx|ty] [cvctl:<control>=x,y|...] [cvgrid:sz=|z=] [cvnopt:g=|o=|ro=] [cvset:n=|<toggle>=x,y] [cvhelp:n=] [cvjump:n=]
   if (window.CanvasNav) try { t += window.CanvasNav.census(v); } catch (_) {}
+  // cv-menus tokens: [cvtool:text@x,y|note@x,y|media@x,y] [cvmpick:<kind>|n=|<first>] [cvmprompt:<kind>|<value>] [cvmrow:<note>@x,y|...] (ui/plugins/canvas-menus.js)
+  if (window.CanvasMenus) try { t += window.CanvasMenus.census(v); } catch (_) {}
   return t;
 }
 function folderMenu(e, f) {                 // right-click an explorer folder row: New canvas in that folder

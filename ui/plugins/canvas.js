@@ -607,6 +607,8 @@
           if ((e.key === "Delete" || e.key === "Backspace") && this.selection.size && !this.readonly) { e.preventDefault(); e.stopPropagation(); this.deleteSelection(); }
           else if (e.key === "Escape" && this.selection.size) { e.stopPropagation(); this.deselectAll(); }
         });
+        // goal cv-menus: the card / board context menus, the card toolbar and explorer drops live in canvas-menus.js
+        if (window.CanvasMenus) window.CanvasMenus.install(this, { X, app, deps, changed, NODE_CLASS });
       }
       destroy() { if (this._ro) this._ro.disconnect(); this._saveSoon.cancel(); this.clear(); this.view = null; }
     }
