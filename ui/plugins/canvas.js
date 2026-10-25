@@ -516,7 +516,7 @@
             t.textContent = e.label;
           }
           if (CE) CE.paint(this, e, grp, { p1, p2, c1, c2, fs, ts });
-          if (PF) PF.painted(this, e, grp, part);
+          if (PF) PF.painted(this, e, grp, part, p1, p2, c1, c2);
         }
         if (PF) PF.rendered(this, part);
         if (CE) CE.done(this);
