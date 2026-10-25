@@ -868,7 +868,12 @@ fn list_images(v: State<Vault>, otel: Option<perf::Ctx>) -> Vec<String> {
 #[tauri::command]
 fn canvas_io(v: State<Vault>, op: String, path: Option<String>, data: Option<String>, otel: Option<perf::Ctx>) -> Result<serde_json::Value, String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
-    span_timed!(otel => "canvas_io", canvasfs::op(&root, &op, path.as_deref().unwrap_or(""), data.as_deref()))
+    let r = span_timed!(otel => "canvas_io", canvasfs::op(&root, &op, path.as_deref().unwrap_or(""), data.as_deref()));
+    // goal cv-journeys J10: a pasted image is a vault image now (R29.11: both renderers, list_images, the explorer)
+    if let (true, Ok(serde_json::Value::String(p))) = (op == "paste", &r) {
+        v.index.lock().unwrap().add_image(p);
+    }
+    r
 }
 
 /// canvas_attach (canvasfs::attach): a NEW png/jpg/jpeg/gif/webp file in the

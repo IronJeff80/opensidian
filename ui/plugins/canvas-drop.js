@@ -35,14 +35,15 @@
    Census (main.js canvasTok, appended):
      [cvdrop:<copied>/<refused>]   the last attach on a board
      [cvdropf:<folder>|n=<cards added>|cap=<cap>]   the last folder drop (n=0 when refused)
-     [cvdropmsg:<text>]            the last sentence this file showed (refusal / cap notice) */
+     [cvdropmsg:<text>]            the last sentence this file showed (refusal / cap notice)
+     [cvpaste:<type:size|none>|types=<clipboard types>|<vault path>]   goal cv-journeys: the last Ctrl+V the board handed to the catcher */
 (function () {
   "use strict";
   const CAP = 50;                       // files per folder drop (help: "Add cards from folders")
   const IMG = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"]);
   const HOST = window.__osPluginHost;   // captured at load: the loader seals the host before plugins run
   const app = HOST && HOST.app ? HOST.app : null, X = HOST && HOST.api ? HOST.api : null;
-  let last = { att: "", fold: "", msg: "" };
+  let last = { att: "", fold: "", msg: "", paste: "" };
   let ptr = null;                       // {x, y, w}: the last pointer position over a board wrapper
 
   const vis = e => !!e && e.isConnected && e.getClientRects().length > 0;
@@ -148,6 +149,77 @@
     host.update();
   }
 
+  /* ---------------------------------------------- goal cv-journeys J10: an image pasted on the board (Ctrl+V)
+     WebKit runs the Paste editing command only into an editable selection, and a board is not editable: a Ctrl+V the
+     board did not take (cv-history pastes its own copied cards and cancels the key) moves focus, for the duration of
+     that one key, into a hidden contenteditable catcher. The paste lands there as a ClipboardEvent; an image file in
+     its clipboardData is written NEW into the attachment folder (canvas_io paste: "Pasted image <stamp>.<ext>", the
+     folder an OS drop uses) and becomes one file card at the last pointer position on the board (else its centre).
+     Anything that is not an image is left alone (the catcher is emptied); focus goes back where it was. */
+  const PASTE_EXT = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
+  const inEd = t => !!(t && t.closest && t.closest("textarea, input, .markdown-source-view, [contenteditable=true], [contenteditable=\"\"]"));
+  let catcher = null, pasteFor = null;
+  function catcherEl() {
+    if (catcher && catcher.isConnected) return catcher;
+    catcher = document.createElement("div");
+    catcher.className = "cvdrop-paste-catcher";
+    catcher.contentEditable = "true";
+    catcher.setAttribute("aria-hidden", "true");
+    catcher.tabIndex = -1;
+    catcher.style.cssText = "position:fixed;left:-10000px;top:0;width:1px;height:1px;overflow:hidden;opacity:0";
+    catcher.addEventListener("paste", onPaste);
+    document.body.appendChild(catcher);
+    return catcher;
+  }
+  function giveBack() {
+    const p = pasteFor; pasteFor = null;
+    if (catcher) catcher.textContent = "";
+    if (p && p.back && p.back.isConnected && document.activeElement === catcher) try { p.back.focus({ preventScroll: true }); } catch (_) {}
+  }
+  function onPasteKey(e) {
+    if (e.defaultPrevented || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || String(e.key).toLowerCase() !== "v") return;
+    if (!app || inEd(e.target)) return;
+    const c = boardAt(e.target); if (!c || ro(c)) return;
+    pasteFor = { c, back: document.activeElement };
+    const k = catcherEl();
+    k.textContent = "";
+    k.focus({ preventScroll: true });
+    try { const r = document.createRange(); r.selectNodeContents(k); const s = getSelection(); s.removeAllRanges(); s.addRange(r); } catch (_) {}
+    setTimeout(giveBack, 0);              // the paste (if any) ran inside this key's default action
+  }
+  function b64(buf) {
+    const u = new Uint8Array(buf); let s = "";
+    for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
+    return btoa(s);
+  }
+  const stampNow = () => { const d = new Date(), z = n => String(n).padStart(2, "0"); return d.getFullYear() + z(d.getMonth() + 1) + z(d.getDate()) + z(d.getHours()) + z(d.getMinutes()) + z(d.getSeconds()); };
+  async function onPaste(e) {
+    const pf = pasteFor; e.preventDefault(); e.stopPropagation();
+    const cd = e.clipboardData;
+    const types = cd ? [...(cd.types || [])] : [];
+    let file = null;
+    try {
+      for (const it of cd ? [...(cd.items || [])] : []) if (it.kind === "file" && PASTE_EXT[it.type]) { file = it.getAsFile(); if (file) break; }
+      if (!file) for (const f of cd ? [...(cd.files || [])] : []) if (PASTE_EXT[f.type]) { file = f; break; }
+    } catch (_) {}
+    last.paste = (file ? file.type + ":" + file.size : "none") + "|types=" + types.join(",");
+    giveBack();
+    const c = pf && pf.c;
+    if (!file || !c || ro(c)) return ping(c);
+    const inv = invG(); if (!inv) { last.paste += "|err=inv"; return ping(c); }
+    const p = pointOf(c, null);
+    let rel;
+    try { rel = await inv("canvas_io", { op: "paste", path: noteOf(c), data: JSON.stringify({ ext: PASTE_EXT[file.type], stamp: stampNow(), b64: b64(await file.arrayBuffer()) }) }); }
+    catch (err) { last.paste += "|err"; say(c, "Canvas: the pasted image was not saved — " + String((err && err.message) || err)); return ping(c); }
+    try { if (typeof refreshTree === "function") await refreshTree(); } catch (_) {}   // main.js: the explorer row + the file model (vaultSync)
+    if (!ro(c)) place(c, [rel], { x: p.x - 200, y: p.y - 150 });
+    last.paste += "|" + rel;
+    ping(c);
+  }
+  const invG = () => { try { return typeof inv === "function" ? inv : null; } catch (_) { return null; } };   // main.js (global lexical)
+  function ping(c) { try { if (typeof updateTitle === "function") updateTitle(); } catch (_) {} }
+  document.addEventListener("keydown", onPasteKey);
+
   document.addEventListener("dragover", onDragOver);
   document.addEventListener("drop", onDrop);
   document.addEventListener("pointermove", e => {
@@ -160,6 +232,7 @@
     let t = "";
     if (last.att) t += " [cvdrop:" + last.att + "]";
     if (last.fold) t += " [cvdropf:" + last.fold.replace(/[[\]@\n]/g, "_") + "]";
+    if (last.paste) t += " [cvpaste:" + esc(last.paste.slice(0, 120)) + "]";
     if (last.msg) t += " [cvdropmsg:" + esc(last.msg.slice(0, 120)) + "]";
     return t;
   }

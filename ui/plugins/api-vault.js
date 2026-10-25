@@ -70,6 +70,14 @@
       for (const p of media || []) { ensureFile(p); keep.add(p); }   // goal cv-journeys: audio / video (canvasfs media) are files a card plays
       for (const [p, f] of [...files]) if (!keep.has(p) && files.get(p) === f) removeTree(f);
     }
+    /* goal cv-journeys: the image / PDF / audio / video files only (notes are the watcher's, canvases the Canvas view's):
+       a new one becomes a TFile and fires "create". ADD only: a file a plugin wrote (createBinary) is in no listing and
+       must not vanish from the model, and a removal is the watcher's / the deleting verb's business. */
+    async function syncMedia() {
+      const [imgs, media] = await Promise.all([inv("list_images"), cio("media")]);
+      const want = new Set([...(imgs || []), ...(media || [])]);
+      for (const p of want) { if (files.has(p)) continue; const [f, made] = ensureFile(p); if (made) vault.trigger("create", f); }
+    }
     async function syncFolders() {
       let ds; try { ds = await inv("list_folders"); } catch (_) { return; }
       const want = new Set(ds || []);
@@ -130,6 +138,10 @@
       return filesP;
     }
     host.vaultModel = ensureFiles;
+    /* goal cv-journeys: the app re-listed its explorer (main.js refreshTree) — re-list the file model too, so a file the
+       watcher never reports (it reports notes only: an image pasted on or dropped onto a board) is a TFile before the
+       card that shows it paints. A no-op until ensureFiles is up. */
+    host.vaultSync = async () => { if (!K.st.filesOn) return; try { await syncMedia(); } catch (e) { console.error("[plugin] vaultSync:", e); } };
     /* the runtime a plugin needs before its main.js is evaluated: moment (vendored,
        pinned — ui/vendor/moment.min.js), the file model (ensureFiles), the vault
        config and the metadata sweep. Idempotent; first enable() pays it. */

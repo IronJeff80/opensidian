@@ -15,6 +15,8 @@ const PLG = window.__osPluginHost && __osPluginHost.app && __osPluginHost.api ? 
 const PLGNW = window.__osPluginHost && typeof __osPluginHost.noteWritten === "function" ? __osPluginHost.noteWritten : null;
 // goal cv-model: the plugin vault's FILE model alone (api-vault host.vaultModel: no window.app, no plugin runtime), captured before the seal for Canvas
 const PLGVM = window.__osPluginHost && typeof __osPluginHost.vaultModel === "function" ? __osPluginHost.vaultModel : null;
+// goal cv-journeys: re-list the model's image / PDF / audio / video files (api-vault host.vaultSync) when the explorer re-lists them
+const PLGVS = window.__osPluginHost && typeof __osPluginHost.vaultSync === "function" ? __osPluginHost.vaultSync : null;
 const inv = (c, a) => { const x = otel.ctx(); return TAURI.core.invoke(c, x ? Object.assign({ otel: x }, a) : a); };
 /* perf-spans shim over otel: mark(name, t0, extra) = a span that started at
    t0 and ends now; push(name, ms, extra) = an already-measured span (graph
@@ -6542,6 +6544,7 @@ async function refreshTree() {
   const others = [...(imgs || []), ...(media || [])];
   const sig = folders.join("\n") + "\0" + notes.join("\n") + "\0" + canvases.join("\n") + "\0" + others.join("\n");
   if (sig === treeSig && tree.childElementCount) { treeHighlight(); return; }
+  if (PLGVS && others.join("\n") !== treeSig.split("\0")[3]) await PLGVS();   // a new image (a paste, a drop) is a TFile before its card paints
   treeSig = sig; treeRows = new Map(); treeActive = null;
   tree.innerHTML = "";
   renderNode(buildTree(folders, notes, canvases, others), "", 0, tree);
