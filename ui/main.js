@@ -6301,7 +6301,7 @@ function renderNode(node, prefix, depth, out) {
       '<span class="tn"></span>';
     row.querySelector(".tn").textContent = nm.split("/").pop();
     row.dataset.note = nm;
-    row.onclick = e => { if (treeClickEaten()) return; if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); rowOpen(nm, e); };     // opentab REQ-1/3/5/7: replace in place; ctrl = new tab; cv-journeys: shift = range select
+    row.onclick = e => { if (treeClickEaten()) return; rowOpen(nm, e); };     // opentab REQ-1/3/5/7: replace in place; ctrl = new tab
     row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); rowOpen(nm, e); } };   // opentab REQ-6: middle = new tab
     row.oncontextmenu = e => noteMenu(e, nm);   // R9.4: bookmark toggle
     row.addEventListener("mousedown", e => treeDragStart(e, nm));   // R24.6: drag onto a folder row = move
@@ -6323,7 +6323,6 @@ function fileRow(p, depth) {
   row.querySelector(".ttag").textContent = d > 0 ? base.slice(d + 1).toUpperCase() : "";
   row.dataset.file = p;
   row.addEventListener("mousedown", e => treeDragStart(e, p, "file"));
-  row.onclick = e => { if (treeClickEaten()) return; if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); };   // shift = range select; it opens no view
   return row;
 }
 
@@ -6333,7 +6332,7 @@ function canvasRow(p, depth) {
   row.innerHTML = treeGuides(depth) + '<span class="tc"></span><span class="tn"></span><span class="ttag">CANVAS</span>';
   row.querySelector(".tn").textContent = p.split("/").pop().replace(/\.canvas$/i, "");   // names never hit innerHTML
   row.dataset.canvas = p;
-  row.onclick = () => { treeSelClear(); openCanvas(p); };   // a board row is a range anchor (the active file), never a shift target
+  row.onclick = () => openCanvas(p);
   row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); openCanvas(p); } };
   row.oncontextmenu = e => canvasFileMenu(e, p);
   return row;
@@ -6369,35 +6368,6 @@ function treeClickEaten() {              // a completed drag must not also open/
   treeEat = 0;                           // one click only, and stale marks expire by time:
   return !!t && performance.now() - t < 400;   // a drop on a FOLDER row generates no row click
 }
-/* goal cv-journeys: explorer multi-select, as stock 1.13.7 does it (measured black-box, docs/negctl-cv-journeys):
-   Ctrl+click still opens a new tab (opentab), SHIFT+click selects the RANGE of file rows from the active file's
-   row (the anchor; none = the clicked row) to the clicked row and opens nothing; any plain click or a navigation
-   clears it. A drag that starts on a selected row carries the whole selection (dragManager.dragFiles) — a board
-   lays one file card per file. Folder rows are never selected. */
-let treeSel = [];                        // vault paths, in row order
-const treeRowPath = r => r.dataset.note != null ? wsPathOut(r.dataset.note) : r.dataset.canvas != null ? r.dataset.canvas : r.dataset.file != null ? r.dataset.file : null;
-function treeSelClear() {
-  if (!treeSel.length) return;
-  treeSel = [];
-  for (const r of document.querySelectorAll("#tree .trow.is-selected")) { r.classList.remove("is-selected"); delete r.dataset.selp; }
-}
-function treeRange(row) {
-  if (!document.getElementById("tree-sel-css")) {   // the row style (stock: .is-selected, the selection tint)
-    const st = document.createElement("style"); st.id = "tree-sel-css";
-    st.textContent = "#tree .trow.is-selected { background: var(--nav-item-background-selected, var(--text-selection)) }";
-    document.head.appendChild(st);
-  }
-  const rows = [...document.querySelectorAll("#tree .trow.note, #tree .trow.cvfile, #tree .trow.file")].filter(r => r.getClientRects().length > 0);
-  let af = null;
-  try { af = PLG && PLG.app.workspace.getActiveFile && PLG.app.workspace.getActiveFile(); } catch (_) {}
-  const ap = af ? af.path : (cur() ? wsPathOut(cur()) : null);
-  let a = rows.findIndex(r => treeRowPath(r) === ap), b = rows.indexOf(row);
-  if (b < 0) return;
-  if (a < 0) a = b;
-  treeSelClear();
-  for (const r of rows.slice(Math.min(a, b), Math.max(a, b) + 1)) { const p = treeRowPath(r); if (p == null) continue; r.classList.add("is-selected"); r.dataset.selp = p; treeSel.push(p); }
-  updateTitle();                         // census [tsel:]
-}
 /* top5-func: the explorer drag and the plugins. Stock drags a note with an HTML5
    drag whose payload is app.dragManager.draggable for as long as the drag is up
    (Excalidraw reads draggable.type/.title/.files in its dragover/drop). This
@@ -6419,18 +6389,6 @@ function treePlgDragStart(nm, kind) {        // cv-drop: kind true = a folder ro
   const dm = PLG.app.dragManager;
   let data;
   try { data = dir ? dm.dragFolder({ dataTransfer: dt }, f, "file-explorer") : dm.dragFile({ dataTransfer: dt }, f, "file-explorer"); } catch (_) { return null; }
-  dm.draggable = data;
-  return { dt, data, end() { if (dm.draggable === data) dm.draggable = null; } };
-}
-function treePlgDragFiles(paths) {          // cv-journeys: a multi-row selection -> dragManager.dragFiles (every path a TFile, else no plugin payload)
-  if (!PLG || !PLG.app.dragManager) return null;
-  const fs = paths.map(p => PLG.app.vault.getAbstractFileByPath(p));
-  if (!fs.length || fs.some(f => !(f instanceof PLG.X.TFile))) return null;
-  let dt;
-  try { dt = new DataTransfer(); } catch (_) { return null; }
-  const dm = PLG.app.dragManager;
-  let data;
-  try { data = dm.dragFiles({ dataTransfer: dt }, fs, "file-explorer"); } catch (_) { return null; }
   dm.draggable = data;
   return { dt, data, end() { if (dm.draggable === data) dm.draggable = null; } };
 }
@@ -6464,7 +6422,7 @@ function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file"
   const sx = e.clientX, sy = e.clientY;
   const base = nm.split("/").pop();
   const par = nm.includes("/") ? nm.slice(0, nm.lastIndexOf("/")) : "";
-  let ghost = null, target = null, hl = null, zones = null, raf = 0, last = null, multi = null;
+  let ghost = null, target = null, hl = null, zones = null, raf = 0, last = null;
   const clearHl = () => { if (hl) { hl.classList.remove("drop-into"); hl = null; } };
   const step = () => {
     raf = 0;
@@ -6473,12 +6431,10 @@ function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file"
       if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) < 6) return;
       ghost = document.createElement("div");
       ghost.id = "tabghost";
-      // cv-journeys: a drag from a row of a multi-row selection carries the selection (no move: zones go)
-      multi = treeSel.length > 1 && treeSel.includes(dir === "file" ? nm : dir === true ? null : wsPathOut(nm)) ? treeSel.slice() : null;
-      ghost.textContent = multi ? multi.length + " files" : base;
+      ghost.textContent = base;
       document.body.appendChild(ghost);
-      dragTok = "-:" + ghost.textContent;   // a drag is UP with no destination yet
-      treePlgDrag = multi ? treePlgDragFiles(multi) : treePlgDragStart(nm, dir);
+      dragTok = "-:" + base;             // a drag is UP with no destination yet
+      treePlgDrag = treePlgDragStart(nm, dir);
       updateTitle();
       // rects cached ONCE (R20): a per-frame getBoundingClientRect over every
       // folder row is a layout read per mousemove on a 500-row explorer.
@@ -6487,7 +6443,7 @@ function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file"
         .map(el => ({ el, f: el.dataset.folder, r: el.getBoundingClientRect() }))
         .filter(z => z.r.height > 0 && z.f != null);
       zones.push({ el: $("tree"), f: "", r: $("tree").getBoundingClientRect() });   // the vault ROOT
-      if (dir || multi) zones = [];      // cv-drop: a folder is no move source (R24.5) — only a plugin view takes it; nor is a selection
+      if (dir) zones = [];               // cv-drop: a folder is no move source (R24.5) — only a plugin view takes it
     }
     ghost.style.transform = "translate3d(" + (ev.clientX + 10) + "px," + (ev.clientY + 12) + "px,0)";
     let nt = null;
@@ -6524,7 +6480,7 @@ function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file"
     const pd = treePlgDrag; treePlgDrag = null;
     if (ghost && !t && pd && treePlgDrop(pd, ev)) { treeEat = 1; updateTitle(); return; }   // a plugin view took it
     if (pd) pd.end();
-    if (dir || multi) { if (ghost) treeEat = performance.now(); updateTitle(); return; }   // cv-drop: a folder (or a selection) dropped on nothing moves nothing
+    if (dir) { if (ghost) treeEat = performance.now(); updateTitle(); return; }   // cv-drop: a folder dropped on nothing moves nothing
     if (!ghost || !t) { updateTitle(); return; }   // plain click, or dropped on nothing
     treeEat = 1;                                   // the mouseup's click is not an "open this note"
     await moveNoteTo(nm, t.f);
@@ -6568,7 +6524,6 @@ let treeSig = "", treeRows = new Map(), treeActive = null;
 function treeHighlight() {
   const r = treeRows.get(cur()) || null;
   if (r === treeActive) return;
-  treeSelClear();                        // cv-journeys: a navigation ends a multi-row selection (stock)
   if (treeActive) treeActive.classList.remove("active");
   if (r) r.classList.add("active");
   treeActive = r;
@@ -6590,7 +6545,7 @@ async function refreshTree() {
   const sig = folders.join("\n") + "\0" + notes.join("\n") + "\0" + canvases.join("\n") + "\0" + others.join("\n");
   if (sig === treeSig && tree.childElementCount) { treeHighlight(); return; }
   if (PLGVS && others.join("\n") !== treeSig.split("\0")[3]) await PLGVS();   // a new image (a paste, a drop) is a TFile before its card paints
-  treeSig = sig; treeRows = new Map(); treeActive = null; treeSel = [];
+  treeSig = sig; treeRows = new Map(); treeActive = null;
   tree.innerHTML = "";
   renderNode(buildTree(folders, notes, canvases, others), "", 0, tree);
   treeHighlight();
