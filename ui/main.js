@@ -7297,9 +7297,9 @@ function cvActiveFolder() {
   return "";
 }
 // open a .canvas file in a canvas tab of the focused group (the view type must be registered: core plugin on)
-async function openCanvas(path) {
+async function openCanvas(path, how) {     // how: "split" -> a new pane to the right (CVR-A-083 Open to the right)
   if (!CANVAS || !CANVAS.isRegistered()) { say("Canvas is turned off (Settings › Community plugins › Core plugins)", "canvas"); return null; }
-  const leaf = PLG.app.workspace.getLeaf("tab");
+  const leaf = how === "split" ? PLG.app.workspace.getLeaf("split", "vertical") : PLG.app.workspace.getLeaf("tab");
   await leaf.setViewState({ type: "canvas", state: { file: path }, active: true });
   return leaf;
 }
@@ -7323,21 +7323,76 @@ async function cmdNewCanvas(folder) {
   say("Could not find a free name for the new canvas", "canvas");
   return null;
 }
-function canvasFileMenu(e, p) {             // right-click a .canvas row in the explorer
+function canvasFileMenu(e, p) {             // right-click a .canvas row in the explorer (CVR-A-083: the file menu, six groups)
   e.preventDefault();
   e.stopPropagation();
   closeMenu();
   const m = document.createElement("div");
   m.className = "ctxmenu";
   const { item, sep } = bmMenuItems(m);
-  item("Open in new tab", () => openCanvas(p));
+  const here = p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "";
+  item("Open in new tab",    () => openCanvas(p));
+  item("Open to the right",  () => openCanvas(p, "split"));
+  item("Open in new window", null, "Single-window app: there is no second window to open into");
   sep();
-  item("New canvas", () => cmdNewCanvas(p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : ""));
+  item("Make a copy", () => cvCopy(p));
+  const mv = document.createElement("div");
+  mv.textContent = "Move file to...";
+  m.appendChild(mv);
+  mv.onmousedown = ev => ev.stopPropagation();
+  mv.onclick = async () => {                // the menu stays open and becomes the folder list (the note menu's in-place picker)
+    let fl = [];
+    try { fl = await inv("list_folders"); } catch (_) { fl = []; }
+    m.innerHTML = "";
+    if (here) item("(vault root)", () => cvMoveTo(p, ""));
+    for (const f of fl) if (f !== here) item(f, () => cvMoveTo(p, f));
+    if (!m.children.length) item("(no other folder)", null, "The vault has no other folder");
+    setTimeout(() => clampMenu(m), 0);
+    updateTitle();
+  };
+  item("Bookmark", null, "Bookmarks hold note names (.obsidian/bookmarks.json, R9.4); a canvas is not a note");
+  sep();
+  item("Copy path", null, "Missing subsystem: a programmatic clipboard write (clipboard access exists only inside real copy/paste events, ui/editor.js)");
+  sep();
+  item("Open version history", null, "Missing subsystem: file history — no revisions are kept");
+  sep();
+  item("Open in default app", null, "Missing subsystem: a file-path opener — open_external takes a URL, not a vault path");
+  item("Show in system explorer", null, "Missing subsystem: a file-manager handler");
   sep();
   item("Rename...", () => cvRename(p));     // cv-vault CV-147
   item("Delete", () => cvDelete(p));       // cv-vault CV-148
   m.dataset.mt = "canvas:" + p.replace(/[|\]]/g, "");
   placeMenu(m, e.clientX, e.clientY);
+}
+/* CVR-A-083 Make a copy: "<name> 1.canvas" (the next free number) beside the original, the same bytes,
+   created O_EXCL through canvas_io, then opened. */
+async function cvCopy(p) {
+  let body;
+  try { body = await inv("canvas_io", { op: "read", path: p }); } catch (err) { say(String(err && err.message || err), "canvas"); return null; }
+  const base = p.replace(/\.canvas$/i, "");
+  for (let i = 1; i < 100; i++) {
+    const np = base + " " + i + ".canvas";
+    try { await inv("canvas_io", { op: "create", path: np, data: body }); }
+    catch (err) { if (/EEXIST/.test(String(err && err.message || err))) continue; say(String(err && err.message || err), "canvas"); return null; }
+    await refreshTree();
+    await openCanvas(np);
+    return np;
+  }
+  say("Could not find a free name for the copy", "canvas");
+  return null;
+}
+/* CVR-A-083 Move file to: canvas_io rename into <folder>/ (same file name; never over an existing entry).
+   An open tab on the canvas closes first (its pending save lands) and reopens on the new path. */
+async function cvMoveTo(p, folder) {
+  const np = (folder ? String(folder).replace(/\/+$/, "") + "/" : "") + p.split("/").pop();
+  if (np === p) return null;
+  const reopen = await cvCloseLeaves(p);
+  try { await inv("canvas_io", { op: "rename", path: p, data: np }); }
+  catch (err) { say(String(err && err.message || err), "canvas"); await refreshTree(); if (reopen) await openCanvas(p); return null; }
+  await refreshTree();
+  if (reopen) await openCanvas(np);
+  updateTitle();
+  return np;
 }
 /* goal cv-vault CV-147/148: rename and delete a canvas from its explorer row. Rename reuses the rename prompt
    (#rnbox, [modal:rn]) with the name minus ".canvas", same folder; delete reuses the confirmation (#delbox,
