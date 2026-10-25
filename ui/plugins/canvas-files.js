@@ -21,7 +21,8 @@
                         so nothing is ever written (canvas.js save() refuses a broken view)
 
    Load order (index.html): ... canvas.js -> canvas-*.js -> canvas-files.js -> main.js. This file
-   runs no code at load beyond one stylesheet and one frozen global, window.__osCanvasFiles, whose
+   runs no code at load beyond one stylesheet, one capture pointerdown listener (a double press on a
+   text card opens its editor) and one frozen global, window.__osCanvasFiles, whose
    hooks canvas.js calls (FileNode.renderContent, TextNode.startEditing/stopEditing, the parse-refusal
    path of CanvasView.loadPath) and whose census(view) main.js canvasTok() appends. */
 (function () {
@@ -200,6 +201,33 @@
     ping(ctx);
     return true;
   }
+
+  /* The board takes pointer capture on every press (canvas.js), so the dblclick of a double press
+     lands on the wrapper, where nodeOf() finds no card and a NEW text card is made (canvas-cards.js
+     documents the same for other-kind files). A double press on a text card is therefore detected
+     on its second pointerdown, before the board sees it, and opens that card's editor. */
+  let dpId = "", dpT = 0, dpX = 0, dpY = 0;
+  document.addEventListener("pointerdown", e => {
+    const t = e.target, card = t && t.closest ? t.closest(".canvas-node.canvas-node-text[data-node-id]") : null;
+    if (!card || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) { dpId = ""; return; }
+    if (t.closest("textarea, input, .markdown-source-view, [contenteditable=true], .canvas-node-resizer, .canvas-node-label")) { dpId = ""; return; }
+    const id = card.dataset.nodeId, now = Date.now();
+    const dbl = id === dpId && now - dpT < 500 && Math.abs(e.clientX - dpX) + Math.abs(e.clientY - dpY) < 8;
+    dpId = id; dpT = now; dpX = e.clientX; dpY = e.clientY;
+    if (!dbl) return;                               // the first press still selects / drags the card
+    dpId = "";
+    const app = ST.app || (window.__osPluginHost && window.__osPluginHost.app) || null;
+    let node = null;
+    try {
+      for (const l of app ? app.workspace.getLeavesOfType("canvas") : []) {
+        const v = l.view;
+        if (v && v.canvas && v.containerEl && v.containerEl.contains(card)) { node = v.canvas.nodes.get(id) || null; break; }
+      }
+    } catch (_) { node = null; }
+    if (!node || node.isEditing || !node.canvas || node.canvas.readonly || typeof node.startEditing !== "function") return;
+    e.stopPropagation(); e.preventDefault();
+    node.startEditing();
+  }, true);
 
   /* ------------------------------------------------ link card menu */
   function hookMenus() {
