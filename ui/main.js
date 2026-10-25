@@ -5255,7 +5255,14 @@ async function renameThenAsk0(old, nn, sp) {
   try { blast = await inv("move_note", { old, new: nn }); }
   catch (err) { say(String(err && err.message || err)); updateTitle(); return false; }
   await applyRename(old, nn);
-  const links = blast && blast.links || 0, files = blast && blast.files || 0;
+  let links = blast && blast.links || 0, files = blast && blast.files || 0;
+  // goal cv-journeys: a canvas whose FILE cards name the note links to it (CV-141 canvas_io links) — it counts in
+  // the radius like a note does, so a note that only a board points at still gets the question, and the consented
+  // half (runUpdateLinks0) relinks the cards. Without it a board kept "Note.md" after the rename (J12).
+  try {
+    const cl = await inv("canvas_io", { op: "links", path: "" }), from = old + ".md";
+    for (const k of Object.keys(cl || {})) if (Array.isArray(cl[k]) && cl[k].includes(from)) { files++; links++; }
+  } catch (_) {}
   sp.attrs.links = links; sp.attrs.files = files;
   if (!files) { updateTitle(); return true; }   // R34.3: nothing links in -> NO modal, ever
   let consent = false;
