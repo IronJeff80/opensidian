@@ -6520,8 +6520,9 @@ function treeHighlight() {
   treeActive = r;
 }
 async function refreshTree() {
-  const [folders, notes, imgs, media] =
-    await Promise.all([inv("list_folders"), inv("list_notes"), inv("list_images"), inv("canvas_io", { op: "media", path: "" }).catch(() => [])]);
+  const mediaP = inv("canvas_io", { op: "media", path: "" }).catch(() => []);   // goal cv-journeys: audio / video rows, in parallel
+  const [folders, notes, imgs] =
+    await Promise.all([inv("list_folders"), inv("list_notes"), inv("list_images")]);
   notesCache = notes;
   imgsCache = imgs;                                     // R29: LP resolves image embeds against this
   const tree = $("tree");
@@ -6530,6 +6531,7 @@ async function refreshTree() {
   let canvases = [];
   if (CANVAS && CANVAS.isRegistered()) { try { canvases = await inv("canvas_io", { op: "list", path: "" }); } catch (_) { canvases = []; } }
   // goal cv-journeys: images + PDFs (list_images) and audio / video (canvas_io media) are listed too, as stock does
+  const media = await mediaP;
   const others = [...(imgs || []), ...(media || [])];
   const sig = folders.join("\n") + "\0" + notes.join("\n") + "\0" + canvases.join("\n") + "\0" + others.join("\n");
   if (sig === treeSig && tree.childElementCount) { treeHighlight(); return; }
