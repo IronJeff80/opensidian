@@ -339,6 +339,7 @@
      [cvmprompt:<kind>|<typed value>]       a prompt is open (kind convert|url)
      [cvmrow:<note>@x,y|...]                the explorer's visible note rows (drag sources, at most 12)
      [cvfrow:<file>@x,y|...]                goal cv-journeys: the explorer's visible image / PDF / audio / video rows (at most 12)
+     [tsel:<n>|<path>|...]                  goal cv-journeys: the explorer's shift+click selection, in row order
      [cvmodel:files=<n>|gapp=<0|1>]         goal cv-model: how many files the pickers can list
                                             (app.vault.getFiles()) and whether a global window.app exists
                                             (only a trusted vault running a plugin may define it) */
@@ -362,6 +363,8 @@
     if (rows.length) t += " [cvmrow:" + rows.map(r => esc(r.dataset.note) + "@" + ctr(r)).join("|") + "]";
     const frs = [...document.querySelectorAll("#tree .trow.file")].filter(vis).slice(0, 12);   // goal cv-journeys
     if (frs.length) t += " [cvfrow:" + frs.map(r => esc(r.dataset.file) + "@" + ctr(r)).join("|") + "]";
+    const sel = [...document.querySelectorAll("#tree .trow.is-selected")];   // goal cv-journeys: the shift+click selection
+    if (sel.length) t += " [tsel:" + sel.length + "|" + sel.map(r => esc(r.dataset.selp || "")).join("|") + "]";
     if (s) {
       let n = -1;
       try { n = s.ctx.app.vault.getFiles().length; } catch (_) {}
