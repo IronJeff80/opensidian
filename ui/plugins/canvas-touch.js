@@ -32,6 +32,7 @@
   const nodeOf = (c, t) => { const e = t && t.closest ? t.closest(".canvas-node") : null; return e && c.nodes.get(e.dataset.nodeId) || null; };
   const mid = s => { const p = [...s.pts.values()]; return { x: (p[0].x + p[1].x) / 2, y: (p[0].y + p[1].y) / 2, d: Math.max(1, Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y)) }; };
   const stopTimer = s => { if (s.timer) { clearTimeout(s.timer); s.timer = 0; } };
+  const focus = c => { try { c.wrapperEl.focus({ preventScroll: true }); } catch (_) {} };
 
   // a native contextmenu the platform fires for the same long press would open a second menu: swallow it
   function installGuard() {
@@ -47,6 +48,8 @@
     const o = s.one; if (!o || o.panning || o.done || s.pts.size !== 1) return;
     o.done = true;
     const t = o.target && o.target.isConnected ? o.target : c.wrapperEl;
+    // the menu owns the keyboard while open (Escape closes it): the board gives up focus, as it never takes it on a right click
+    const a = document.activeElement; if (a && a !== document.body && c.wrapperEl.contains(a) && a.blur) a.blur();
     menuAt = now(); mine = true;
     try {
       t.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, composed: true, view: window,
@@ -56,6 +59,7 @@
   }
 
   function tap(c, o, e) {
+    focus(c);                           // like a left click; a long press (a right click) leaves focus alone so the menu owns Escape
     const n = o.node && c.nodes.get(o.node.id) === o.node ? o.node : null;
     const CS = window.CanvasSelect;
     if (CS) { const d = CS.down(c, e, n); if (d) CS.up(c, d, e); return; }
@@ -67,7 +71,6 @@
     if (t && t.closest && t.closest(PASS)) return false;
     installGuard();
     e.preventDefault();
-    try { c.wrapperEl.focus({ preventScroll: true }); } catch (_) {}
     s.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (s.pts.size === 1) {
       s.pinch = null;
@@ -94,7 +97,7 @@
     const o = s.one; if (!o || o.id !== e.pointerId || o.done) return true;
     const dx = e.clientX - o.x0, dy = e.clientY - o.y0;
     if (!o.panning && Math.hypot(dx, dy) < SLOP) return true;
-    if (!o.panning) { o.panning = true; stopTimer(s); }
+    if (!o.panning) { o.panning = true; stopTimer(s); focus(c); }
     c.tx = o.tx + dx; c.ty = o.ty + dy; c.applyTransform();
     return true;
   }
