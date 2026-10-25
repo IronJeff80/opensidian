@@ -556,6 +556,7 @@
         const nodeOf = t => { const c = t && t.closest ? t.closest(".canvas-node") : null; return c && this.nodes.get(c.dataset.nodeId) || null; };
         const inEditor = t => !!(t && t.closest && t.closest("textarea, .markdown-source-view, [contenteditable=true]"));
         w.addEventListener("pointerdown", e => {
+          if (window.CanvasTouch && window.CanvasTouch.onPointer(this, e)) return;   // goal cv-touch: touch pointers (canvas-touch.js)
           if (e.button !== 0 && e.button !== 1) return;
           if (inEditor(e.target)) return;
           const n = nodeOf(e.target);
@@ -570,6 +571,7 @@
           e.preventDefault();
         });
         w.addEventListener("pointermove", e => {
+          if (window.CanvasTouch && window.CanvasTouch.onPointer(this, e)) return;   // goal cv-touch: touch pointers (canvas-touch.js)
           if (!drag) return;
           if (drag.sel) { S.move(this, drag, e); return; }
           const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
@@ -582,6 +584,7 @@
           this.renderEdges();
         });
         const end = e => {
+          if (window.CanvasTouch && window.CanvasTouch.onPointer(this, e)) return;   // goal cv-touch: touch pointers (canvas-touch.js)
           if (!drag) return;
           const d = drag; drag = null;
           try { w.releasePointerCapture(e.pointerId); } catch (_) {}
