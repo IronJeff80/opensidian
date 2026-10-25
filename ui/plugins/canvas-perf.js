@@ -150,5 +150,23 @@
     return " [cvperf:vis=" + s.vis + "|total=" + c.nodes.size + "|eupd=" + s.eupd + "|emin=" + s.emin + "|emax=" + s.emax + "|moves=" + s.moves + "|evis=" + s.evis + "]";
   }
 
-  window.CanvasPerf = { cull, drag, partial, painted, rendered, census, BIG };
+  /* ------------------------------------------------ gesture signal (goal title-fresh)
+     The host census (ui/main.js updateTitle) may trail a heavy rebuild ONLY while a pan or a
+     drag streams over a big board; everywhere else it must publish within a frame. live() is
+     that signal: a drag move (drag(c, d)) on a big board, or the second applyTransform within
+     GAP ms on one (a pan / wheel stream — a one-off fit or zoom is not a stream). It goes
+     false GAP ms after the last such event; the host then publishes its trailing census. */
+  const GAP = 150;
+  let gLast = -1e9, gPrev = -1e9;
+  function cullX(c) {                    // canvas.js applyTransform’s entry: cull + stream detection
+    if (c && c.nodes && c.nodes.size >= BIG) { const now = performance.now(); if (now - gPrev < GAP) gLast = now; gPrev = now; }
+    return cull(c);
+  }
+  function dragX(c, d) {
+    if (d && c && c.nodes && c.nodes.size >= BIG) gLast = performance.now();
+    return drag(c, d);
+  }
+  const live = () => performance.now() - gLast < GAP;
+
+  window.CanvasPerf = { cull: cullX, drag: dragX, partial, painted, rendered, census, live, BIG };
 })();
