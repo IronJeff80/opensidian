@@ -337,7 +337,10 @@
      [cvtool:text@x,y|note@x,y|media@x,y]  the card toolbar's buttons (centres, client px)
      [cvmpick:<kind>|n=<rows>|<first row>]  a picker is open (kind note|media|swap|narrow|background)
      [cvmprompt:<kind>|<typed value>]       a prompt is open (kind convert|url)
-     [cvmrow:<note>@x,y|...]                the explorer's visible note rows (drag sources, at most 12) */
+     [cvmrow:<note>@x,y|...]                the explorer's visible note rows (drag sources, at most 12)
+     [cvmodel:files=<n>|gapp=<0|1>]         goal cv-model: how many files the pickers can list
+                                            (app.vault.getFiles()) and whether a global window.app exists
+                                            (only a trusted vault running a plugin may define it) */
   function census(v) {
     const esc = s => String(s).replace(/[[\]|@]/g, "_");
     const vis = e => !!e && e.isConnected && e.getClientRects().length > 0;
@@ -356,6 +359,11 @@
     }
     const rows = [...document.querySelectorAll("#tree .trow.note")].filter(vis).slice(0, 12);
     if (rows.length) t += " [cvmrow:" + rows.map(r => esc(r.dataset.note) + "@" + ctr(r)).join("|") + "]";
+    if (s) {
+      let n = -1;
+      try { n = s.ctx.app.vault.getFiles().length; } catch (_) {}
+      t += " [cvmodel:files=" + n + "|gapp=" + ("app" in window ? 1 : 0) + "]";
+    }
     return t;
   }
 
