@@ -48,6 +48,8 @@
   }
 
   const ABSENT = Symbol("canvas.absentRootKeys");
+  // where a card was when its document was imported: a card whose x/y differ has been moved (CVR-A-060)
+  const LOADED_AT = new WeakMap();
   // a node read without width/height: k reads `v` but is not an own enumerable field, so it is not written;
   // setting it (a resize) makes it a plain field again
   function sizeFallback(d, k, v) {
@@ -466,6 +468,7 @@
         doc.nodes.forEach((d, i) => { if (last.get(d.id) !== i) hidden.nodes.push({ i, d }); });
         const shown = doc.nodes.filter((d, i) => last.get(d.id) === i);
         for (const d of shown) { sizeFallback(d, "width", 100); sizeFallback(d, "height", 60); }
+        for (const d of shown) if (!LOADED_AT.has(d)) LOADED_AT.set(d, [d.x, d.y]);
         doc.edges.forEach((e, i) => { if (!last.has(e.fromNode) || !last.has(e.toNode)) hidden.edges.push({ i, d: e }); });
         if (hidden.nodes.length || hidden.edges.length || !this.unshown) this.unshown = hidden;
         for (const d of shown) this.addNode(new NODE_CLASS[d.type](this, d));
@@ -492,10 +495,33 @@
       diskData() {
         const d = this.getData(), absent = (this.view && this.view.edited) ? [] : (d[ABSENT] || []);
         const skip = absent.filter(k => Array.isArray(d[k]) && !d[k].length);
-        if (!skip.length) return d;
         const o = {};
         for (const k of Object.keys(d)) if (!skip.includes(k)) o[k] = d[k];
+        if (Array.isArray(o.nodes)) o.nodes = o.nodes.map(n => this.diskNode(n));
+        if (Array.isArray(o.edges)) o.edges = o.edges.map(e => this.diskEdge(e));
         return o;
+      }
+      /* a card moved since it was loaded is written with whole width/height (CVR-A-060); the live object is not
+         touched (the board, its history snapshot and undo keep what they had) */
+      diskNode(n) {
+        const at = LOADED_AT.get(n), own = k => Object.prototype.propertyIsEnumerable.call(n, k);
+        const moved = at && (n.x !== at[0] || n.y !== at[1]);
+        const fix = moved && ["width", "height"].filter(k => own(k) && typeof n[k] === "number" && n[k] !== Math.round(n[k]));
+        if (!fix || !fix.length) return n;
+        const c = Object.assign({}, n);
+        for (const k of fix) c[k] = Math.round(n[k]);
+        return c;
+      }
+      /* an edge on the board without fromSide/toSide is written with the sides it is drawn on (CVR-A-062),
+         in the edge key order; an edge the board does not show is written as it was */
+      diskEdge(e) {
+        if (e.fromSide && e.toSide) return e;
+        const a = this.nodes.get(e.fromNode), b = this.nodes.get(e.toNode);
+        if (!a || !b || !this.edges.has(e.id) || this.edges.get(e.id) !== e) return e;
+        const c = Object.assign({}, e);
+        if (!c.fromSide) c.fromSide = sideFacing(a.data, b.data);
+        if (!c.toSide) c.toSide = sideFacing(b.data, a.data);
+        return tailKeys(c, EDGE_TAIL);
       }
       /* an empty, editable board shows a short usage hint in its middle (CVR-A-040); a card hides it */
       updateHint() {
