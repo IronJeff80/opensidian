@@ -10439,10 +10439,21 @@ function showPicker() {
   loadRecent();
 }
 /* R1.6: recent-vault rows under the create/open actions — click reopens */
+// vb-recent: the rows are built OFF-DOM and swapped in ONE step after the await. The old form
+// cleared #p-recent, then awaited recent_vaults: the picker showed an empty list mid-load and any
+// updateTitle() in that window published a partial [precent:] (the vaultbleed "X not in the recent
+// rows" flake). While a load is in flight #p-recent carries data-loading and census.js publishes
+// [precent:~loading] / [prow:~loading] instead of a list; a newer call supersedes an older one.
+let recentGen = 0;
 async function loadRecent() {
-  const ul = $("p-recent");
-  ul.innerHTML = "";
-  for (const p of await inv("recent_vaults")) {
+  const ul = $("p-recent"), gen = ++recentGen;
+  ul.dataset.loading = "1";
+  let ps;
+  try { ps = await inv("recent_vaults"); }
+  catch (e) { if (gen === recentGen) delete ul.dataset.loading; throw e; }
+  if (gen !== recentGen) return;           // a newer loadRecent owns the list
+  const frag = document.createDocumentFragment();
+  for (const p of ps) {
     const li = document.createElement("li");
     li.innerHTML = "<b></b><span></span>";
     li.querySelector("b").textContent = base(p);
@@ -10454,8 +10465,10 @@ async function loadRecent() {
       nw.onclick = e => { e.stopPropagation(); openVault(p, false); };
       li.appendChild(nw);
     }
-    ul.appendChild(li);
+    frag.appendChild(li);
   }
+  ul.replaceChildren(frag);
+  delete ul.dataset.loading;
   if (vaultPath) { try { updateTitle(); } catch (_) {} }   // brand: publish [precent:] once the rows exist (async); never at the boot picker, whose window must stay untitled by the census
 }
 async function browseTo(p) {
