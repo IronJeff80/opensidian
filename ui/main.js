@@ -6914,7 +6914,7 @@ function mruTouch(name) {
   if (i >= 0) mruList.splice(i, 1);
   mruList.unshift(name);
 }
-function qsItems() {                 // switcher source: MRU first, rest a-z
+function qsItems() {                 // switcher source: MRU first, rest a-z, then the vault's canvases
   const rest = notesCache.filter(n => !mruList.includes(n)).sort();
   return [...mruList.filter(n => notesCache.includes(n)), ...rest].map(n => ({
     label: n, hint: "",
@@ -6925,8 +6925,20 @@ function qsItems() {                 // switcher source: MRU first, rest a-z
         await loadActive(g);
       } else await openInTab(n);
     },
-  }));
+  })).concat(qsCanvases.map(p => ({  // CVR-A-067: a .canvas row is the board's vault path; Enter opens the board, never a note
+    label: p, hint: "", canvas: true,
+    run: async () => { await openCanvas(p); },
+  })));
 }
+/* CVR-A-067: the canvases the switcher offers, read when it opens (canvas_io list; empty while the Canvas
+   core plugin is off, as the explorer lists none then). */
+let qsCanvases = [];
+async function qsCanvasList() {
+  if (!CANVAS || !CANVAS.isRegistered()) return [];
+  try { return (await inv("canvas_io", { op: "list", path: "" })).slice().sort(); } catch (_) { return []; }
+}
+const qslSafe = s => String(s).replace(/[|\]\[]/g, "_");
+CENSUS.push(() => modalKind === "qs" ? " [qsl:" + mdItems.map(it => qslSafe(it.label)).join("|") + "]" : "");   // cvf-explorer CVR-A-067: the switcher's offered rows, in order
 /* listtoggle A3 (found by the gate phase, not by reading): the palette input
    TAKES the DOM selection, so a palette command that reads the editor
    selection (Ed.sel) found none and was a silent no-op — "Toggle bullet list"
@@ -7137,8 +7149,10 @@ $("minput").onkeydown = async e => {
   }
 };
 $("modal").onmousedown = e => { if (e.target === $("modal")) closeModal(); };
-function cmdQuickSwitch() {
-  modalKind === "qs" ? closeModal() : qsModal.open();   // through the prototype: a plugin may wrap open
+async function cmdQuickSwitch() {
+  if (modalKind === "qs") return closeModal();
+  qsCanvases = await qsCanvasList();   // CVR-A-067: canvases are switcher rows too
+  if (modalKind !== "qs") qsModal.open();   // through the prototype: a plugin may wrap open
 }
 /* cp-hover-editor: the core-plugin hooks plugins read through app.internalPlugins.plugins, shapes recorded
    black-box from stock 1.13.7 (harness api-probes.d/hover.js, part hover).
@@ -7150,8 +7164,9 @@ class QuickSwitcherModal {
     this.app = app; this.inputEl = $("minput"); this.instructionsEl = $("mfoot");
     this.scope = PLG ? new PLG.X.Scope() : null;
     const tfile = n => { const f = PLG && PLG.app.vault.getAbstractFileByPath(wsPathOut(n)); return PLG && f instanceof PLG.X.TFile ? f : null; };
+    const tfileP = p => { const f = PLG && PLG.app.vault.getAbstractFileByPath(p); return PLG && f instanceof PLG.X.TFile ? f : null; };   // a canvas row is a path
     this.chooser = {
-      get values() { return mdSrc === qsItems ? mdItems.map(it => ({ type: "file", file: tfile(it.label) })) : null; },
+      get values() { return mdSrc === qsItems ? mdItems.map(it => ({ type: "file", file: it.canvas ? tfileP(it.label) : tfile(it.label) })) : null; },
       get selectedItem() { return mdSel; },
     };
   }
