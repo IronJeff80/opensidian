@@ -10,6 +10,8 @@
      list            every regular `*.canvas` file in the vault, vault-relative,
                      sorted; hidden components (.obsidian, .trash, ...) and
                      symlinks are never walked or listed
+     media           every regular audio / video file (MEDIA_EXTS), same walk, sorted (goal cv-journeys:
+                     the explorer rows and file model of the files a card plays)
      read  <path>    the file's text (UTF-8, at most CANVAS_MAX bytes)
      write <path>    atomic replace of an EXISTING canvas file
      create <path>   a NEW canvas file (EEXIST if anything is there); the
@@ -58,7 +60,7 @@ pub fn canvas_rel(op: &str, path: &str) -> Result<PathBuf, String> {
     Ok(rel)
 }
 
-fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, depth: usize) {
+fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, depth: usize, keep: fn(&str) -> bool) {
     if depth >= vaultfs::MAX_WALK_DEPTH {
         return;
     }
@@ -73,8 +75,8 @@ fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, depth: usize) {
         let Ok(t) = e.file_type() else { continue };
         let p = e.path();
         if t.is_dir() {
-            walk(&p, base, out, depth + 1);
-        } else if t.is_file() && n.ends_with(EXT) && n.len() > EXT.len() {
+            walk(&p, base, out, depth + 1, keep);
+        } else if t.is_file() && keep(n) {
             if let Ok(rel) = p.strip_prefix(base) {
                 if let Some(s) = rel.to_str() {
                     out.push(s.to_string());
@@ -84,13 +86,34 @@ fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, depth: usize) {
     }
 }
 
-pub fn list(root: &Path) -> Vec<String> {
+fn is_canvas(n: &str) -> bool {
+    n.ends_with(EXT) && n.len() > EXT.len()
+}
+
+/// goal cv-journeys: the audio / video types a file card plays (ui/plugins/canvas-cards.js AUD + VID). Images and
+/// PDFs are listed by list_images (index::IMG_EXTS + EMBED_ONLY_EXTS); these are in no other listing.
+pub const MEDIA_EXTS: [&str; 11] = ["mp3", "wav", "m4a", "ogg", "3gp", "flac", "mp4", "webm", "ogv", "mov", "mkv"];
+
+fn is_media(n: &str) -> bool {
+    n.rsplit_once('.').is_some_and(|(s, e)| !s.is_empty() && MEDIA_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+}
+
+fn list_by(root: &Path, keep: fn(&str) -> bool) -> Vec<String> {
     let mut out = Vec::new();
     if let Ok(c) = root.canonicalize() {
-        walk(&c, &c, &mut out, 0);
+        walk(&c, &c, &mut out, 0, keep);
     }
     out.sort();
     out
+}
+
+pub fn list(root: &Path) -> Vec<String> {
+    list_by(root, is_canvas)
+}
+
+/// every regular audio / video file in the vault (same walk: no hidden component, no symlink), sorted
+pub fn media(root: &Path) -> Vec<String> {
+    list_by(root, is_media)
 }
 
 fn exists(v: &Vault, rel: &Path) -> io::Result<bool> {
@@ -192,6 +215,9 @@ fn relink_text(text: &str, from: &str, to: &str) -> Option<String> {
 pub fn op(root: &Path, op: &str, path: &str, data: Option<&str>) -> Result<Value, String> {
     if op == "list" {
         return Ok(json!(list(root)));
+    }
+    if op == "media" {
+        return Ok(json!(media(root)));
     }
     if op == "links" {
         // every canvas -> the vault paths its file cards point at (CV-141: a file card is a link of the canvas)
@@ -457,6 +483,19 @@ mod tests {
         fs::create_dir_all(root.join("dir.canvas")).unwrap();
         assert_eq!(list(&root), vec!["Z.canvas".to_string(), "b/c/Y.canvas".to_string()]);
         assert_eq!(op(&root, "list", "", None).unwrap(), json!(["Z.canvas", "b/c/Y.canvas"]));
+    }
+
+    #[test]
+    fn canvasfs_media_lists_audio_and_video_only() {
+        let (root, _) = fresh("media");
+        fs::create_dir_all(root.join("a/b")).unwrap();
+        fs::create_dir_all(root.join(".trash")).unwrap();
+        for p in ["s.mp3", "a/b/C.MP4", "a/x.png", "a/n.md", ".trash/t.mp3", "a/.h.mp4", ".mp3", "a/v.mp4.md", "B.canvas"] {
+            fs::write(root.join(p), "x").unwrap();
+        }
+        fs::create_dir_all(root.join("dir.webm")).unwrap();
+        assert_eq!(op(&root, "media", "", None).unwrap(), json!(["a/b/C.MP4", "s.mp3"]));
+        assert_eq!(list(&root), vec!["B.canvas".to_string()]);
     }
 
     #[test]

@@ -61,12 +61,13 @@
       if (f instanceof TFolder) for (const c of f.children.slice()) movePath(c, np + c.path.slice(op.length));
     }
     async function buildModel() {
-      const [notes, folders, imgs, cvs] = await Promise.all([inv("list_notes"), inv("list_folders"), inv("list_images").catch(() => []), cio("list").catch(() => [])]);
+      const [notes, folders, imgs, cvs, media] = await Promise.all([inv("list_notes"), inv("list_folders"), inv("list_images").catch(() => []), cio("list").catch(() => []), cio("media").catch(() => [])]);
       const keep = new Set();
       for (const d of folders || []) { ensureFolder(d); keep.add(d); }
       for (const n of notes || []) { ensureFile(n + ".md"); keep.add(n + ".md"); }
       for (const p of imgs || []) { ensureFile(p); keep.add(p); }
       for (const p of cvs || []) { ensureFile(p); keep.add(p); }
+      for (const p of media || []) { ensureFile(p); keep.add(p); }   // goal cv-journeys: audio / video (canvasfs media) are files a card plays
       for (const [p, f] of [...files]) if (!keep.has(p) && files.get(p) === f) removeTree(f);
     }
     async function syncFolders() {
