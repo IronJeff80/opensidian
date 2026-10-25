@@ -498,6 +498,8 @@
         const o = {};
         for (const k of Object.keys(d)) if (!skip.includes(k)) o[k] = d[k];
         if (Array.isArray(o.nodes)) o.nodes = o.nodes.map(n => this.diskNode(n));
+        /* every save puts the group nodes first in nodes[], the rest keep their order (CVR-C-050) */
+        if (Array.isArray(o.nodes)) o.nodes = o.nodes.filter(n => n && n.type === "group").concat(o.nodes.filter(n => !(n && n.type === "group")));
         if (Array.isArray(o.edges)) o.edges = o.edges.map(e => this.diskEdge(e));
         return o;
       }
