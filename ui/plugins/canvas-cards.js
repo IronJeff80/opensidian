@@ -208,7 +208,13 @@
       view.dispatch({ changes: { from, to, insert: "[]]" }, selection: { anchor: from + 1 }, userEvent: "input.type" });
       return true;
     });
-    return (LP.v = [plugin, close]);
+    // the note editor's keys (caret to doc start/end, word moves, undo/redo): the bare embed editor has none
+    const C = (window.__osModules || {})["@codemirror/commands"], keys = [];
+    if (C && Array.isArray(C.defaultKeymap)) {
+      if (typeof C.history === "function") keys.push(C.history());
+      keys.push(Vw.keymap.of([].concat(C.defaultKeymap, Array.isArray(C.historyKeymap) ? C.historyKeymap : [])));
+    }
+    return (LP.v = [plugin, close].concat(keys));
   }
 
   // '[[query' before the caret on its line, not yet closed: { start (after '[['), q } or null
