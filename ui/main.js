@@ -6333,7 +6333,7 @@ function canvasRow(p, depth) {
   row.innerHTML = treeGuides(depth) + '<span class="tc"></span><span class="tn"></span><span class="ttag">CANVAS</span>';
   row.querySelector(".tn").textContent = p.split("/").pop().replace(/\.canvas$/i, "");   // names never hit innerHTML
   row.dataset.canvas = p;
-  row.onclick = e => { if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); openCanvas(p); };   // cv-journeys: shift = range select
+  row.onclick = () => { treeSelClear(); openCanvas(p); };   // a board row is a range anchor (the active file), never a shift target
   row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); openCanvas(p); } };
   row.oncontextmenu = e => canvasFileMenu(e, p);
   return row;
