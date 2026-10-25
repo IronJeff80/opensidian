@@ -4789,6 +4789,13 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   if (mode === "reading" && isLp(tab.mode) && g.view && g.view.rowSrc)
     g.lp._msk = { n: curOf(g), notes: notesCache, imgs: imgsCache, rows: g.view.rowSrc, len: g.lp.children.length };
   const leave = (mode === "reading") !== (tab.mode === "reading") ? (tab.mode === "reading" ? g.preview : g.lp) : null;   // opt6: the view this switch leaves
+  /* title-hdr: the switch publishes the census ONCE, complete (twHold, like twOpen). From
+     tab.mode = mode on, lpRender's own updateTitle() ran mid-switch — [mode:lp] from the
+     model, the rows still at the scroll ssRestore had not restored yet — and took the frame's
+     one synchronous publish, so this function's final updateTitle() trailed to the NEXT
+     frame. A reader that saw [mode:lp] read [rvtaskex:] from the half-switched view: empty. */
+  twHold++;
+  try {
   tab.mode = mode;
   hideAc();
   applyMode(g, leave);
@@ -4834,7 +4841,10 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   mswpMark("ss");
   mswpWatch(g);
   fModeSwitched(g);   // R26.21/R26.23: an open find bar re-shapes and re-scans for the new surface
-  updateTitle();
+  } finally {
+    // unconditional: a held call may have landed in utDue (frame slot taken), not twDue
+    if (--twHold === 0) { twDue = false; updateTitleNow(); } else twDue = true;
+  }
 }
 
 /* ---------- tabs (per group) ---------- */
