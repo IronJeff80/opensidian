@@ -6949,6 +6949,7 @@ async function qsCanvasList() {
 }
 const qslSafe = s => String(s).replace(/[|\]\[]/g, "_");
 CENSUS.push(() => modalKind === "qs" ? " [qsl:" + mdItems.map(it => qslSafe(it.label)).join("|") + "]" : "");   // cvf-explorer CVR-A-067: the switcher's offered rows, in order
+CENSUS.push(() => " [tabt:" + groups().map(g => [...g.tabsEl.querySelectorAll(".tab .t")].map(e => e.textContent.replace(/^\u{1F517} /u, "").replace(/[[\]|;]/g, "")).join(";")).join("|") + "]");   // cvf-explorer CVR-A-086: the painted tab titles, per pane (";" between tabs, "|" between panes)
 /* listtoggle A3 (found by the gate phase, not by reading): the palette input
    TAKES the DOM selection, so a palette command that reads the editor
    selection (Ed.sel) found none and was a silent no-op — "Toggle bullet list"
