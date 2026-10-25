@@ -7449,6 +7449,8 @@ function canvasTok() {
   if (window.CanvasMenus) try { t += window.CanvasMenus.census(v); } catch (_) {}
   // cv-edges tokens: [cve:] [cvhandle:] [cvehov:] [cvesel:] [cvetb:] [cvepal:] [cvedir:] [cvelab:] [cvemenu:] [cvefit:] (ui/plugins/canvas-edges.js)
   if (window.CanvasEdges) try { t += window.CanvasEdges.census(v); } catch (_) {}
+  // goal cv-files: [cvcard:<id>|kind=pdf|...] [cvfile:...] [cvfprompt:url|...] [cvfcopy:] (ui/plugins/canvas-files.js)
+  if (window.__osCanvasFiles) try { t += window.__osCanvasFiles.census(v); } catch (_) {}
   return t;
 }
 function folderMenu(e, f) {                 // right-click an explorer folder row: New canvas in that folder
