@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# cargo-fuzz harness for opensidian's attacker-reachable parsers (vault files,
+# plugin/theme content, IPC args). Its OWN workspace: the app's Cargo.lock is
+# untouched, fuzz/Cargo.lock is committed and frozen. Every direct dependency
+# is an exact `=` pin released >= 6 weeks before 2026-10-25 (cutoff
+# 2026-09-13); versions + publish dates in harness docs/fuzz/PINS.md.
+# Toolchain: fuzz/rust-toolchain.toml (dated nightly). Run from fuzz/:
+#   cargo fuzz build            cargo fuzz run <target>
+[package]
+name = "opensidian-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "GPL-3.0-or-later"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+arbitrary = "=1.4.2"
+# the pure modules only (src-tauri/src/lib.rs, lib name opensidian_lib)
+opensidian = { path = "../src-tauri" }
+
+[workspace]
+members = ["."]
+
+# same vendored glib as the app (GHSA-wrw7-89jp-8q8g). [patch] is read from the
+# ROOT workspace only, so the app's patch does not apply here unless repeated.
+[patch.crates-io]
+glib = { path = "../src-tauri/vendor/glib-0.18.5" }
+
+[[bin]]
+name = "datefmt"
+path = "fuzz_targets/datefmt.rs"
+test = false
+doc = false
+bench = false
