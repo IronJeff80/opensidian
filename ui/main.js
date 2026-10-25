@@ -4789,6 +4789,13 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   if (mode === "reading" && isLp(tab.mode) && g.view && g.view.rowSrc)
     g.lp._msk = { n: curOf(g), notes: notesCache, imgs: imgsCache, rows: g.view.rowSrc, len: g.lp.children.length };
   const leave = (mode === "reading") !== (tab.mode === "reading") ? (tab.mode === "reading" ? g.preview : g.lp) : null;   // opt6: the view this switch leaves
+  /* title-hdr: the switch publishes the census ONCE, complete (twHold, like twOpen). From
+     tab.mode = mode on, lpRender's own updateTitle() ran mid-switch — [mode:lp] from the
+     model, the rows still at the scroll ssRestore had not restored yet — and took the frame's
+     one synchronous publish, so this function's final updateTitle() trailed to the NEXT
+     frame. A reader that saw [mode:lp] read [rvtaskex:] from the half-switched view: empty. */
+  twHold++;
+  try {
   tab.mode = mode;
   hideAc();
   applyMode(g, leave);
@@ -4834,7 +4841,10 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   mswpMark("ss");
   mswpWatch(g);
   fModeSwitched(g);   // R26.21/R26.23: an open find bar re-shapes and re-scans for the new surface
-  updateTitle();
+  } finally {
+    // unconditional: a held call may have landed in utDue (frame slot taken), not twDue
+    if (--twHold === 0) { twDue = false; updateTitleNow(); } else twDue = true;
+  }
 }
 
 /* ---------- tabs (per group) ---------- */
@@ -5519,6 +5529,12 @@ function delTok() {
 async function loadActive(g) {
   hideAc();
   const t = g.active >= 0 ? g.tabs[g.active] : null;
+  /* title-hdr: the header follows the active view BEFORE the first await. The caller has
+     already switched the model (g.active / the tab's kind); a graph view then awaits its
+     start (renderer, fetch) before renderTabs rebuilds the header. Any census published in
+     that gap (the once-per-frame trailing publish lands there) read kind=gg from the model
+     and the markdown toggle from the DOM: [hdra:1:gg:mode-edit@..]. */
+  updateModeBtn(g);
   if (g.unkEl) g.unkEl.hidden = !(t && t.kind === "unk");
   if (PVHOST) PVHOST.hide(g, t);   // plugin-views: another tab shows -> this pane's plugin views hide
   if (t && t.kind === "unk") {      // W4: a kept leaf we have no view for — say so, keep it, touch nothing
