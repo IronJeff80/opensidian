@@ -272,9 +272,14 @@
     if (typeof b.arrayBuffer === "function") return b.arrayBuffer().then(a => new Uint8Array(a));
     return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(new Uint8Array(r.result)); r.onerror = () => rej(r.error); r.readAsArrayBuffer(b); });
   }
+  // is p in use? Our own earlier exports, the vault model, the backend image index (list_images: works in a
+  // restricted vault, where the adapter answers EPERM and the model may not have caught up), the adapter.
+  const wrote = new Set();
   async function taken(p) {
-    const V = app.vault;
+    const V = app.vault, lp = p.toLowerCase();
+    if (wrote.has(lp)) return true;
     try { if (V.getAbstractFileByPathInsensitive(p)) return true; } catch (_) {}
+    try { const I = invoke(), l = I && await I("list_images", {}); if (Array.isArray(l) && l.some(x => String(x).toLowerCase() === lp)) return true; } catch (_) {}
     try { if (V.adapter && typeof V.adapter.exists === "function" && await V.adapter.exists(p)) return true; } catch (_) {}
     return false;
   }
@@ -326,6 +331,7 @@
     let path = o.to;
     if (!path || await taken(path)) path = await freePath(c);   // never an overwrite
     path = await attach(path, b64Of(bytes));
+    wrote.add(String(path).toLowerCase());
     nExp++;
     last = { glyphs: st.glyphs, bars: st.bars, w: sz.w, h: sz.h + band, file: path, n: nExp, dpr: dprOf() };
     notice("Canvas exported to " + path);
