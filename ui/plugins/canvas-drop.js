@@ -239,7 +239,29 @@
     } catch (_) {}
     return null;
   }
+  /* the async Clipboard API, asked while the paste gesture is live: an image ClipboardItem is a Blob, no URL load (the
+     CSP has no blob: in img-src / connect-src, so the engine's blob: <img> neither loads nor fetches).
+     -> { type, buf }, else a reason string for the census */
+  function acbRead() {
+    let p;
+    try { p = navigator.clipboard && typeof navigator.clipboard.read === "function" ? navigator.clipboard.read() : null; } catch (e) { return Promise.resolve("throw:" + (e && e.name)); }
+    if (!p) return Promise.resolve("none");
+    return p.then(async items => {
+      for (const it of items || []) for (const t of it.types || []) if (PASTE_EXT[t]) { const b = await it.getType(t); return { type: t, buf: await b.arrayBuffer() }; }
+      return "noimg:" + (items || []).map(it => (it.types || []).join("+")).join(",");
+    }, e => "err:" + (e && e.name));
+  }
   async function imgPaste(pf) {
+    let a = null;
+    try { a = await Promise.race([pf.acb || Promise.resolve("none"), new Promise(r => setTimeout(() => r("timeout"), 2000))]); } catch (e) { a = "err:" + (e && e.name); }
+    if (a && typeof a === "object") {
+      giveBack();
+      last.paste += "|acb|" + a.type + ":" + a.buf.byteLength;
+      const c0 = pf && pf.c;
+      if (!c0 || ro(c0)) return ping(c0);
+      return savePaste(c0, a.type, a.buf);
+    }
+    last.paste += "|acb=" + String(a).slice(0, 40);
     const imgs = await waitImg(1500);
     const src = imgs.length ? String(imgs[0].currentSrc || imgs[0].src || "") : "";
     last.paste += "|img=" + (imgs.length ? (src.split(":")[0] || "?") : "0");
@@ -263,7 +285,7 @@
       if (!file) for (const f of cd ? [...(cd.files || [])] : []) if (PASTE_EXT[f.type]) { file = f; break; }
     } catch (_) {}
     last.paste = (file ? file.type + ":" + file.size : "none") + "|types=" + types.join(",") + "|t=" + (onCatcher ? "catcher" : "doc");
-    if (!file && onCatcher && pf && types.every(t => t !== "text/plain" && t !== "text/html")) { pf.wantImg = true; return; }   // the engine inserts it (imgPaste)
+    if (!file && onCatcher && pf && types.every(t => t !== "text/plain" && t !== "text/html")) { pf.wantImg = true; pf.acb = acbRead(); return; }   // the engine inserts it (imgPaste); the async Clipboard API is asked inside the gesture
     e.preventDefault();
     giveBack();
     const c = pf && pf.c;
