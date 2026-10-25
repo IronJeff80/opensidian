@@ -1,4 +1,4 @@
-// opensidian, a vault-compatible markdown notes app.
+const k = String(new Error().stack || "").split("\n").filter(x => x && !/updateTitle|^Error/.test(x)).slice(0, 3).map(x => { const m = /^\s*(?:at\s+)?([^@ (]*)[@ (]*.*\/([^/:]+)\.js:(\d+)/.exec(x); return m ? (m[1] || "anon").slice(0, 12) + "." + m[2].slice(0, 8) + m[3] : "?"; }).join(">");// opensidian, a vault-compatible markdown notes app.
 // Copyright (C) 2026 Jendrik Poloczek
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This program comes with ABSOLUTELY NO WARRANTY. It is free software, and you
@@ -53,9 +53,9 @@ function pspan(name, attrs, fn) {
 requestAnimationFrame(() => setTimeout(() => perf.mark("first_paint", 0), 0));
 const $ = id => document.getElementById(id);
 /* TEMP title-frame measure: frames by updateTitle calls (1,2,3,4+), mean ms of body / ovfScan / document.title set / push+wsTouch, max body */
-const utM = { h: [0, 0, 0, 0, 0], fc: 0, raf: 0, big: false, n: 0, b: 0, o: 0, s: 0, r: 0, m: 0 };
+const utM = { h: [0, 0, 0, 0, 0], fc: 0, raf: 0, big: false, n: 0, b: 0, o: 0, s: 0, r: 0, m: 0, l: 0, c: {} };
 function utMark() { if (!utM.big) return; utM.fc++; if (!utM.raf) utM.raf = requestAnimationFrame(() => { utM.raf = 0; utM.h[Math.min(utM.fc, 4)]++; utM.fc = 0; }); }
-function utTok() { const r = x => (utM.n ? x / utM.n : 0).toFixed(1); return "|ut=1:" + utM.h[1] + ",2:" + utM.h[2] + ",3:" + utM.h[3] + ",4p:" + utM.h[4] + ",n:" + utM.n + ",b:" + r(utM.b) + ",o:" + r(utM.o) + ",s:" + r(utM.s) + ",r:" + r(utM.r) + ",m:" + utM.m.toFixed(1); }
+function utTok() { const r = x => (utM.n ? x / utM.n : 0).toFixed(1); return "|ut=1:" + utM.h[1] + ",2:" + utM.h[2] + ",3:" + utM.h[3] + ",4p:" + utM.h[4] + ",n:" + utM.n + ",b:" + r(utM.b) + ",o:" + r(utM.o) + ",s:" + r(utM.s) + ",r:" + r(utM.r) + ",m:" + utM.m.toFixed(1) + ",l:" + r(utM.l) + ",c:" + Object.entries(utM.c).sort((a, b) => b[1] - a[1]).slice(0, 4).map(e => e[0] + "~" + e[1]).join("/"); }
 /* R20: an uncaught error / rejected action left the UI mid-mutation and the
    census silently STALE (the title only moves in updateTitle) — smoke then
    reports the symptom, never the cause. Surface it as [jserr:...]. */
@@ -3404,6 +3404,7 @@ function updateTitle() {          // pane/focus census in the window title (head
   if (fHold > 0) return;          // a find reveal is in flight: fGo republishes when it lands
   if (twHold > 0) { twDue = true; return; }   // a tab switch is in flight: switchTab republishes after its paint
   const ut0 = performance.now(); utMark();   // TEMP title-frame measure
+  if (utM.big) { void document.body.offsetHeight; utM.l += performance.now() - ut0; const k = String(new Error().stack || "").split("\n").filter(x => x && !/updateTitle|^Error/.test(x)).slice(0, 3).map(x => { const m = /^\s*(?:at\s+)?([^@ (]*)[@ (].*\/([^/:]+)\.js:(\d+)/.exec(x); return m ? (m[1] || "anon").slice(0, 12) + "." + m[2].slice(0, 8) + m[3] : "?"; }).join(">"); utM.c[k] = (utM.c[k] || 0) + 1; }   // TEMP title-frame measure (forced layout ms, caller)
   rTrack();                      // lgpanes: keep rLeaf current even with the right sidebar closed
   const ps = [...document.querySelectorAll("#main .pane")];
   const nf = document.querySelectorAll("#main .pane.focused").length;
