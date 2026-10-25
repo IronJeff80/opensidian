@@ -7552,7 +7552,7 @@ function canvasTok() {
         try { const w = VW.EditorView.findFromDOM(cme); cl = w.state.doc.lineAt(w.state.selection.main.head).number; fo = w.hasFocus ? 1 : 0; } catch (_) {}
         const ae = document.activeElement, aen = ae ? esc(String(ae.tagName || "").toLowerCase() + "." + String(ae.className || "").split(/\s+/)[0]).slice(0, 30) : "";
         s += "|bd=" + Math.round(fpx(cc)) + "|mono=" + (/mono/i.test(getComputedStyle(cc).fontFamily) ? 1 : 0) + "|h1=" + (ls[0] ? big(ls[0]) : 0) +
-             "|cl=" + cl + "|l1=" + (ls[0] ? txt(ls[0]) : "") + "|l2=" + (ls[1] ? txt(ls[1]) : "") + "|fo=" + fo + "|ae=" + aen + "|ky=" + esc(String(n._ccKey || "")).slice(-24) + "|km=" + (n._ccKm == null ? "-" : n._ccKm);
+             "|cl=" + cl + "|l1=" + (ls[0] ? txt(ls[0]) : "") + "|l2=" + (ls[1] ? txt(ls[1]) : "") + "|fo=" + fo + "|ae=" + aen;
       }
       t += s + "]";
     }

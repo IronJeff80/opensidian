@@ -214,7 +214,6 @@
       if (typeof C.history === "function") keys.push(C.history());
       keys.push(Vw.keymap.of([].concat(C.defaultKeymap, Array.isArray(C.historyKeymap) ? C.historyKeymap : [])));
     }
-    LP.km = keys.length;
     return (LP.v = [plugin, close].concat(keys));
   }
 
@@ -304,14 +303,16 @@
     if (!st || !st.em || !st.em.cm || !Vw || !Sx || st._cc) return;
     st._cc = true;
     node.containerEl.classList.add("cc-lp");
-    node._ccKey = "";
     try {
       st.em.cm.dispatch({ effects: Sx.StateEffect.appendConfig.of([lpExt(Vw),
-        Vw.EditorView.updateListener.of(u => { if (u.docChanged || u.selectionSet || u.focusChanged) sugUpdate(node, u.view); })]) });
+        Vw.EditorView.updateListener.of(u => {
+          if (!(u.docChanged || u.selectionSet || u.focusChanged)) return;
+          sugUpdate(node, u.view);
+          // the census (caret line, painted lines) follows the caret: one refresh per frame
+          if (!node._ccRaf) node._ccRaf = requestAnimationFrame(() => { node._ccRaf = 0; ping(node._ccCtx); });
+        })]) });
     } catch (e) { console.error("[canvas] text card editor extensions:", e); }
-    node._ccKm = LP.km;
-    st.host.addEventListener("keydown", e => { node._ccKey = e.key + (e.ctrlKey ? "/c" : "") + (e.defaultPrevented ? "/p" : ""); sugKey(node, e); }, true);   // before the editor and the card's own Escape
-    st.host.addEventListener("keydown", e => { node._ccKey += ">" + (e.defaultPrevented ? "p" : "-"); });   // after CM6: did a binding take it (census)
+    st.host.addEventListener("keydown", e => sugKey(node, e), true);   // before the editor and the card's own Escape
   }
   function edHook(node) {
     if (node._ccEd) return;
