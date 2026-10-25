@@ -35,6 +35,29 @@ pub struct Tm {
     pub epoch_ms: i64,
 }
 
+impl Tm {
+    /// fuzz finding (fuzz/artifacts-triaged/datefmt/): Tm crosses the IPC
+    /// unvalidated (insert_datetime), and y = i64::MIN overflowed `1 - t.y`
+    /// (mo = 0 / 13 would index MONTHS out of bounds, off = i32::MIN negate).
+    /// Pin every field to what a JS Date can produce: the identity on every
+    /// value the webview sends (Date range +-8.64e15 ms = years -271821..275760,
+    /// zone offsets within +-24 h), so formatting is unchanged for real input.
+    fn clamped(&self) -> Tm {
+        const EPOCH_MAX: i64 = 8_640_000_000_000_000;
+        Tm {
+            y: self.y.clamp(-271_821, 275_760),
+            mo: self.mo.clamp(1, 12),
+            d: self.d.clamp(1, 31),
+            h: self.h.min(23),
+            mi: self.mi.min(59),
+            s: self.s.min(59),
+            ms: self.ms.min(999),
+            off: self.off.clamp(-24 * 60, 24 * 60),
+            epoch_ms: self.epoch_ms.clamp(-EPOCH_MAX, EPOCH_MAX),
+        }
+    }
+}
+
 pub const DEFAULT_DATE: &str = "YYYY-MM-DD";
 pub const DEFAULT_TIME: &str = "HH:mm";
 
@@ -373,6 +396,7 @@ fn token(tok: &str, t: &Tm) -> Option<String> {
 
 /// moment(..).format(fmt), en locale. "" formats to "" (the default is the caller's: `render`).
 pub fn format(fmt: &str, t: &Tm) -> String {
+    let t = &t.clamped();
     let c: Vec<char> = expand(fmt).chars().collect();
     let mut out = String::new();
     let mut i = 0;
@@ -585,5 +609,21 @@ mod tests {
         assert_eq!(format("Y YYYY", &t), "+12345 12345");
         let t = utc(0, 6, 7, 9, 0, 0, 0);
         assert_eq!(format("y N NNNN YYYY", &t), "1 BC Before Christ 0000");
+    }
+
+    /// fuzz regression (fuzz/artifacts-triaged/datefmt/min-y-i64-min): an
+    /// out-of-range Tm from the IPC must format, never panic
+    #[test]
+    fn out_of_range_tm_never_panics() {
+        let all = "Y YY YYYY YYYYYY y yo N gg gggg GG GGGG M Mo MMM MMMM D Do DDD DDDo d do dd dddd E w W Q h hh k a H mm ss SSSSSSSSS Z ZZ X x";
+        let lo = Tm { y: i64::MIN, mo: 0, d: 0, h: 0, mi: 0, s: 0, ms: 0, off: i32::MIN, epoch_ms: i64::MIN };
+        let hi = Tm { y: i64::MAX, mo: u32::MAX, d: u32::MAX, h: u32::MAX, mi: u32::MAX, s: u32::MAX, ms: u32::MAX, off: i32::MAX, epoch_ms: i64::MAX };
+        for t in [lo, hi] {
+            assert!(!format(all, &t).is_empty());
+            assert!(!render(None, DEFAULT_DATE, &t).is_empty());
+        }
+        // the clamp is the identity on a real clock
+        let t = utc(2026, 10, 2, 8, 19, 3, 502);
+        assert_eq!(format(all, &t), format(all, &t.clamped()));
     }
 }
