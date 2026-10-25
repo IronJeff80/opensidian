@@ -10,7 +10,7 @@
    window.CanvasSelect; canvas.js calls in:
      install(canvas, changed)   once per board, from wire(): canvas.options, overlay
      down/move/up(canvas, ...)  the pointer branches of wire()
-     onKey(canvas, e)           Ctrl/Cmd+A
+     onKey(canvas, e)           Ctrl/Cmd+A, arrow nudge
      selected(canvas)           after every select() / deselectAll()
 
    What a pointer press does:
@@ -358,7 +358,28 @@
       e.preventDefault(); e.stopPropagation(); selectAll(c); return true;
     }
     if (e.key === " " && !e.ctrlKey && !e.metaKey) { e.preventDefault(); return false; }   // Space: pan / no-snap modifier, never a scroll
+    if (NUDGE[e.key] && !e.ctrlKey && !e.metaKey && !e.altKey) return nudge(c, e);
     return false;
+  }
+  // arrow nudge (goal cvf-keys, CVR-A-109/A-110): an arrow moves the selection one grid step, Shift+arrow
+  // five; a moved group carries the cards wholly inside it (as a drag). Each press is one write and one
+  // undo step; the touched cards go last in nodes[] in that same save. Nothing selected: nothing happens.
+  const NUDGE = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+  function nudge(c, e) {
+    if (!c.selection.size || ro(c)) return false;
+    e.preventDefault(); e.stopPropagation();
+    const k = (e.shiftKey ? 5 : 1) * GRID, [ux, uy] = NUDGE[e.key];
+    const moving = new Set(c.selection);
+    for (const g of [...moving]) if (isGroup(g)) {
+      const gb = box(g.data);
+      for (const m of c.nodes.values()) if (!moving.has(m) && inside(box(m.data), gb)) moving.add(m);
+    }
+    for (const m of moving) m.moveTo({ x: m.data.x + ux * k, y: m.data.y + uy * k });
+    c.renderEdges();
+    raise(c, [...moving]);
+    c.requestSave();
+    refresh(c); notify(c);
+    return true;
   }
 
   /* ---------------------------------------------- census (main.js canvasTok) */
