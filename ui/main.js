@@ -1,4 +1,4 @@
-const k = String(new Error().stack || "").split("\n").filter(x => x && !/updateTitle|^Error/.test(x)).slice(0, 3).map(x => { const m = /^\s*(?:at\s+)?([^@ (]*)[@ (]*.*\/([^/:]+)\.js:(\d+)/.exec(x); return m ? (m[1] || "anon").slice(0, 12) + "." + m[2].slice(0, 8) + m[3] : "?"; }).join(">");// opensidian, a vault-compatible markdown notes app.
+// opensidian, a vault-compatible markdown notes app.
 // Copyright (C) 2026 Jendrik Poloczek
 // SPDX-License-Identifier: GPL-3.0-or-later
 // This program comes with ABSOLUTELY NO WARRANTY. It is free software, and you
@@ -52,10 +52,6 @@ function pspan(name, attrs, fn) {
 /* perfhunt: first_paint = page start -> first committed frame (boot ends at the first note rendered) */
 requestAnimationFrame(() => setTimeout(() => perf.mark("first_paint", 0), 0));
 const $ = id => document.getElementById(id);
-/* TEMP title-frame measure: frames by updateTitle calls (1,2,3,4+), mean ms of body / ovfScan / document.title set / push+wsTouch, max body */
-const utM = { h: [0, 0, 0, 0, 0], fc: 0, raf: 0, big: false, n: 0, b: 0, o: 0, s: 0, r: 0, m: 0, l: 0, c: {} };
-function utMark() { if (!utM.big) return; utM.fc++; if (!utM.raf) utM.raf = requestAnimationFrame(() => { utM.raf = 0; utM.h[Math.min(utM.fc, 4)]++; utM.fc = 0; }); }
-function utTok() { const r = x => (utM.n ? x / utM.n : 0).toFixed(1); return "|ut=1:" + utM.h[1] + ",2:" + utM.h[2] + ",3:" + utM.h[3] + ",4p:" + utM.h[4] + ",n:" + utM.n + ",b:" + r(utM.b) + ",o:" + r(utM.o) + ",s:" + r(utM.s) + ",r:" + r(utM.r) + ",m:" + utM.m.toFixed(1) + ",l:" + r(utM.l) + ",c:" + Object.entries(utM.c).sort((a, b) => b[1] - a[1]).slice(0, 4).map(e => e[0] + "~" + e[1]).join("/"); }
 /* R20: an uncaught error / rejected action left the UI mid-mutation and the
    census silently STALE (the title only moves in updateTitle) — smoke then
    reports the symptom, never the cause. Surface it as [jserr:...]. */
@@ -3400,11 +3396,53 @@ function xiAgain() {
   xiPending = true;
   requestAnimationFrame(() => { xiPending = false; updateTitle(); });
 }
-function updateTitle() {          // pane/focus census in the window title (headless probe)
+/* title-frame: the census is built at most once per animation frame, app-wide.
+   updateTitle() is the scheduler every caller already uses; updateTitleNow() is the
+   explicit flush (hold releases, anything that must publish in this task).
+   - the first call of a frame publishes synchronously (one-off actions stay
+     synchronous — scrollsync reads the mode right after a switcher open);
+   - further calls in that frame become ONE trailing publish in the next frame;
+   - a HEAVY census (last build > UT_HEAVY ms, e.g. a 500-card board, ~25 ms) fed by a
+     stream of calls in consecutive frames (a pan, a drag) is not rebuilt every frame
+     either — that alone is a frame budget: it publishes UT_TRAIL ms after the stream
+     goes quiet, and at least every UT_MAXW ms while it lasts.
+   A timer backs every rAF so a window that gets no frames still publishes. */
+const UT_HEAVY = 8, UT_TRAIL = 120, UT_MAXW = 1000;
+let utRan = false, utDue = false, utRaf = 0, utRafT = 0, utCost = 0, utLast = -1e9, utTrailT = 0, utFirst = 0;
+function utFrame() {             // a new frame: the next call may publish again
+  if (utRaf) { cancelAnimationFrame(utRaf); utRaf = 0; }
+  clearTimeout(utRafT); utRafT = 0;
+  utRan = false;
+  if (utDue && !utTrailT) { utDue = false; updateTitleNow(); }
+}
+function utArm() {
+  if (!utRaf) utRaf = requestAnimationFrame(utFrame);
+  if (!utRafT) utRafT = setTimeout(utFrame, 100);
+}
+function updateTitle() {
+  const now = performance.now();
+  if (utCost > UT_HEAVY && now - utLast < UT_TRAIL) {   // heavy census under a stream: trail it
+    utDue = true;
+    if (!utTrailT) utFirst = now;
+    clearTimeout(utTrailT);
+    utTrailT = setTimeout(() => { utTrailT = 0; if (utDue) { utDue = false; updateTitleNow(); } },
+      Math.max(0, Math.min(UT_TRAIL, utFirst + UT_MAXW - now)));
+    utLast = now;
+    return;
+  }
+  if (utRan) { utDue = true; utArm(); utLast = now; return; }
+  updateTitleNow();
+}
+function updateTitleNow() {      // flush: publish the census in this task
   if (fHold > 0) return;          // a find reveal is in flight: fGo republishes when it lands
   if (twHold > 0) { twDue = true; return; }   // a tab switch is in flight: switchTab republishes after its paint
-  const ut0 = performance.now(); utMark();   // TEMP title-frame measure
-  if (utM.big) { void document.body.offsetHeight; utM.l += performance.now() - ut0; const k = String(new Error().stack || "").split("\n").filter(x => x && !/updateTitle|^Error/.test(x)).slice(0, 3).map(x => { const m = /^\s*(?:at\s+)?([^@ (]*)[@ (].*\/([^/:]+)\.js:(\d+)/.exec(x); return m ? (m[1] || "anon").slice(0, 12) + "." + m[2].slice(0, 8) + m[3] : "?"; }).join(">"); utM.c[k] = (utM.c[k] || 0) + 1; }   // TEMP title-frame measure (forced layout ms, caller)
+  if (utTrailT) { clearTimeout(utTrailT); utTrailT = 0; }
+  utDue = false;
+  const t0 = performance.now();
+  try { utBuild(); }
+  finally { const t1 = performance.now(); utCost = t1 - t0; utLast = t1; utRan = true; utArm(); }
+}
+function utBuild() {             // pane/focus census in the window title (headless probe)
   rTrack();                      // lgpanes: keep rLeaf current even with the right sidebar closed
   const ps = [...document.querySelectorAll("#main .pane")];
   const nf = document.querySelectorAll("#main .pane.focused").length;
@@ -3946,23 +3984,18 @@ function updateTitle() {          // pane/focus census in the window title (head
              tcxTok() +                                                   // tabclose S4: the close glyph's PAINTED centres
              (extCount ? " [ext:" + extCount + "]" : "");                 // S1: external-link clicks routed to open_external
   t += t2;
-  const uo0 = performance.now();   // TEMP title-frame measure
   const ov = ovfScan();            // R22: layout overflow census (window + frame)
-  if (utM.big) utM.o += performance.now() - uo0;   // TEMP title-frame measure
   t += " [vp:" + innerWidth + "x" + innerHeight + "]" +   // resize-completed signal for the fuzz harness
        " [ovf:" + ov.dw + "," + ov.dh + "," + ov.n + "]" +
        (ov.bad.length ? " [ovfe:" + ov.bad.join("|").slice(0, 180) + "]" : "");
   t += wfTok();                    // R33: the window's own frame (controls, grips, maximised, keyboard focus)
   t += censusToks();               // G2: registered tokens (ui/census.js) — new tokens go THERE, not on the lines above
-  const ut1 = performance.now();   // TEMP title-frame measure
   document.title = t;
-  const ut2 = performance.now();   // TEMP title-frame measure
   // publish to the native title: ONE call in flight, last-write-wins, 500ms
   // timeout guard — a hung/rejected setTitle IPC can neither reorder titles
   // nor starve later updates (the old promise-chain stalled forever on one)
   pushTitle(t);
   wsTouch();   // R28.3: every mutation already funnels through here — arm the layout write
-  if (utM.big) { const ut3 = performance.now(); utM.n++; utM.b += ut1 - ut0; utM.s += ut2 - ut1; utM.r += ut3 - ut2; if (ut1 - ut0 > utM.m) utM.m = ut1 - ut0; }   // TEMP title-frame measure
 }
 let tSending = false, tWant = "";
 function pushTitle(t) {
@@ -5604,7 +5637,7 @@ function twOpen(fn) {
   return async sp => {
     twHold++;
     try { return await fn(sp); }
-    finally { if (--twHold === 0 && twDue) { twDue = false; updateTitle(); } }
+    finally { if (--twHold === 0 && twDue) { twDue = false; updateTitleNow(); } }
   };
 }
 async function switchTab(g, i) {
@@ -5619,7 +5652,7 @@ async function switchTab(g, i) {
   } finally {
     // act() queued its paint end (rAF -> setTimeout) before returning: this rAF + timeout run after it
     requestAnimationFrame(() => setTimeout(() => {
-      if (--twHold === 0 && twDue) { twDue = false; updateTitle(); }
+      if (--twHold === 0 && twDue) { twDue = false; updateTitleNow(); }
     }, 0));
   }
 }
@@ -7472,7 +7505,7 @@ function canvasTok() {
   // goal cv-files: [cvcard:<id>|kind=pdf|...] [cvfile:...] [cvfprompt:url|...] [cvfcopy:] (ui/plugins/canvas-files.js)
   if (window.__osCanvasFiles) try { t += window.__osCanvasFiles.census(v); } catch (_) {}
   // goal cv-perf: [cvperf:vis=|total=|eupd=|emin=|emax=|moves=] painted cards and the last drag's edge re-paths (ui/plugins/canvas-perf.js)
-  if (window.CanvasPerf) try { const cp = window.CanvasPerf.census(v); const mt = /\|total=(\d+)/.exec(cp); if (mt && +mt[1] >= 200) utM.big = true; t += cp.replace(/\]$/, utTok() + "]"); } catch (_) {}   // TEMP title-frame measure (utTok)
+  if (window.CanvasPerf) try { t += window.CanvasPerf.census(v); } catch (_) {}
   return t;
 }
 function folderMenu(e, f) {                 // right-click an explorer folder row: New canvas in that folder
@@ -12433,7 +12466,7 @@ function fGo(g, d) {                   // R26.11 + R26.13
   const n = st.hits.length;
   st.idx = (st.idx + d + n) % n;       // past the last match IS the first: the cycle wraps
   let rel = false;
-  const release = () => { if (rel) return; rel = true; fHold--; updateTitle(); };
+  const release = () => { if (rel) return; rel = true; fHold--; updateTitleNow(); };
   fHold++;
   setTimeout(release, 500);
   try { fPaint(g); } catch (e) { release(); throw e; }
