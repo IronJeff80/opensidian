@@ -868,12 +868,16 @@ fn list_images(v: State<Vault>, otel: Option<perf::Ctx>) -> Vec<String> {
 #[tauri::command]
 fn canvas_io(v: State<Vault>, op: String, path: Option<String>, data: Option<String>, otel: Option<perf::Ctx>) -> Result<serde_json::Value, String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
-    let r = span_timed!(otel => "canvas_io", canvasfs::op(&root, &op, path.as_deref().unwrap_or(""), data.as_deref()));
-    // goal cv-journeys J10: a pasted image is a vault image now (R29.11: both renderers, list_images, the explorer)
-    if let (true, Ok(serde_json::Value::String(p))) = (op == "paste", &r) {
-        v.index.lock().unwrap().add_image(p);
+    if op == "paste" {
+        // goal cv-journeys J10: an image pasted on a board -> a new file in the R31.3 attachment folder (the one an OS
+        // drop uses), image cap MAX_IMG_BYTES; then it is a vault image (R29.11: both renderers, list_images, explorer)
+        let board = path.as_deref().unwrap_or("");
+        let (dir, _notice) = attach_dir(&root).map_err(|e| e.say())?;
+        let p = span_timed!(otel => "canvas_io", canvasfs::paste(&root, board, data.as_deref(), &dir, MAX_IMG_BYTES))?;
+        v.index.lock().unwrap().add_image(&p);
+        return Ok(serde_json::Value::String(p));
     }
-    r
+    span_timed!(otel => "canvas_io", canvasfs::op(&root, &op, path.as_deref().unwrap_or(""), data.as_deref()))
 }
 
 /// canvas_attach (canvasfs::attach): a NEW png/jpg/jpeg/gif/webp file in the

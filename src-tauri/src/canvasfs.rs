@@ -21,6 +21,7 @@
      links           {canvas: [file-card targets]} for every listed canvas
      relink          data {from,to}: every file card naming `from` now names `to`
                      (only those string tokens change); returns the canvases written
+     paste <board>   (dispatched by main.rs canvas_io, which resolves the folder — `paste` below)
      paste <board>   goal cv-journeys: data {ext, stamp, b64} = an image pasted on that board (Ctrl+V). Written
                      NEW (O_EXCL, never over a file) into the vault's attachment folder (R31.3, the same
                      folder an OS drop uses) as "Pasted image <stamp>.<ext>", " 1", " 2" ... on a collision
@@ -220,8 +221,9 @@ fn relink_text(text: &str, from: &str, to: &str) -> Option<String> {
 /// the image types a paste may write -> the bytes the data must start with (PNG / JPEG / GIF / RIFF-WEBP)
 const PASTE_TYPES: [(&str, &[u8]); 4] = [("png", b"\x89PNG\r\n\x1a\n"), ("jpg", b"\xff\xd8\xff"), ("gif", b"GIF8"), ("webp", b"RIFF")];
 
-/// goal cv-journeys J10: a pasted image -> a new file in the attachment folder (see the header)
-fn paste(root: &Path, board: &str, data: Option<&str>) -> Result<String, String> {
+/// goal cv-journeys J10: a pasted image -> a new file in `dir` (see the header), at most `cap` bytes. main.rs canvas_io
+/// resolves `dir` (attach_dir: the vault's attachment folder, canonical, inside the vault) and indexes the result.
+pub fn paste(root: &Path, board: &str, data: Option<&str>, dir: &Path, cap: u64) -> Result<String, String> {
     let op = "paste";
     canvas_rel(op, board)?;
     let d = data.ok_or_else(|| err(op, board, "EINVAL: missing data"))?;
@@ -235,21 +237,21 @@ fn paste(root: &Path, board: &str, data: Option<&str>) -> Result<String, String>
     if stamp.len() != 14 || !stamp.bytes().all(|b| b.is_ascii_digit()) {
         return Err(err(op, board, "EINVAL: stamp is not YYYYMMDDHHmmss"));
     }
-    if b64.len() as u64 > crate::MAX_IMG_BYTES / 3 * 4 + 4 {
+    if b64.len() as u64 > cap / 3 * 4 + 4 {
         return Err(err(op, board, "EFBIG: the image is over the attachment cap"));
     }
     let bytes = vaultfs::b64_decode(b64).ok_or_else(|| err(op, board, "EINVAL: data is not base64"))?;
-    if bytes.len() as u64 > crate::MAX_IMG_BYTES {
+    if bytes.len() as u64 > cap {
         return Err(err(op, board, "EFBIG: the image is over the attachment cap"));
     }
     if !bytes.starts_with(magic) {
         return Err(err(op, board, "EINVAL: the bytes are not that image type"));
     }
-    let (dir, _notice) = crate::attach_dir(root).map_err(|_| err(op, board, "EPERM: the attachment folder is not inside the vault"))?;
     let croot = root.canonicalize().map_err(|e| err(op, board, &e.to_string()))?;
     let rel_dir = dir.strip_prefix(&croot).map_err(|_| err(op, board, "EPERM: the attachment folder is not inside the vault"))?.to_path_buf();
     let v = Vault::open(root).map_err(|x| vaultfs::plugin_err(op, board, &x))?;
-    for name in crate::cand_names(&format!("Pasted image {stamp}.{ext}")) {
+    // R31.4: " 1", " 2" ... on the stem; only CANDIDATES — create_new (O_EXCL) is what refuses a taken name
+    for name in (0..1000).map(|n| if n == 0 { format!("Pasted image {stamp}.{ext}") } else { format!("Pasted image {stamp} {n}.{ext}") }) {
         let rel = rel_dir.join(&name);
         match v.create_new(&rel, false) {
             Ok(mut f) => {
@@ -268,9 +270,6 @@ fn paste(root: &Path, board: &str, data: Option<&str>) -> Result<String, String>
 }
 
 pub fn op(root: &Path, op: &str, path: &str, data: Option<&str>) -> Result<Value, String> {
-    if op == "paste" {
-        return paste(root, path, data).map(Value::from);
-    }
     if op == "list" {
         return Ok(json!(list(root)));
     }
@@ -561,6 +560,8 @@ mod tests {
         let (root, _) = fresh("paste");
         let png = b"\x89PNG\r\n\x1a\nrest".to_vec();
         let d = |ext: &str, b: &[u8]| json!({"ext": ext, "stamp": "20261025210000", "b64": vaultfs::b64_encode(b)}).to_string();
+        let top = root.canonicalize().unwrap();
+        let op = |_: &Path, o: &str, b: &str, data: Option<&str>| { assert_eq!(o, "paste"); paste(&root, b, data, &top, 1 << 20).map(Value::from) };
         assert_eq!(op(&root, "paste", "B.canvas", Some(&d("png", &png))).unwrap(), json!("Pasted image 20261025210000.png"));
         assert_eq!(op(&root, "paste", "B.canvas", Some(&d("png", &png))).unwrap(), json!("Pasted image 20261025210000 1.png"));   // never over a file
         assert_eq!(fs::read(root.join("Pasted image 20261025210000.png")).unwrap(), png);
@@ -569,9 +570,10 @@ mod tests {
         assert!(op(&root, "paste", "Note.md", Some(&d("png", &png))).is_err(), "the requester is a board");
         let bad = json!({"ext": "png", "stamp": "../../x", "b64": vaultfs::b64_encode(&png)}).to_string();
         assert!(op(&root, "paste", "B.canvas", Some(&bad)).is_err(), "the stamp is digits only");
-        fs::create_dir_all(root.join(".obsidian")).unwrap();
-        fs::write(root.join(".obsidian/app.json"), r#"{"attachmentFolderPath":"att"}"#).unwrap();
-        assert_eq!(op(&root, "paste", "B.canvas", Some(&d("png", &png))).unwrap(), json!("att/Pasted image 20261025210000.png"));
+        fs::create_dir_all(root.join("att")).unwrap();
+        let att = root.join("att").canonicalize().unwrap();
+        assert_eq!(paste(&root, "B.canvas", Some(&d("png", &png)), &att, 1 << 20).unwrap(), "att/Pasted image 20261025210000.png");
+        assert!(paste(&root, "B.canvas", Some(&d("png", &png)), &att, 4).unwrap_err().starts_with("EFBIG"), "the cap holds");
     }
 
     #[test]
