@@ -52,7 +52,7 @@ pub struct Index {
     /// R19: graph (nodes + edges + adjacency) built lazily from memory and
     /// kept until the edge set changes (link edit, new/removed/renamed note).
     /// graph / graph_local serve from here: no per-call rebuild, no disk.
-    pub(crate) graph: Option<GraphCache>,
+    pub graph: Option<GraphCache>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
