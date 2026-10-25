@@ -4,8 +4,11 @@
 # untouched, fuzz/Cargo.lock is committed and frozen. Every direct dependency
 # is an exact `=` pin released >= 6 weeks before 2026-10-25 (cutoff
 # 2026-09-13); versions + publish dates in harness docs/fuzz/PINS.md.
-# Toolchain: fuzz/rust-toolchain.toml (dated nightly). Run from fuzz/:
-#   cargo fuzz build            cargo fuzz run <target>
+# Toolchain: fuzz/rust-toolchain.toml (dated nightly). cargo-fuzz needs the
+# REPO ROOT as cwd (it looks for the parent project), where rustup does not see
+# fuzz/rust-toolchain.toml, so name the toolchain explicitly:
+#   cargo +nightly-2026-09-01 fuzz build --fuzz-dir fuzz
+#   cargo +nightly-2026-09-01 fuzz run --fuzz-dir fuzz <target>
 [package]
 name = "opensidian-fuzz"
 version = "0.0.0"
