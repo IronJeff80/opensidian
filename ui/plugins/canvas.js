@@ -48,6 +48,13 @@
   }
 
   const ABSENT = Symbol("canvas.absentRootKeys");
+  // a node read without width/height: k reads `v` but is not an own enumerable field, so it is not written;
+  // setting it (a resize) makes it a plain field again
+  function sizeFallback(d, k, v) {
+    if (k in d) return;
+    Object.defineProperty(d, k, { configurable: true, enumerable: false, get: () => v,
+      set: x => { Object.defineProperty(d, k, { value: x, writable: true, enumerable: true, configurable: true }); } });
+  }
 
   function validateCanvas(doc) {
     const bad = m => { throw new CanvasFormatError(m); };
@@ -59,10 +66,11 @@
       const at = "nodes[" + i + "]";
       if (!isObj(n)) bad(at + " is not an object");
       if (typeof n.id !== "string" || !n.id) bad(at + ".id is not a non-empty string");
-      if (ids.has(n.id)) bad(at + ".id \"" + n.id + "\" is a duplicate");
-      ids.add(n.id);
+      ids.add(n.id);   // a repeated node id loads: the later object is the card, both stay in the file (CVR-A-043)
       if (!NODE_TYPES.includes(n.type)) bad(at + ".type " + JSON.stringify(n.type) + " is not text/file/link/group");
-      for (const k of ["x", "y", "width", "height"]) if (!isNum(n[k])) bad(at + "." + k + " is not a number");
+      for (const k of ["x", "y"]) if (!isNum(n[k])) bad(at + "." + k + " is not a number");
+      // a missing width/height loads (a content-sized card) and stays missing in the file (CVR-A-042)
+      for (const k of ["width", "height"]) if (k in n && !isNum(n[k])) bad(at + "." + k + " is not a number");
       if (!optStr(n, "color")) bad(at + ".color is not a string");
       if (n.type === "text" && typeof n.text !== "string") bad(at + ".text is not a string");
       if (n.type === "file" && (typeof n.file !== "string" || !optStr(n, "subpath"))) bad(at + ".file/subpath is not a string");
@@ -77,8 +85,8 @@
       if (typeof e.id !== "string" || !e.id) bad(at + ".id is not a non-empty string");
       if (eids.has(e.id)) bad(at + ".id \"" + e.id + "\" is a duplicate");
       eids.add(e.id);
-      if (!ids.has(e.fromNode)) bad(at + ".fromNode " + JSON.stringify(e.fromNode) + " is not a node");
-      if (!ids.has(e.toNode)) bad(at + ".toNode " + JSON.stringify(e.toNode) + " is not a node");
+      // an edge naming a missing node loads: the board does not draw it, the file keeps it (CVR-A-048/049)
+      if (typeof e.fromNode !== "string" || typeof e.toNode !== "string") bad(at + " has a bad fromNode/toNode");
       if (!optIn(e, "fromSide", SIDES) || !optIn(e, "toSide", SIDES)) bad(at + " has a bad fromSide/toSide");
       if (!optIn(e, "fromEnd", ENDS) || !optIn(e, "toEnd", ENDS)) bad(at + " has a bad fromEnd/toEnd");
       if (!optStr(e, "color") || !optStr(e, "label")) bad(at + " has a bad color/label");
@@ -444,20 +452,39 @@
         this.edgeEl.textContent = "";
         this.updateHint();
       }
+      /* a file's objects the board does not show — an earlier node whose id a later one repeats (CVR-A-043),
+         an edge naming a node that is not there (CVR-A-048/049) — are kept aside (this.unshown) and written back
+         where they were. A document carrying none (an undo/redo snapshot) leaves the kept ones as they are;
+         loadPath clears them for a new file. A node without width/height reads a content-sized fallback that is
+         never written (non-enumerable until set: CVR-A-042). */
       importData(doc) {
         this.clear();
         this.data = doc;
-        for (const d of doc.nodes) this.addNode(new NODE_CLASS[d.type](this, d));
-        for (const e of doc.edges) this.edges.set(e.id, e);
+        const last = new Map();
+        doc.nodes.forEach((d, i) => last.set(d.id, i));
+        const hidden = { nodes: [], edges: [] };
+        doc.nodes.forEach((d, i) => { if (last.get(d.id) !== i) hidden.nodes.push({ i, d }); });
+        const shown = doc.nodes.filter((d, i) => last.get(d.id) === i);
+        for (const d of shown) { sizeFallback(d, "width", 100); sizeFallback(d, "height", 60); }
+        doc.edges.forEach((e, i) => { if (!last.has(e.fromNode) || !last.has(e.toNode)) hidden.edges.push({ i, d: e }); });
+        if (hidden.nodes.length || hidden.edges.length || !this.unshown) this.unshown = hidden;
+        for (const d of shown) this.addNode(new NODE_CLASS[d.type](this, d));
+        for (const e of doc.edges) if (last.has(e.fromNode) && last.has(e.toNode)) this.edges.set(e.id, e);
         this.renderEdges();
         if (window.CanvasHistory) window.CanvasHistory.record(this, "import", changed);   // goal cv-history: a newly opened document starts a clean history
       }
       // the document as it is now: the parsed root (unknown fields kept), its nodes in board order,
-      // the edges whose two ends are still on the board
+      // the edges whose two ends are still on the board, plus the file's objects the board does not show
       getData() {
-        const d = this.data;
-        d.nodes = [...this.nodes.values()].map(n => n.data);
-        d.edges = [...this.edges.values()].filter(e => this.nodes.has(e.fromNode) && this.nodes.has(e.toNode));
+        const d = this.data, u = this.unshown || { nodes: [], edges: [] };
+        const nodes = [...this.nodes.values()].map(n => n.data);
+        for (const h of u.nodes) {   // before the card that repeats its id, else where it was
+          const at = nodes.findIndex(n => n.id === h.d.id);
+          nodes.splice(at >= 0 ? at : Math.min(h.i, nodes.length), 0, h.d);
+        }
+        const edges = [...this.edges.values()].filter(e => this.nodes.has(e.fromNode) && this.nodes.has(e.toNode));
+        for (const h of u.edges) if (!edges.includes(h.d)) edges.splice(Math.min(h.i, edges.length), 0, h.d);
+        d.nodes = nodes; d.edges = edges;
         return d;
       }
       /* the document as it goes to disk: getData(), except that a root key "nodes"/"edges" the file did not have
@@ -730,7 +757,7 @@
       async loadPath(p) {
         this.path = p; this.file = vaultFile(p) || { path: p, name: p.split("/").pop(), basename: baseName(p), extension: "canvas" };
         this.lastText = null; this.dirty = false; this.edited = false;
-        this.canvas.clear(); this.setError(null);
+        this.canvas.clear(); this.canvas.unshown = null; this.setError(null);
         // goal cv-model: the vault FILE model comes up with the first board (deps.model = api-vault ensureFiles) — the
         // pickers list it and a card whose file is not in it shows as missing, with no community plugin enabled
         const up = typeof deps.model === "function" ? Promise.resolve().then(deps.model).catch(e => console.error("[canvas] vault model:", e)) : null;
