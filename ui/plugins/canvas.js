@@ -752,20 +752,28 @@
         if (p && state && typeof state === "object") { const k = {}; for (const key of Object.keys(state)) if (key !== "file") k[key] = state[key]; this.kept = JSON.parse(JSON.stringify(k)); }
         if (!p || p === this.path) return;
         await this.flush(true);
-        await this.loadPath(p);
+        await this.loadPath(p, true);
       }
-      async loadPath(p) {
-        this.path = p; this.file = vaultFile(p) || { path: p, name: p.split("/").pop(), basename: baseName(p), extension: "canvas" };
-        this.lastText = null; this.dirty = false; this.edited = false;
-        this.canvas.clear(); this.canvas.unshown = null; this.setError(null);
+      /* open file p on this board. The file is read and parsed BEFORE the board lets go of what it shows: a file
+         that does not parse (malformed JSON, whitespace only) opened from a tab (refuse) does not mount at all —
+         a "Failed to open" notice names it, a fresh tab closes again and the tab it was opened from shows, a board
+         already showing a file keeps it; the file is never written (CVR-A-041, 056). A board hosted outside a tab
+         (or refuse off) shows the in-view error as before. */
+      async loadPath(p, refuse) {
+        const seq = this._loadSeq = (this._loadSeq || 0) + 1;
         // goal cv-model: the vault FILE model comes up with the first board (deps.model = api-vault ensureFiles) — the
         // pickers list it and a card whose file is not in it shows as missing, with no community plugin enabled
         const up = typeof deps.model === "function" ? Promise.resolve().then(deps.model).catch(e => console.error("[canvas] vault model:", e)) : null;
-        let text;
-        try { text = await io("read", p); await up; } catch (e) { if (this.path === p) this.setError("This canvas could not be read: " + errText(e)); return; }
-        if (this.path !== p) return;
-        let doc;
-        try { doc = parseCanvas(text); } catch (e) { this.setError("This canvas could not be opened: " + errText(e) + ". The file was left unchanged.");
+        let text, rerr = null, doc = null, perr = null;
+        try { text = await io("read", p); await up; } catch (e) { rerr = e; }
+        if (seq !== this._loadSeq) return;
+        if (!rerr) try { doc = parseCanvas(text); } catch (e) { perr = e; }
+        if (perr && refuse && this.refuseOpen(p, perr)) return;
+        this.path = p; this.file = vaultFile(p) || { path: p, name: p.split("/").pop(), basename: baseName(p), extension: "canvas" };
+        this.lastText = null; this.dirty = false; this.edited = false;
+        this.canvas.clear(); this.canvas.unshown = null; this.setError(null);
+        if (rerr) { this.setError("This canvas could not be read: " + errText(rerr)); return; }
+        if (perr) { const e = perr; this.setError("This canvas could not be opened: " + errText(e) + ". The file was left unchanged.");
           const cf = window.__osCanvasFiles;   // goal cv-files CV-020: an "Open read-only" button when only dangling edges refused it
           if (cf) try { cf.refused(this, text, { app, X, deps, model, changed }); } catch (er) { console.error("[canvas] read-only offer:", er); }
           return;
@@ -777,6 +785,22 @@
         requestAnimationFrame(() => { const c = this.canvas; if (this.path === p && c && c.wrapperEl.getBoundingClientRect().width) { c.fitted = true; c.zoomToFit(); } changed(); });
         try { if (this.leaf && this.leaf.updateHeader) this.leaf.updateHeader(); } catch (_) {}
         changed();
+      }
+      // true = the open of p was refused here (notice shown, nothing mounted); false = show the in-view error instead
+      refuseOpen(p, e) {
+        const leaf = this.leaf, par = leaf && typeof leaf.detach === "function" ? leaf.parent : null;
+        if (!this.path && !par) return false;
+        const msg = "Failed to open \"" + p.split("/").pop() + "\": " + errText(e);
+        if (deps.notify) deps.notify(msg); else console.error("[canvas] " + msg);
+        if (this.path) return true;          // a board already showing a file keeps it
+        const kids = (par && par.children) || [], i = kids.indexOf(leaf), back = kids[i - 1] || kids[i + 1] || null;
+        // once the open that built this tab has finished: close it, show the tab it was opened from
+        setTimeout(async () => {
+          try { await leaf.detach(); if (back && app.workspace && app.workspace.revealLeaf) await app.workspace.revealLeaf(back); }
+          catch (er) { console.error("[canvas] refused open:", er); }
+          changed();
+        }, 0);
+        return true;
       }
       setError(msg) {
         this.broken = msg;
