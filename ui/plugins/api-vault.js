@@ -61,13 +61,22 @@
       if (f instanceof TFolder) for (const c of f.children.slice()) movePath(c, np + c.path.slice(op.length));
     }
     async function buildModel() {
-      const [notes, folders, imgs, cvs] = await Promise.all([inv("list_notes"), inv("list_folders"), inv("list_images").catch(() => []), cio("list").catch(() => [])]);
+      const [notes, folders, imgs, cvs, media] = await Promise.all([inv("list_notes"), inv("list_folders"), inv("list_images").catch(() => []), cio("list").catch(() => []), cio("media").catch(() => [])]);
       const keep = new Set();
       for (const d of folders || []) { ensureFolder(d); keep.add(d); }
       for (const n of notes || []) { ensureFile(n + ".md"); keep.add(n + ".md"); }
       for (const p of imgs || []) { ensureFile(p); keep.add(p); }
       for (const p of cvs || []) { ensureFile(p); keep.add(p); }
+      for (const p of media || []) { ensureFile(p); keep.add(p); }   // goal cv-journeys: audio / video (canvasfs media) are files a card plays
       for (const [p, f] of [...files]) if (!keep.has(p) && files.get(p) === f) removeTree(f);
+    }
+    /* goal cv-journeys: the image / PDF / audio / video files only (notes are the watcher's, canvases the Canvas view's):
+       a new one becomes a TFile and fires "create". ADD only: a file a plugin wrote (createBinary) is in no listing and
+       must not vanish from the model, and a removal is the watcher's / the deleting verb's business. */
+    async function syncMedia() {
+      const [imgs, media] = await Promise.all([inv("list_images"), cio("media")]);
+      const want = new Set([...(imgs || []), ...(media || [])]);
+      for (const p of want) { if (files.has(p)) continue; const [f, made] = ensureFile(p); if (made) vault.trigger("create", f); }
     }
     async function syncFolders() {
       let ds; try { ds = await inv("list_folders"); } catch (_) { return; }
@@ -129,6 +138,14 @@
       return filesP;
     }
     host.vaultModel = ensureFiles;
+    /* goal cv-journeys: the app re-listed its explorer (main.js refreshTree) — re-list the file model too, so a file the
+       watcher never reports (it reports notes only: an image pasted on or dropped onto a board) is a TFile before the
+       card that shows it paints. A no-op until ensureFiles is up. */
+    host.vaultSync = async () => { if (!K.st.filesOn) return; try { await syncMedia(); } catch (e) { console.error("[plugin] vaultSync:", e); } };
+    /* goal cv-journeys: the app's OWN rename / move of a note (main.js applyRename: F2, the title rename, a drag-move). The
+       watcher reconciles against the index and reports none of them, so the model kept the old path: a canvas file card
+       relinked to the new name painted "not found". A Vault "rename", as for a plugin's renameFile. */
+    host.noteMoved = (o, n) => { if (!K.st.filesOn || typeof o !== "string" || typeof n !== "string" || o === n) return; applyChange({ renamed: [[o, n]] }); };
     /* the runtime a plugin needs before its main.js is evaluated: moment (vendored,
        pinned — ui/vendor/moment.min.js), the file model (ensureFiles), the vault
        config and the metadata sweep. Idempotent; first enable() pays it. */
