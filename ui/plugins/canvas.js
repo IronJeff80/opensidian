@@ -11,9 +11,9 @@
 
    The document model keeps the PARSED objects: an edit changes only the known
    field it is about (x, y, width, height, text, ...), so every field this
-   app does not know — on the root, a node or an edge — round-trips untouched
-   and in its original key order. A file is only ever written after an edit;
-   an opened-and-closed file is never rewritten, so it stays byte-identical. */
+   app does not know — on the root, a node or an edge — round-trips untouched.
+   On load a node's geometry and an edge's connection fields move to the end
+   of their object (the on-disk order the board writes back, goal cvf-format). */
 (function () {
   "use strict";
   const NODE_TYPES = ["text", "file", "link", "group"];
@@ -40,6 +40,8 @@
     validateCanvas(doc);
     if (!("nodes" in doc)) doc.nodes = [];
     if (!("edges" in doc)) doc.edges = [];
+    for (const n of doc.nodes) tailKeys(n, NODE_TAIL);
+    for (const e of doc.edges) tailKeys(e, EDGE_TAIL);
     return doc;
   }
 
@@ -80,10 +82,36 @@
     return true;
   }
 
-  // the document -> JSON Canvas text (tab-indented). Validates first: never write a canvas we could not read back.
+  /* the document -> JSON Canvas text. Validates first: never write a canvas we could not read back.
+     Layout (goal cvf-format, CVR-A-057): a container whose children are all plain values (string, number,
+     boolean) is written compact on one line, with no spaces — {"id":"a","x":0}; a container holding an
+     object, an array or null is expanded, one child per line, tab-indented. An empty container is {} / [].
+     So: the root is expanded, every node and edge is one line unless it carries an object/array/null
+     value, and the file has no trailing newline. */
+  function fmtJson(v, ind) {
+    if (v === null || typeof v !== "object") return JSON.stringify(v);
+    const arr = Array.isArray(v);
+    const keys = arr ? null : Object.keys(v).filter(k => v[k] !== undefined && typeof v[k] !== "function");
+    const kids = arr ? v : keys.map(k => v[k]);
+    if (!kids.some(c => typeof c === "object")) return JSON.stringify(v);   // typeof null === "object": null expands
+    const inner = ind + "\t";
+    const lines = arr ? v.map(c => inner + fmtJson(c === undefined ? null : c, inner))
+                      : keys.map(k => inner + JSON.stringify(k) + ":" + fmtJson(v[k], inner));
+    return (arr ? "[" : "{") + "\n" + lines.join(",\n") + "\n" + ind + (arr ? "]" : "}");
+  }
   function serializeCanvas(doc) {
     validateCanvas(doc);
-    return JSON.stringify(doc, null, "\t");
+    return fmtJson(doc, "");
+  }
+  /* a node or edge read from a file: its geometry / connection fields are moved to the END of the object,
+     in a fixed order, after every other field (unknown ones included) — the on-disk order a loaded board
+     is written back in (CVR-A-054). Absent fields stay absent. */
+  const NODE_TAIL = ["x", "y", "width", "height", "color"];
+  const EDGE_TAIL = ["fromNode", "fromSide", "toNode", "toSide", "fromEnd", "toEnd", "color", "label"];
+  function tailKeys(o, tail) {
+    if (!isObj(o)) return o;
+    for (const k of tail) if (k in o) { const v = o[k]; delete o[k]; o[k] = v; }
+    return o;
   }
 
   // a fresh id: 16 lowercase hex digits, not in `taken` (a Set or array of ids)
@@ -432,8 +460,9 @@
       createTextNode(o) {
         o = o || {};
         const pos = o.pos || { x: 0, y: 0 }, size = o.size || {};
-        const d = { id: newId(this.ids()), type: "text", text: String(o.text == null ? "" : o.text),
-                    x: Math.round(pos.x), y: Math.round(pos.y), width: Math.round(size.width || 250), height: Math.round(size.height || 60) };
+        // key order of a card made on the board: id, geometry, then type + text (CVR-A-059)
+        const d = { id: newId(this.ids()), x: Math.round(pos.x), y: Math.round(pos.y), width: Math.round(size.width || 250),
+                    height: Math.round(size.height || 60), type: "text", text: String(o.text == null ? "" : o.text) };
         const n = this.addNode(new TextNode(this, d));
         if (o.save !== false) this.requestSave();
         if (o.focus) n.startEditing();
