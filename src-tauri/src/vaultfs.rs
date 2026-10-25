@@ -34,53 +34,56 @@ use std::path::{Component, Path, PathBuf};
 // test seam: a named point between resolving a parent and using it, so a
 // test can swap a directory for a symlink deterministically. Production: a
 // no-op the optimiser deletes. Thread-local, so parallel tests never collide.
-#[cfg(test)]
+// Compiled under debug_assertions too (not just cfg(test)): since lib.rs the
+// bin's tests (main.rs) link vaultfs as a DEPENDENCY, where cfg(test) is off.
+// Unset (the default) every seam is a no-op; release builds still drop them.
+#[cfg(any(test, debug_assertions))]
 thread_local! {
     static HOOK: std::cell::RefCell<Option<Box<dyn FnMut(&'static str)>>> = std::cell::RefCell::new(None);
 }
 #[inline(always)]
 fn hook(_at: &'static str) {
-    #[cfg(test)]
+    #[cfg(any(test, debug_assertions))]
     HOOK.with(|h| {
         if let Some(f) = h.borrow_mut().as_mut() {
             f(_at)
         }
     });
 }
-#[cfg(test)]
-pub(crate) fn set_hook(f: Option<Box<dyn FnMut(&'static str)>>) {
+#[cfg(any(test, debug_assertions))]
+pub fn set_hook(f: Option<Box<dyn FnMut(&'static str)>>) {
     HOOK.with(|h| *h.borrow_mut() = f);
 }
 
 /* osdrop crash-injection seam (tests only): `fault(at)` is an Err at exactly
    the named step, so a test can prove what an interrupted import leaves behind.
    In a release build it is `hook(at); Ok(())` — no branch, no state. */
-#[cfg(test)]
+#[cfg(any(test, debug_assertions))]
 thread_local! {
     static FAULT: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
     static FORCE_COPY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 fn fault(at: &'static str) -> io::Result<()> {
-    #[cfg(test)]
+    #[cfg(any(test, debug_assertions))]
     if FAULT.with(|f| f.get()) == Some(at) {
         return Err(io::Error::other(format!("injected fault at {at}")));
     }
     hook(at);
     Ok(())
 }
-#[cfg(test)]
-pub(crate) fn set_fault(at: Option<&'static str>) {
+#[cfg(any(test, debug_assertions))]
+pub fn set_fault(at: Option<&'static str>) {
     FAULT.with(|f| f.set(at));
 }
 /// tests only: take the cross-filesystem (copy) road even on one filesystem
-#[cfg(test)]
-pub(crate) fn set_force_copy(on: bool) {
+#[cfg(any(test, debug_assertions))]
+pub fn set_force_copy(on: bool) {
     FORCE_COPY.with(|f| f.set(on));
 }
 fn force_copy() -> bool {
-    #[cfg(test)]
+    #[cfg(any(test, debug_assertions))]
     return FORCE_COPY.with(|f| f.get());
-    #[cfg(not(test))]
+    #[cfg(not(any(test, debug_assertions)))]
     false
 }
 

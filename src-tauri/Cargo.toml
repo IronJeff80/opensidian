@@ -1,8 +1,15 @@
 [package]
 name = "opensidian"
-version = "0.8.1"
+version = "0.9.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
+
+# lib.rs: the pure parse/normalize modules (vaultfs, outline, index, graphq,
+# canvasfs, datefmt) as a tauri-free library so fuzz/ can link them. The bin
+# (main.rs) keeps its name "opensidian" and uses this lib.
+[lib]
+name = "opensidian_lib"
+path = "src/lib.rs"
 
 [build-dependencies]
 tauri-build = { version = "2.1", features = [] }
