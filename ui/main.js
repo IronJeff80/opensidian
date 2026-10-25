@@ -7454,6 +7454,8 @@ function canvasTok() {
   if (window.CanvasEdges) try { t += window.CanvasEdges.census(v); } catch (_) {}
   // cv-drop tokens: [cvdrop:<copied>/<refused>] [cvdropf:<folder>|n=|cap=] [cvdropmsg:<text>] (ui/plugins/canvas-drop.js)
   if (window.CanvasDrop) try { t += window.CanvasDrop.census(); } catch (_) {}
+  // cv-export tokens: [cvxdlg:] the open export dialog, [cvexport:] the last export, [cvxrefused:] the last refused size (ui/plugins/canvas-export.js)
+  if (window.CanvasExport) try { t += window.CanvasExport.census(v); } catch (_) {}
   return t;
 }
 function folderMenu(e, f) {                 // right-click an explorer folder row: New canvas in that folder
