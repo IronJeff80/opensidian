@@ -13,6 +13,8 @@ const TAURI = window.__TAURI__;   // plugin-loader item 7: captured at load; ui/
 const PLG = window.__osPluginHost && __osPluginHost.app && __osPluginHost.api ? { app: __osPluginHost.app, X: __osPluginHost.api } : null;
 // the app's own note writes reach the plugin vault through this (api-vault host.noteWritten), captured before the seal
 const PLGNW = window.__osPluginHost && typeof __osPluginHost.noteWritten === "function" ? __osPluginHost.noteWritten : null;
+// goal cv-model: the plugin vault's FILE model alone (api-vault host.vaultModel: no window.app, no plugin runtime), captured before the seal for Canvas
+const PLGVM = window.__osPluginHost && typeof __osPluginHost.vaultModel === "function" ? __osPluginHost.vaultModel : null;
 const inv = (c, a) => { const x = otel.ctx(); return TAURI.core.invoke(c, x ? Object.assign({ otel: x }, a) : a); };
 /* perf-spans shim over otel: mark(name, t0, extra) = a span that started at
    t0 and ends now; push(name, ms, extra) = an already-measured span (graph
@@ -7230,6 +7232,7 @@ let CANVAS = null;
         X: PLG.X, app: PLG.app, config: ip.config,
         io: (op, path, data) => inv("canvas_io", data == null ? { op, path } : { op, path, data }),
         readNote: p => inv("read_note", { name: String(p).replace(/\.md$/i, "") }),
+        model: PLGVM,
         notify: m => say(m, "canvas"),
         changed: () => updateTitle(),
         pref: {
