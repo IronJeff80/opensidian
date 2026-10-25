@@ -6309,9 +6309,10 @@ function canvasRow(p, depth) {
   row.innerHTML = treeGuides(depth) + '<span class="tc"></span><span class="tn"></span><span class="ttag">CANVAS</span>';
   row.querySelector(".tn").textContent = p.split("/").pop().replace(/\.canvas$/i, "");   // names never hit innerHTML
   row.dataset.canvas = p;
-  row.onclick = () => openCanvas(p);
+  row.onclick = () => { if (treeClickEaten()) return; openCanvas(p); };   // CVR-A-090: the click a drag ends with is not an open
   row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); openCanvas(p); } };
   row.oncontextmenu = e => canvasFileMenu(e, p);
+  row.addEventListener("mousedown", e => treeDragStart(e, p));   // CVR-A-090: drag onto a folder row = move (cvMoveTo)
   return row;
 }
 
@@ -6459,7 +6460,8 @@ function treeDragStart(e, nm, dir) {
     if (dir) { if (ghost) treeEat = performance.now(); updateTitle(); return; }   // cv-drop: a folder dropped on nothing moves nothing
     if (!ghost || !t) { updateTitle(); return; }   // plain click, or dropped on nothing
     treeEat = 1;                                   // the mouseup's click is not an "open this note"
-    await moveNoteTo(nm, t.f);
+    if (/\.canvas$/i.test(nm)) await cvMoveTo(nm, t.f);   // CVR-A-090: a canvas row moves through canvas_io
+    else await moveNoteTo(nm, t.f);
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
@@ -8823,6 +8825,11 @@ async function applyRename(old, nn) {   // post-rename bookkeeping (F2 / cmdRena
      (runUpdateLinks0, CV-143). */
   const bn = s => s.split("/").pop();
   if (bn(old) === bn(nn) && window.__osCanvasFiles) {
+    /* the board's file model hears only the watcher, and an app move is an own write the watcher
+       reports as nothing: without this the relinked card names a path the model has never seen
+       and the reopened board paints it missing. LATER: a host rename hook in api-vault (the old
+       entry lingers until then). */
+    if (PLGNW) try { PLGNW(nn, true); } catch (e) { console.error("[plugin] noteWritten:", e); }
     try { await window.__osCanvasFiles.relink(old, nn, { inv, app: PLG && PLG.app }); }
     catch (err) { say("Canvas file cards not updated — " + String(err && err.message || err)); }
   }
