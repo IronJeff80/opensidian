@@ -397,6 +397,14 @@
     if (ro && ro.path === v.path && v.broken) t += " [cvfile:ro|n=" + v.canvas.nodes.size + "|e=" + v.canvas.edges.size + "|skip=" + ro.skip + "]";
     if (ST.prompt && vis(ST.prompt.input)) t += " [cvfprompt:" + ST.prompt.kind + "|" + esc(String(ST.prompt.input.value).slice(0, 80)) + "]";
     if (ST.copyN) t += " [cvfcopy:n=" + ST.copyN + "|ok=" + ST.copyOk + "]";
+    { // DIAG (temporary): what sits on the undo control, who has focus
+      const u = v.canvas.controlsEl && v.canvas.controlsEl.querySelector(".mod-undo");
+      const nm = e => !e ? "-" : esc((e.tagName || "?").toLowerCase() + "." + String(e.className && e.className.baseVal != null ? e.className.baseVal : e.className || "").split(" ").slice(0, 2).join("."));
+      let hit = "-";
+      if (vis(u)) { const r = u.getBoundingClientRect(); hit = nm(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); }
+      t += " [cvfdbg:hit=" + hit + "|ae=" + nm(document.activeElement) + "|dis=" + (u ? (u.disabled ? 1 : 0) : "-") + "|ro=" + (v.canvas.readonly ? 1 : 0) +
+           "|mods=" + document.querySelectorAll(".modal-container").length + "|cap=" + (v.canvas.wrapperEl && v.canvas.wrapperEl.hasPointerCapture ? "?" : "-") + "]";
+    }
     return t;
   }
 
