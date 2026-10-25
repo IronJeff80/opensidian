@@ -7392,27 +7392,35 @@ async function cvCopy(p) {
   return null;
 }
 /* CVR-A-083 Move file to: canvas_io rename into <folder>/ (same file name; never over an existing entry).
-   An open tab on the canvas closes first (its pending save lands) and reopens on the new path. */
+   Every open tab on the canvas stays and follows it to the new path (cvRetarget). */
 async function cvMoveTo(p, folder) {
   const np = (folder ? String(folder).replace(/\/+$/, "") + "/" : "") + p.split("/").pop();
   if (np === p) return null;
-  const reopen = await cvCloseLeaves(p);
-  try { await inv("canvas_io", { op: "rename", path: p, data: np }); }
-  catch (err) { say(String(err && err.message || err), "canvas"); await refreshTree(); if (reopen) await openCanvas(p); return null; }
-  await refreshTree();
-  if (reopen) await openCanvas(np);
-  updateTitle();
-  return np;
+  return (await cvRetarget(p, np)) ? np : null;
 }
 /* goal cv-vault CV-147/148: rename and delete a canvas from its explorer row. Rename reuses the rename prompt
    (#rnbox, [modal:rn]) with the name minus ".canvas", same folder; delete reuses the confirmation (#delbox,
-   [modal:del]) and moves the file to .trash (canvas_io trash). An open canvas tab on the file is closed first
-   (its pending save lands), and after a rename the canvas reopens under its new path. */
+   [modal:del]) and moves the file to .trash (canvas_io trash). An open canvas tab on the file is closed before a
+   delete (its pending save lands); a rename keeps every tab and points it at the new path (cvRetarget, CVR-A-086). */
 const cvLeavesOf = p => { try { return PLG.app.workspace.getLeavesOfType("canvas").filter(l => l.view && l.view.path === p); } catch (_) { return []; } };
 async function cvCloseLeaves(p) {
   const ls = cvLeavesOf(p);
   for (const l of ls) { try { if (l.view.flush) await l.view.flush(); } catch (_) {} try { await l.detach(); } catch (_) {} }
   return ls.length;
+}
+/* CVR-A-086: rename / move a canvas through canvas_io and keep every tab on it: each leaf lands its pending save
+   first, then after the rename it is pointed at the new path in place (CanvasView.setState loads it), so the tab
+   count stays and every tab retitles. A failed rename leaves the leaves where they were. */
+async function cvRetarget(old, np) {
+  const ls = cvLeavesOf(old);
+  for (const l of ls) { try { if (l.view.flush) await l.view.flush(); } catch (_) {} }
+  try { await inv("canvas_io", { op: "rename", path: old, data: np }); }
+  catch (err) { say(String(err && err.message || err), "canvas"); await refreshTree(); return false; }
+  await refreshTree();
+  for (const l of ls) { try { await l.setViewState({ type: "canvas", state: Object.assign({}, l.view.getState(), { file: np }) }); } catch (err) { console.error("[canvas] retarget:", err); } }
+  for (const h of groups()) renderTabs(h);
+  updateTitle();
+  return true;
 }
 let cvRenamePending = null;
 function cvRename(p) {
@@ -7438,12 +7446,7 @@ $("rnbox").addEventListener("keydown", async e => {     // capture on the box: r
   const dir = old.includes("/") ? old.slice(0, old.lastIndexOf("/") + 1) : "";
   const np = dir + nn + ".canvas";
   if (np === old) return;
-  const reopen = await cvCloseLeaves(old);
-  try { await inv("canvas_io", { op: "rename", path: old, data: np }); }
-  catch (err) { say(String(err && err.message || err), "canvas"); await refreshTree(); if (reopen) await openCanvas(old); return; }
-  await refreshTree();
-  if (reopen) await openCanvas(np);
-  updateTitle();
+  await cvRetarget(old, np);
 }, true);
 function cvDelete(p) {
   openDelete(p, 0, 0);
