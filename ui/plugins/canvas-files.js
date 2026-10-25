@@ -206,6 +206,16 @@
      lands on the wrapper, where nodeOf() finds no card and a NEW text card is made (canvas-cards.js
      documents the same for other-kind files). A double press on a text card is therefore detected
      on its second pointerdown, before the board sees it, and opens that card's editor. */
+  // DIAG (temporary): input events reaching the window, and the history around an undo-control click
+  const DBG = { log: [] };
+  const dcls = t => !t ? "-" : ((t.tagName || "?").toLowerCase() + "." + String(typeof t.className === "string" ? t.className : "").split(" ")[0]).slice(0, 24);
+  const dhs = t => { try { const w = t.closest(".canvas-wrapper") || t.closest(".view-content"); for (const l of (ST.app ? ST.app.workspace.getLeavesOfType("canvas") : [])) { const c = l.view && l.view.canvas; if (c && l.view.containerEl.contains(t)) { const s = window.CanvasHistory.state(c); return s.u + "/" + s.r + (c.readonly ? "ro" : ""); } } } catch (e) { return "x"; } return "?"; };
+  for (const ty of ["pointerdown", "pointerup", "click", "mousedown", "mouseup"]) window.addEventListener(ty, e => {
+    DBG.log.push(ty.slice(0, 2) + ty.slice(-2) + ":" + dcls(e.target) + (e.defaultPrevented ? "!" : ""));
+    if (ty === "click" && e.target && e.target.closest && e.target.closest(".mod-undo")) { const t = e.target; DBG.log.push("U<" + dhs(t)); setTimeout(() => DBG.log.push("U>" + dhs(t)), 50); }
+    if (DBG.log.length > 40) DBG.log.splice(0, 20);
+  }, true);
+  window.addEventListener("keydown", e => { if (e.ctrlKey) DBG.log.push("kd:" + e.key + ":" + dcls(e.target)); }, true);
   let dpId = "", dpT = 0, dpX = 0, dpY = 0;
   document.addEventListener("pointerdown", e => {
     const t = e.target, card = t && t.closest ? t.closest(".canvas-node.canvas-node-text[data-node-id]") : null;
@@ -403,7 +413,7 @@
       let hit = "-";
       if (vis(u)) { const r = u.getBoundingClientRect(); hit = nm(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); }
       t += " [cvfdbg:hit=" + hit + "|ae=" + nm(document.activeElement) + "|dis=" + (u ? (u.disabled ? 1 : 0) : "-") + "|ro=" + (v.canvas.readonly ? 1 : 0) +
-           "|mods=" + document.querySelectorAll(".modal-container").length + "|cap=" + (v.canvas.wrapperEl && v.canvas.wrapperEl.hasPointerCapture ? "?" : "-") + "]";
+           "|mods=" + document.querySelectorAll(".modal-container").length + "|ev=" + esc(DBG.log.slice(-16).join(",")) + "]";
     }
     return t;
   }
