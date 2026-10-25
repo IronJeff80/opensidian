@@ -39,3 +39,31 @@ path = "fuzz_targets/datefmt.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "vault_path"
+path = "fuzz_targets/vault_path.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "outline_index"
+path = "fuzz_targets/outline_index.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "graphq"
+path = "fuzz_targets/graphq.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "canvas"
+path = "fuzz_targets/canvas.rs"
+test = false
+doc = false
+bench = false
