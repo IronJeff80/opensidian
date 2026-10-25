@@ -60,9 +60,10 @@
     remember(ctx);
     const p = String(node.data.file || ""), ext = ctx.file && ctx.file.extension ? String(ctx.file.extension).toLowerCase() : extOf(p);
     node._cvfSeq = (node._cvfSeq || 0) + 1;
-    node._cvf = null;
+    node._cvf = null; node._cvfWhy = ""; node._cvfErr = "";
     if (ext === "pdf" && EdG() && invG()) return pdf(node, ctx, p);
     if (ext === "canvas" && ctx.file && G("cvEmbedPaint")) return nested(node, ctx, p);
+    if (ext === "pdf" || ext === "canvas") node._cvfWhy = (ext === "pdf" ? (EdG() ? "" : "ed") + (invG() ? "" : "inv") : (ctx.file ? "" : "file") + (G("cvEmbedPaint") ? "" : "paint")) || "?";   // census: why the card fell through
     return false;
   }
 
@@ -71,10 +72,11 @@
     const enc = typeof E.pctEnc === "function" ? E.pctEnc(p) : p;
     node._cc = { kind: "pdf" };
     node._cvf = { kind: "pdf", s: null };
-    Promise.resolve().then(() => invG()("pdf_info", { path: enc })).catch(() => null).then(info => {
+    Promise.resolve().then(() => invG()("pdf_info", { path: enc })).catch(e => { node._cvfErr = String(e && e.message || e).slice(0, 60); return null; }).then(info => {
       if (node._cvfSeq !== seq || node._gone) return;
       host.textContent = "";
       if (!info || !info.pages) {                // over the cap / not a PDF: the "other" card (open with the default app)
+        node._cvfWhy = info ? "pages" : "info";
         node._cvf = { kind: "other" };
         const cc = window.__osCanvasCards;
         if (cc) cc.file(node, ctx); else mk("div", "canvas-node-placeholder", host).textContent = p;
@@ -206,7 +208,7 @@
     ST.hooked = app;
     app.workspace.on("canvas:node-menu", (menu, node) => {
       if (!menu || !node || !node.data || node.data.type !== "link" || (node.canvas && node.canvas.readonly)) return;
-      menu.addItem(i => i.setTitle("Copy URL").onClick(() => copyText(String(node.data.url || ""))));
+      menu.addItem(i => i.setTitle("Copy URL").onClick(() => { copyText(String(node.data.url || "")); refocus(node); }));
       menu.addItem(i => i.setTitle("Change URL").onClick(() => changeUrl(node)));
     });
   }
@@ -215,6 +217,7 @@
   function copyText(t) {
     ST.copyN++;
     let ok = false;
+    const back = document.activeElement;           // the copy textarea borrows focus; give it back (Escape, keys keep working)
     const ta = mk("textarea");
     ta.value = t; ta.setAttribute("readonly", "");
     ta.style.cssText = "position:fixed;left:-10000px;top:0;width:10px;height:10px;opacity:0";
@@ -224,6 +227,7 @@
     try { ta.focus(); ta.select(); ok = document.execCommand("copy") || ok; } catch (_) {}
     document.removeEventListener("copy", on, true);
     ta.remove();
+    if (back && back !== document.body && back.isConnected && typeof back.focus === "function") try { back.focus({ preventScroll: true }); } catch (_) {}
     if (!ok && navigator.clipboard && typeof navigator.clipboard.writeText === "function") navigator.clipboard.writeText(t).then(() => { ST.copyOk = 1; }, () => {});
     ST.copyOk = ok ? 1 : 0;
   }
@@ -250,11 +254,13 @@
         }
       } else if (e.key === "Escape") { e.preventDefault(); m.close(); }
     });
-    m.onClose = () => { if (ST.prompt && ST.prompt.m === m) ST.prompt = null; later(); };
+    m.onClose = () => { if (ST.prompt && ST.prompt.m === m) ST.prompt = null; refocus(node); later(); };
     ST.prompt = { kind: "url", m, input };
     m.open();
     setTimeout(() => { try { input.focus(); input.select(); } catch (_) {} later(); }, 0);
   }
+  // the board keeps the keyboard after a menu action / prompt (Escape, Delete, undo keys reach it)
+  const refocus = node => { const w = node && node.canvas && node.canvas.wrapperEl; if (w) setTimeout(() => { if (w.isConnected && (!document.activeElement || document.activeElement === document.body)) try { w.focus({ preventScroll: true }); } catch (_) {} }, 0); };
   const bump = () => { const u = G("updateTitle"); if (u) try { u(); } catch (_) {} };
   const notify = msg => { try { if (ST.X && ST.X.Notice) new ST.X.Notice(msg); } catch (_) {} };
 
@@ -302,6 +308,29 @@
     ping(ctx);
   }
 
+  /* ------------------------------------------------ rename: file cards follow the note (CV-143)
+     main.js runUpdateLinks0 (the CONSENTED half of R34) calls this once. Note names carry no
+     extension there; a file card names the vault path. Open canvas views save first (a pending
+     edit is not lost), the Rust op rewrites only the matching "file" tokens, and every open view
+     on a rewritten canvas reloads from disk (a stale view would otherwise save the old path back). */
+  async function relink(old, nn, env) {
+    const inv = env && env.inv, app = (env && env.app) || ST.app;
+    if (typeof inv !== "function" || !old || !nn) return [];
+    const md = s => (/\.[^/.]+$/.test(s) ? s : s + ".md");
+    const from = md(String(old)), to = md(String(nn));
+    if (from === to) return [];
+    let leaves = [];
+    try { leaves = app && app.workspace ? app.workspace.getLeavesOfType("canvas") : []; } catch (_) { leaves = []; }
+    for (const l of leaves) if (l.view && typeof l.view.flush === "function") try { await l.view.flush(); } catch (e) { console.error("[canvas] relink flush:", e); }
+    const wrote = await inv("canvas_io", { op: "relink", path: "", data: JSON.stringify({ from, to }) });
+    const set = new Set(Array.isArray(wrote) ? wrote : []);
+    for (const l of leaves) {
+      const v = l.view;
+      if (v && v.path && set.has(v.path) && !v.broken && typeof v.loadPath === "function") try { await v.loadPath(v.path); } catch (e) { console.error("[canvas] relink reload:", e); }
+    }
+    return [...set];
+  }
+
   /* ------------------------------------------------ census (main.js canvasTok)
      [cvcard:<id>|kind=pdf|pages=<n>|frame=0|1|loaded=0|1]  [cvfile:<id>|rects=<n>|paths=<n>]  [cvfile:<id>|ext=<text>]
      [cvfile:cm=<CM6 editors on the board>|ta=<textareas>|ed=<editing card id or ->]  [cvfile:robtn@x,y]
@@ -317,6 +346,7 @@
       if (n.data.type === "text" && n.isEditing && ed === "-") ed = esc(n.id);
       if (n.data.type !== "file" || k >= 16 || !vis(n.containerEl)) continue;
       const f = n._cvf || {}, id = esc(n.id);
+      if (n._cvfWhy) t += " [cvfwhy:" + id + "=" + esc(n._cvfWhy + (n._cvfErr ? ":" + n._cvfErr : "")) + "]";   // a PDF / canvas card that fell back, and why
       if (f.kind === "pdf") {
         k++;
         const s = f.s;
@@ -344,6 +374,6 @@
 
   Object.defineProperty(window, "__osCanvasFiles", {
     configurable: false, enumerable: false, writable: false,
-    value: Object.freeze({ file, startEditing, stopEditing, refused, census }),
+    value: Object.freeze({ file, startEditing, stopEditing, refused, relink, census }),
   });
 })();

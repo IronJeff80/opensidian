@@ -5277,6 +5277,8 @@ function runUpdateLinks(old, nn) {          // perfhunt: rename_links = link rew
 async function runUpdateLinks0(old, nn) {    // the CONSENTED half, and the only caller of update_links
   try { await inv("update_links", { old, new: nn }); }
   catch (err) { say(String(err && err.message || err)); }
+  // goal cv-files CV-143: canvas file cards follow the note too — same consent, canvas_io relink (ui/plugins/canvas-files.js)
+  if (window.__osCanvasFiles) try { await window.__osCanvasFiles.relink(old, nn, { inv, app: PLG && PLG.app }); } catch (err) { say("Canvas file cards not updated — " + String(err && err.message || err)); }
   // Bookkeeping ONLY, deliberately: the rewrite changed text in OTHER notes, and
   // reloading them here would discard any unsaved buffer they hold (some group's
   // dirty tab is not this rename's business). F2's rename does the same and no
@@ -8502,6 +8504,10 @@ const CMDS = [
   ["file-explorer:new-file-in-new-pane", "Create note to the right",  ["ctrl+shift+n"],         async () => { await splitWith(fg(), "row", null); await cmdNewNote(); }],
   ["file-explorer:new-folder", "Create new folder",                   [],                       () => { $("fnew").hidden = false; $("fname").value = ""; $("fname").focus(); }],
   ["canvas:new-file",          "Create new canvas",                   [],                       () => cmdNewCanvas(cvActiveFolder())],
+  // goal cv-files CV-149 (REDUCED): there is no empty-tab surface (zero tabs = a blank pane), so the
+  // "New canvas" action of an empty workspace is a palette row offered only while no tab is open
+  ["canvas:new-file-no-tab",   "New canvas",                          [],                       () => cmdNewCanvas(""),
+    () => !!(CANVAS && CANVAS.isRegistered()) && groups().every(g => !g.tabs.length)],
   ["editor:delete-paragraph",  "Delete paragraph",                    ["ctrl+d"],               () => edLine(() => null)],
   ["editor:insert-attachment", "Insert attachment",                   [],                       cmdAttach],
   ["editor:follow-link",       "Follow link under cursor",            ["alt+enter"],            () => { const n = linkAtCaret(); if (n) navigate(fg(), n); }],
