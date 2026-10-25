@@ -172,7 +172,7 @@
     node.containerEl.classList.remove("cc-media");
     // the vault model lists notes, canvases and images only: no TFile for an .mp3/.zip says nothing
     const tracked = ext === "md" || ext === "canvas" || IMG.has(ext);
-    if (ext === "md" || ext === "canvas" || (ctx.missing && tracked) || !p) { node._cc = { kind: ext === "md" ? "note" : "missing" }; return false; }
+    if (ext === "md" || ext === "canvas" || (ctx.missing && tracked) || !p) { node._cc = { kind: ext === "md" && !ctx.missing ? "note" : "missing" }; return false; }   // goal cv-model: a note not in the vault model is missing, not a note
     const host = node.contentEl;
     if (IMG.has(ext)) {
       const img = mk("img", "canvas-file-img", host);

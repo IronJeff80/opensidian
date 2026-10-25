@@ -136,8 +136,8 @@
 
   /* ------------------------------------------------------------ the factory
      deps (main.js, once): X (the "obsidian" module), app, io(op, path, data) ->
-     the canvas_io command, readNote(path) -> a note's text (restricted mode has
-     no vault model), notify(msg), pref {get() -> bool|null, set(bool)},
+     the canvas_io command, readNote(path) -> a note's text (no vault model yet),
+     model() -> brings the vault FILE model up (api-vault ensureFiles; no window.app), notify(msg), pref {get() -> bool|null, set(bool)},
      config (app.internalPlugins.config: the id -> enabled map).
      changed() (optional): the board, the file or the error changed — the host republishes its census. */
   function canvasFactory(deps) {
@@ -146,7 +146,7 @@
     const vaultFile = p => {
       try { const f = app.vault.getAbstractFileByPath(p); return f instanceof X.TFile ? f : null; } catch (_) { return null; }
     };
-    // the vault model is loaded (a trusted vault with plugins running): a path missing from it is missing
+    // the vault file model is loaded (deps.model on board open; a plugin start): a path missing from it is missing
     const modelOn = () => { try { return app.vault.getAllLoadedFiles().length > 1; } catch (_) { return false; } };
     const pathOf = f => (typeof f === "string" ? f : f && typeof f.path === "string" ? f.path : "");
 
@@ -666,8 +666,11 @@
         this.path = p; this.file = vaultFile(p) || { path: p, name: p.split("/").pop(), basename: baseName(p), extension: "canvas" };
         this.lastText = null; this.dirty = false;
         this.canvas.clear(); this.setError(null);
+        // goal cv-model: the vault FILE model comes up with the first board (deps.model = api-vault ensureFiles) — the
+        // pickers list it and a card whose file is not in it shows as missing, with no community plugin enabled
+        const up = typeof deps.model === "function" ? Promise.resolve().then(deps.model).catch(e => console.error("[canvas] vault model:", e)) : null;
         let text;
-        try { text = await io("read", p); } catch (e) { if (this.path === p) this.setError("This canvas could not be read: " + errText(e)); return; }
+        try { text = await io("read", p); await up; } catch (e) { if (this.path === p) this.setError("This canvas could not be read: " + errText(e)); return; }
         if (this.path !== p) return;
         let doc;
         try { doc = parseCanvas(text); } catch (e) { this.setError("This canvas could not be opened: " + errText(e) + ". The file was left unchanged.");
