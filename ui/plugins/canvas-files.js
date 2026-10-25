@@ -1,4 +1,3 @@
-    node._cvf = null;
 // opensidian, a vault-compatible markdown notes app.
 // Copyright (C) 2026 Jendrik Poloczek
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -61,6 +60,7 @@
     remember(ctx);
     const p = String(node.data.file || ""), ext = ctx.file && ctx.file.extension ? String(ctx.file.extension).toLowerCase() : extOf(p);
     node._cvfSeq = (node._cvfSeq || 0) + 1;
+    node._cvf = null;
     if (ext === "pdf" && EdG() && invG()) return pdf(node, ctx, p);
     if (ext === "canvas" && ctx.file && G("cvEmbedPaint")) return nested(node, ctx, p);
     return false;
