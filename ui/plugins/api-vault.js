@@ -142,6 +142,10 @@
        watcher never reports (it reports notes only: an image pasted on or dropped onto a board) is a TFile before the
        card that shows it paints. A no-op until ensureFiles is up. */
     host.vaultSync = async () => { if (!K.st.filesOn) return; try { await syncMedia(); } catch (e) { console.error("[plugin] vaultSync:", e); } };
+    /* goal cv-journeys: the app's OWN rename / move of a note (main.js applyRename: F2, the title rename, a drag-move). The
+       watcher reconciles against the index and reports none of them, so the model kept the old path: a canvas file card
+       relinked to the new name painted "not found". A Vault "rename", as for a plugin's renameFile. */
+    host.noteMoved = (o, n) => { if (!K.st.filesOn || typeof o !== "string" || typeof n !== "string" || o === n) return; applyChange({ renamed: [[o, n]] }); };
     /* the runtime a plugin needs before its main.js is evaluated: moment (vendored,
        pinned — ui/vendor/moment.min.js), the file model (ensureFiles), the vault
        config and the metadata sweep. Idempotent; first enable() pays it. */

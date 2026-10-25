@@ -190,7 +190,11 @@
     k.focus({ preventScroll: true });
     try { const r = document.createRange(); r.selectNodeContents(k); const s = getSelection(); s.removeAllRanges(); s.addRange(r); } catch (_) {}
     last.paste = "key|armed";
-    setTimeout(() => { if (pasteFor && last.paste === "key|armed") { last.paste = "key|no-paste-event"; ping(c); } giveBack(); }, 0);   // the paste (if any) ran inside this key's default action
+    setTimeout(() => {   // the paste (if any) ran inside this key's default action
+      if (pasteFor && pasteFor.wantImg) return imgPaste(pasteFor);   // the engine put the image INTO the catcher (below)
+      if (pasteFor && last.paste === "key|armed") { last.paste = "key|no-paste-event"; ping(c); }
+      giveBack();
+    }, 0);
   }
   function b64(buf) {
     const u = new Uint8Array(buf); let s = "";
@@ -198,8 +202,59 @@
     return btoa(s);
   }
   const stampNow = () => { const d = new Date(), z = n => String(n).padStart(2, "0"); return d.getFullYear() + z(d.getMonth() + 1) + z(d.getDate()) + z(d.getHours()) + z(d.getMinutes()) + z(d.getSeconds()); };
+  /* WebKitGTK hands a clipboard IMAGE to the page with an empty clipboardData (no types, no items) and pastes it as
+     an <img> (blob: / data: URL) into the editable target instead. So a catcher paste with no file in clipboardData
+     is let through, and the image the engine inserted is read back out of the catcher (bytes from a data: URL, a
+     blob: fetch, else re-encoded through a 2D canvas as PNG). Census [cvpaste:...|img=<scheme or 0>]. */
+  function catcherImgs() { return catcher ? [...catcher.querySelectorAll("img")].map(i => i) : []; }
+  function waitImg(ms) {
+    return new Promise(res => {
+      const k = catcher; if (!k) return res([]);
+      if (k.querySelector("img")) return res(catcherImgs());
+      let t = 0;
+      const mo = new MutationObserver(() => { if (k.querySelector("img")) done(); });
+      const done = () => { mo.disconnect(); clearTimeout(t); res(catcherImgs()); };
+      mo.observe(k, { childList: true, subtree: true });
+      t = setTimeout(done, ms);
+    });
+  }
+  function dataBytes(src) {   // data:<type>;base64,<b64> -> { type, buf }
+    const m = /^data:([^;,]*)(;base64)?,(.*)$/s.exec(src); if (!m || !m[2]) return null;
+    const s = atob(m[3]), u = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i);
+    return { type: m[1], buf: u.buffer };
+  }
+  async function imgBytes(img) {
+    const src = String(img.currentSrc || img.src || "");
+    if (src.startsWith("data:")) { const d = dataBytes(src); if (d && PASTE_EXT[d.type]) return d; }
+    if (src.startsWith("blob:")) {
+      try { const b = await (await fetch(src)).blob(); if (PASTE_EXT[b.type]) return { type: b.type, buf: await b.arrayBuffer() }; } catch (_) {}
+    }
+    try {   // any loadable image: re-encode (the pixels are what was copied)
+      if (!img.complete || !img.naturalWidth) await new Promise((ok, no) => { img.onload = ok; img.onerror = no; setTimeout(no, 1500); });
+      const cv = document.createElement("canvas"); cv.width = img.naturalWidth; cv.height = img.naturalHeight;
+      cv.getContext("2d").drawImage(img, 0, 0);
+      const b = await new Promise(ok => cv.toBlob(ok, "image/png"));
+      if (b) return { type: "image/png", buf: await b.arrayBuffer() };
+    } catch (_) {}
+    return null;
+  }
+  async function imgPaste(pf) {
+    const imgs = await waitImg(1500);
+    const src = imgs.length ? String(imgs[0].currentSrc || imgs[0].src || "") : "";
+    last.paste += "|img=" + (imgs.length ? (src.split(":")[0] || "?") : "0");
+    let d = null;
+    try { if (imgs.length) d = await imgBytes(imgs[0]); } catch (_) {}
+    giveBack();
+    const c = pf && pf.c;
+    if (!d || !c || ro(c)) { if (imgs.length && !d) last.paste += "|unreadable"; return ping(c); }
+    last.paste += "|" + d.type + ":" + d.buf.byteLength;
+    return savePaste(c, d.type, d.buf);
+  }
   async function onPaste(e) {
-    const pf = pasteFor; e.preventDefault(); e.stopPropagation();
+    const pf = pasteFor;
+    const onCatcher = !!(catcher && e.target && (e.target === catcher || catcher.contains(e.target)));
+    e.stopPropagation();
     const cd = e.clipboardData;
     const types = cd ? [...(cd.types || [])] : [];
     let file = null;
@@ -207,14 +262,19 @@
       for (const it of cd ? [...(cd.items || [])] : []) if (it.kind === "file" && PASTE_EXT[it.type]) { file = it.getAsFile(); if (file) break; }
       if (!file) for (const f of cd ? [...(cd.files || [])] : []) if (PASTE_EXT[f.type]) { file = f; break; }
     } catch (_) {}
-    last.paste = (file ? file.type + ":" + file.size : "none") + "|types=" + types.join(",");
+    last.paste = (file ? file.type + ":" + file.size : "none") + "|types=" + types.join(",") + "|t=" + (onCatcher ? "catcher" : "doc");
+    if (!file && onCatcher && pf && types.every(t => t !== "text/plain" && t !== "text/html")) { pf.wantImg = true; return; }   // the engine inserts it (imgPaste)
+    e.preventDefault();
     giveBack();
     const c = pf && pf.c;
     if (!file || !c || ro(c)) return ping(c);
+    return savePaste(c, file.type, await file.arrayBuffer());
+  }
+  async function savePaste(c, type, buf) {
     const inv = invG(); if (!inv) { last.paste += "|err=inv"; return ping(c); }
     const p = pointOf(c, null);
     let rel;
-    try { rel = await inv("canvas_io", { op: "paste", path: noteOf(c), data: JSON.stringify({ ext: PASTE_EXT[file.type], stamp: stampNow(), b64: b64(await file.arrayBuffer()) }) }); }
+    try { rel = await inv("canvas_io", { op: "paste", path: noteOf(c), data: JSON.stringify({ ext: PASTE_EXT[type], stamp: stampNow(), b64: b64(buf) }) }); }
     catch (err) { last.paste += "|err"; say(c, "Canvas: the pasted image was not saved — " + String((err && err.message) || err)); return ping(c); }
     try { if (typeof refreshTree === "function") await refreshTree(); } catch (_) {}   // main.js: the explorer row + the file model (vaultSync)
     if (!ro(c)) place(c, [rel], { x: p.x - 200, y: p.y - 150 });

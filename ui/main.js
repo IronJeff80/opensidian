@@ -17,6 +17,8 @@ const PLGNW = window.__osPluginHost && typeof __osPluginHost.noteWritten === "fu
 const PLGVM = window.__osPluginHost && typeof __osPluginHost.vaultModel === "function" ? __osPluginHost.vaultModel : null;
 // goal cv-journeys: re-list the model's image / PDF / audio / video files (api-vault host.vaultSync) when the explorer re-lists them
 const PLGVS = window.__osPluginHost && typeof __osPluginHost.vaultSync === "function" ? __osPluginHost.vaultSync : null;
+// goal cv-journeys: the app's own note rename reaches the file model (api-vault host.noteMoved: the watcher never reports it)
+const PLGNM = window.__osPluginHost && typeof __osPluginHost.noteMoved === "function" ? __osPluginHost.noteMoved : null;
 const inv = (c, a) => { const x = otel.ctx(); return TAURI.core.invoke(c, x ? Object.assign({ otel: x }, a) : a); };
 /* perf-spans shim over otel: mark(name, t0, extra) = a span that started at
    t0 and ends now; push(name, ms, extra) = an already-measured span (graph
@@ -6301,7 +6303,7 @@ function renderNode(node, prefix, depth, out) {
       '<span class="tn"></span>';
     row.querySelector(".tn").textContent = nm.split("/").pop();
     row.dataset.note = nm;
-    row.onclick = e => { if (treeClickEaten()) return; if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); rowOpen(nm, e); };     // opentab REQ-1/3/5/7: replace in place; ctrl = new tab; cv-journeys: shift = range select
+    row.onclick = e => { if (treeClickEaten()) return; if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); treeAnchor = wsPathOut(nm); rowOpen(nm, e); };     // opentab REQ-1/3/5/7: replace in place; ctrl = new tab; cv-journeys: shift = range select
     row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); rowOpen(nm, e); } };   // opentab REQ-6: middle = new tab
     row.oncontextmenu = e => noteMenu(e, nm);   // R9.4: bookmark toggle
     row.addEventListener("mousedown", e => treeDragStart(e, nm));   // R24.6: drag onto a folder row = move
@@ -6323,7 +6325,7 @@ function fileRow(p, depth) {
   row.querySelector(".ttag").textContent = d > 0 ? base.slice(d + 1).toUpperCase() : "";
   row.dataset.file = p;
   row.addEventListener("mousedown", e => treeDragStart(e, p, "file"));
-  row.onclick = e => { if (treeClickEaten()) return; if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); };   // shift = range select; it opens no view
+  row.onclick = e => { if (treeClickEaten()) return; if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); treeAnchor = p; };   // shift = range select; it opens no view
   return row;
 }
 
@@ -6333,7 +6335,7 @@ function canvasRow(p, depth) {
   row.innerHTML = treeGuides(depth) + '<span class="tc"></span><span class="tn"></span><span class="ttag">CANVAS</span>';
   row.querySelector(".tn").textContent = p.split("/").pop().replace(/\.canvas$/i, "");   // names never hit innerHTML
   row.dataset.canvas = p;
-  row.onclick = () => { treeSelClear(); openCanvas(p); };   // a board row is a range anchor (the active file), never a shift target
+  row.onclick = () => { treeSelClear(); treeAnchor = p; openCanvas(p); };   // a board row is a range anchor (the active file), never a shift target
   row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); openCanvas(p); } };
   row.oncontextmenu = e => canvasFileMenu(e, p);
   return row;
@@ -6375,6 +6377,7 @@ function treeClickEaten() {              // a completed drag must not also open/
    clears it. A drag that starts on a selected row carries the whole selection (dragManager.dragFiles) — a board
    lays one file card per file. Folder rows are never selected. */
 let treeSel = [];                        // vault paths, in row order
+let treeAnchor = null;                   // the last row plainly clicked (stock: the file it opened = the active file)
 const treeRowPath = r => r.dataset.note != null ? wsPathOut(r.dataset.note) : r.dataset.canvas != null ? r.dataset.canvas : r.dataset.file != null ? r.dataset.file : null;
 function treeSelClear() {
   if (!treeSel.length) return;
@@ -6391,7 +6394,9 @@ function treeRange(row) {
   let af = null;
   try { af = PLG && PLG.app.workspace.getActiveFile && PLG.app.workspace.getActiveFile(); } catch (_) {}
   const ap = af ? af.path : (cur() ? wsPathOut(cur()) : null);
-  let a = rows.findIndex(r => treeRowPath(r) === ap), b = rows.indexOf(row);
+  let a = treeAnchor != null ? rows.findIndex(r => treeRowPath(r) === treeAnchor) : -1;   // a board view is no FileView here: getActiveFile misses it
+  if (a < 0) a = rows.findIndex(r => treeRowPath(r) === ap);
+  const b = rows.indexOf(row);
   if (b < 0) return;
   if (a < 0) a = b;
   treeSelClear();
@@ -8813,6 +8818,7 @@ function cmdPalette() {
    consented link rewrite are renameThenAsk's (R24.3), the same tail the inline
    title uses, then tabs/hist/mru follow the name */
 async function applyRename(old, nn) {   // post-rename bookkeeping (F2 / cmdRename, the R34 title rename, and R24.6's drag-move)
+  if (PLGNM) try { PLGNM(old, nn); } catch (e) { console.error("[plugin] noteMoved:", e); }   // cv-journeys: before the tree refresh repaints a board
   for (const h of groups()) for (const tb of h.tabs) {
     if (tb.kind) continue;
     if (tb.name === old) { tb.name = nn; if (tb.view) setInlineTitle(tb.view, nn); }   // #20: the rendered title follows the FILE, in every retained view
