@@ -5519,6 +5519,12 @@ function delTok() {
 async function loadActive(g) {
   hideAc();
   const t = g.active >= 0 ? g.tabs[g.active] : null;
+  /* title-hdr: the header follows the active view BEFORE the first await. The caller has
+     already switched the model (g.active / the tab's kind); a graph view then awaits its
+     start (renderer, fetch) before renderTabs rebuilds the header. Any census published in
+     that gap (the once-per-frame trailing publish lands there) read kind=gg from the model
+     and the markdown toggle from the DOM: [hdra:1:gg:mode-edit@..]. */
+  updateModeBtn(g);
   if (g.unkEl) g.unkEl.hidden = !(t && t.kind === "unk");
   if (PVHOST) PVHOST.hide(g, t);   // plugin-views: another tab shows -> this pane's plugin views hide
   if (t && t.kind === "unk") {      // W4: a kept leaf we have no view for — say so, keep it, touch nothing
