@@ -137,8 +137,23 @@
   }
 
   /* ------------------------------------------------ settings + read-only */
+  /* goal cvf-board CVR-A-079: snap to grid / snap to objects are app settings of the VAULT, like stock:
+     a toggle writes <vault>/.obsidian/canvas.json at once (settings.js __osCanvasCfg) and every open board
+     follows; a board opens with them. Read-only stays per board. */
+  const CFGK = ["snapToGrid", "snapToObjects"];
+  const cfg = () => window.__osCanvasCfg || null;
+  function cfgSnap(c) {
+    const g = cfg(); if (!g || !c.options) return;
+    for (const k of CFGK) c.options[k] = !!g.get(k);
+  }
+  let cfgHooked = false;
+  function hookCfg() {
+    if (cfgHooked) return; const g = cfg(); if (!g) return; cfgHooked = true;
+    g.on(keys => { if (!keys.some(k => CFGK.includes(k))) return; for (const c of boards) { cfgSnap(c); ping(c); } });
+  }
   function setOption(c, k, v) {
     c.options[k] = !!v;
+    if (CFGK.includes(k) && cfg()) cfg().set({ [k]: !!v });
     if (k === "readOnly") {
       syncRO(c);
       if (c.readonly) { for (const n of c.nodes.values()) if (n.isEditing) try { n.stopEditing(); } catch (_) {} }
@@ -276,6 +291,7 @@
     boards.add(c);
     // canvas.options: the contract shared with cv-select (conflicts.md O9); whichever lands first creates it
     c.options = c.options || { snapToGrid: true, snapToObjects: true, readOnly: false };
+    hookCfg(); cfgSnap(c);
     // read-only = the file error (setError) OR the user's setting; every edit path already checks c.readonly
     let err = !!c.readonly;
     Object.defineProperty(c, "readonly", { configurable: true, enumerable: true,

@@ -92,7 +92,15 @@
       if (typeof sPane !== "undefined" && sPane === pane) d.classList.add("sel");
       n.appendChild(d);
     };
+    // goal cvf-board: Options > Core plugins (pane "core"), then the Core plugins group: Canvas while it is on
+    if (canvasPlugin()) entry("core", "Core plugins");
     entry("community", "Community plugins");
+    const cp = canvasPlugin();
+    if (cp && cp.enabled) {
+      const ch = el("div", "snavh", "Core plugins"); ch.dataset.cp = "1";
+      n.appendChild(ch);
+      entry("core-canvas", "Canvas");
+    }
     const tabs = setting.pluginTabs.filter(t => t && t.id);
     if (!tabs.length) return;
     const h = el("div", "snavh", "Community plugins"); h.dataset.cp = "1";
@@ -135,6 +143,8 @@
   /* showSettingsPage(id) asks here first: true = handled */
   function show(id) {
     if (inBuiltin) return false;
+    if ((id === "core" || id === "core-canvas") && canvasPlugin()) return showCorePane(id);   // goal cvf-board
+    closeSpMenu();
     let t;
     if (id === "community") t = builtinOf("community");
     else if (String(id).startsWith("plg:")) t = tabOf(id.slice(4)) || builtinOf("community");   // its plugin unloaded since
@@ -233,7 +243,7 @@
       const c3 = el("div", "scard"); pg.appendChild(c3);
       for (const [cid, p, name, desc] of core) {
         const on = !!p.enabled;
-        const t = toggle(on, () => act(() => (on ? p.disable() : p.enable())));
+        const t = toggle(on, () => act(() => (cid === "canvas" ? setCanvasOn(!on) : on ? p.disable() : p.enable())));
         t.dataset.core = cid;
         const r = row(c3, name, desc, [t]);
         r.dataset.core = cid;
@@ -253,8 +263,242 @@
     try { await f(); } catch (e) { console.error("[plugin] settings:", e); }
     busy = false;
     if (settingsOpen && sPane === "community") rebuild();
+    else if (settingsOpen && (sPane === "core" || sPane === "core-canvas")) showCorePane(sPane);   // goal cvf-board
     if (typeof refreshTree === "function") refreshTree().catch(() => {});   // canvas on/off: .canvas rows follow
     const n = document.getElementById("snav"); if (n && n.dataset.built === "1") nav(n);
+  }
+  /* ---- goal cvf-board: the Canvas core plugin's vault config + its two settings pages ----
+     <vault>/.obsidian/canvas.json (the Canvas page below, the board's snap toggles) and
+     <vault>/.obsidian/core-plugins.json ({"canvas": bool}, the Core plugins switch), stock's files and
+     key names, read once when the vault is known and merged through the backend (settings.rs VaultCfg,
+     reached via settings_model's vcfg argument; works in a restricted vault — this is app code).
+     window.__osCanvasCfg is the one reader the canvas plugins use (canvas.js wire(), canvas-nav.js):
+       get(key) -> the value or its default; set(patch) -> merge + write; on(fn) -> fn(changedKeys).
+     Panes: "core" (Options > Core plugins: the Canvas row with gear, + and its switch) and
+     "core-canvas" (Core plugins group > Canvas). Census while settings is open:
+       [cpcore=canvas:x,y,<on>,<gear x>,<gear y>,<plus x>,<plus y>]
+       [cvsp=<ctl>:x,y,<value>]   loc locf wheel cdrag names grid obj zth zthreset
+       [cvspopt=<value>:x,y]      the open dropdown's options */
+  const CV_DEF = Object.freeze({
+    newFileLocation: "same", newFileFolderPath: "", defaultWheelBehavior: "pan", defaultModDragBehavior: "menu",
+    showCardNames: "always", zoomThreshold: 100, snapToGrid: true, snapToObjects: true,
+  });
+  const cvc = { canvas: {}, core: {}, loaded: false, subs: [] };
+  const vinv = (file, patch) => {
+    if (typeof inv !== "function") return Promise.reject(new Error("no backend"));
+    return inv("settings_model", { vcfg: patch === undefined ? { file } : { file, patch } });
+  };
+  const say_ = m => { try { if (typeof say === "function") say(m, "canvas"); } catch (_) {} };
+  const cvGet = k => (Object.prototype.hasOwnProperty.call(cvc.canvas, k) && cvc.canvas[k] != null ? cvc.canvas[k] : CV_DEF[k]);
+  const cvEmit = keys => { for (const f of cvc.subs) { try { f(keys); } catch (e) { console.error("[canvas] cfg listener:", e); } } };
+  // writes go out in order, one at a time (a slider drag is many patches; the file holds the last)
+  let cvQ = Promise.resolve();
+  function cvSet(patch) {
+    const keys = Object.keys(patch || {}).filter(k => k in CV_DEF);
+    if (!keys.length) return Promise.resolve();
+    const p = {}; for (const k of keys) p[k] = patch[k];
+    Object.assign(cvc.canvas, p);
+    cvEmit(keys);
+    cvQ = cvQ.then(() => vinv("canvas", p)).then(v => { if (v && typeof v === "object") cvc.canvas = v; },
+      e => say_("Canvas settings: " + String(e && e.message || e)));
+    return cvQ;
+  }
+  Object.defineProperty(window, "__osCanvasCfg", { value: Object.freeze({
+    get: cvGet, set: cvSet, loaded: () => cvc.loaded,
+    on(f) { if (typeof f === "function") cvc.subs.push(f); },
+  }), writable: false, configurable: false });
+
+  const canvasPlugin = () => { const ip = host.app.internalPlugins; return ip && ip.plugins && ip.plugins.canvas || null; };
+  /* the Canvas switch: the plugin's enable()/disable() (view type, .canvas rows, ribbon follow) and the
+     vault's core-plugins.json, written at once like stock */
+  async function setCanvasOn(on) {
+    const p = canvasPlugin(); if (!p) return;
+    await (on ? p.enable() : p.disable());
+    cvc.core.canvas = !!on;
+    try { const v = await vinv("core-plugins", { canvas: !!on }); if (v && typeof v === "object") cvc.core = v; }
+    catch (e) { say_("Core plugins: " + String(e && e.message || e)); }
+  }
+  /* main.js hooks that follow the Canvas config (bare global names, resolved at call time):
+     - cvActiveFolder(): "Create new canvas" (palette + ribbon) lands where Default location says
+     - the palette's Create new canvas row is offered only while the canvas view type is registered */
+  function hookMain() {
+    try {
+      const orig = window.cvActiveFolder;
+      if (typeof orig === "function" && !orig.__cvsp) {
+        const f = function () {
+          const loc = cvGet("newFileLocation");
+          if (loc === "root") return "";
+          if (loc === "folder") return String(cvGet("newFileFolderPath") || "").replace(/^\/+|\/+$/g, "");
+          return orig.apply(this, arguments);
+        };
+        f.__cvsp = true;
+        window.cvActiveFolder = f;
+      }
+    } catch (e) { console.error("[canvas] location hook:", e); }
+    try {
+      const c = typeof CMDS !== "undefined" ? CMDS.find(x => x && x.id === "canvas:new-file") : null;
+      if (c && !c.when) c.when = () => { const p = canvasPlugin(); return !!(p && p.enabled); };
+    } catch (e) { console.error("[canvas] palette hook:", e); }
+  }
+  /* boot: once main.js knows the vault (vaultPath, a bare global), read both files; a core-plugins.json
+     that names canvas decides on/off for THIS vault (stock: per vault), else the app-wide choice stays */
+  (function waitVault() {
+    const vp = typeof vaultPath !== "undefined" ? vaultPath : null;
+    if (!vp) { setTimeout(waitVault, 150); return; }
+    hookMain();
+    Promise.all([vinv("canvas").catch(() => ({})), vinv("core-plugins").catch(() => ({}))]).then(async ([cv, core]) => {
+      cvc.canvas = cv && typeof cv === "object" ? cv : {};
+      cvc.core = core && typeof core === "object" ? core : {};
+      cvc.loaded = true;
+      cvEmit(Object.keys(CV_DEF));
+      const p = canvasPlugin();
+      if (p && typeof cvc.core.canvas === "boolean" && !!p.enabled !== cvc.core.canvas) {
+        try { await (cvc.core.canvas ? p.enable() : p.disable()); } catch (e) { console.error("[canvas] core-plugins.json:", e); }
+        if (typeof refreshTree === "function") refreshTree().catch(() => {});
+      }
+      if (typeof updateTitle === "function") updateTitle();
+    });
+  })();
+
+  const SVG = (paths, extra) => '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"' + (extra || "") + ">" + paths + "</svg>";
+  const GEAR = SVG('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>');
+  const PLUS = SVG('<circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/>');
+  function iconBtn(cls, svg, title, onclick) {
+    const b = el("div", "sctl " + cls); b.innerHTML = svg; b.title = title; b.tabIndex = 0;
+    b.setAttribute("role", "button"); b.setAttribute("aria-label", title);
+    b.style.cssText = "cursor:pointer;width:24px;height:24px;justify-content:center;border-radius:4px";
+    b.onclick = ev => { ev.stopPropagation(); onclick(); };
+    b.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); onclick(); } };
+    return b;
+  }
+
+  function buildCore(pg) {
+    const p = canvasPlugin();
+    const c = el("div", "scard"); pg.appendChild(c);
+    if (!p) { row(c, "No core plugins", "This build has no core plugin.", [], true); sRowsShown = 1; sEnabledShown = 0; return; }
+    const on = !!p.enabled;
+    const ctls = [];
+    if (on) {
+      const g = iconBtn("cpcgear", GEAR, "Options", () => showSettingsPage("core-canvas")); g.dataset.core = "canvas"; ctls.push(g);
+      const a = iconBtn("cpcplus", PLUS, "Hotkeys", () => showSettingsPage("hotkeys")); a.dataset.core = "canvas"; ctls.push(a);
+    }
+    const t = toggle(on, () => act(() => setCanvasOn(!on)));
+    t.dataset.corecv = "canvas"; ctls.push(t);
+    row(c, CORE_DESC.canvas[0], CORE_DESC.canvas[1], ctls).dataset.core = "canvas";
+    sRowsShown = 1; sEnabledShown = 1;
+  }
+
+  /* the dropdown: our own small menu under the control (no native popup — the census sees its options) */
+  let spMenu = null;
+  function closeSpMenu() { if (spMenu) { spMenu.remove(); spMenu = null; document.removeEventListener("mousedown", spAway, true); } }
+  function spAway(ev) { if (spMenu && !spMenu.contains(ev.target)) closeSpMenu(); }
+  function dropdown(ctl, key, opts) {
+    const d = el("div", "sctl dropdown live");
+    const cur = String(cvGet(key));
+    const lab = (opts.find(o => o[0] === cur) || opts[0])[1];
+    d.textContent = lab; d.title = lab; d.style.width = "220px";
+    d.dataset.cvsp = ctl; d.dataset.val = cur; d.tabIndex = 0;
+    d.setAttribute("role", "button"); d.setAttribute("aria-haspopup", "listbox");
+    const open = ev => {
+      ev.preventDefault(); ev.stopPropagation();
+      if (spMenu) { closeSpMenu(); return; }
+      const b = d.getBoundingClientRect();
+      const m = el("div", "cvsp-menu");
+      m.setAttribute("role", "listbox");
+      m.style.cssText = "position:fixed;z-index:200;left:" + Math.round(b.left) + "px;top:" + Math.round(b.bottom + 2) + "px;min-width:" +
+        Math.round(b.width) + "px;background:var(--bg-base);border:1px solid var(--border-strong);border-radius:6px;padding:4px;box-shadow:0 4px 14px var(--shadow-popover);font-size:13px;color:var(--text-chrome)";
+      for (const [v, t] of opts) {
+        const it = el("div", "cvsp-opt", (v === cur ? "✓ " : "") + t);
+        it.dataset.v = v; it.setAttribute("role", "option");
+        it.style.cssText = "padding:4px 10px;border-radius:4px;cursor:pointer;white-space:nowrap";
+        it.onmouseenter = () => { it.style.background = "var(--bg-surface)"; };
+        it.onmouseleave = () => { it.style.background = ""; };
+        it.onmousedown = e => e.stopPropagation();
+        it.onclick = e => { e.stopPropagation(); closeSpMenu(); cvSet({ [key]: v }); rebuildCanvasPage(); };
+        m.appendChild(it);
+      }
+      document.body.appendChild(m); spMenu = m;
+      document.addEventListener("mousedown", spAway, true);
+      if (typeof updateTitle === "function") updateTitle();
+    };
+    d.onmousedown = ev => ev.stopPropagation();
+    d.onclick = open;
+    d.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") open(ev); };
+    return d;
+  }
+  function rebuildCanvasPage() {
+    if (typeof settingsOpen === "undefined" || !settingsOpen || sPane !== "core-canvas") return;
+    const pg = document.getElementById("spage"); if (!pg) return;
+    const st = pg.scrollTop; pg.innerHTML = ""; buildCanvasPage(pg); pg.scrollTop = st;
+    if (typeof updateTitle === "function") updateTitle();
+  }
+  function buildCanvasPage(pg) {
+    const c = el("div", "scard"); pg.appendChild(c);
+    let n = 0;
+    const r = (label, desc, ctls) => { n++; return row(c, label, desc, ctls); };
+    r("Default location for new canvas files", "Where a new canvas goes when you create one from the palette or the ribbon.",
+      [dropdown("loc", "newFileLocation", [["same", "Same folder as current file"], ["root", "Vault folder"], ["folder", "In the folder specified below"]])]);
+    if (cvGet("newFileLocation") === "folder") {
+      const f = el("input", "sctl text live");
+      f.type = "text"; f.spellcheck = false; f.autocomplete = "off"; f.placeholder = "Example: folder/sub";
+      f.value = String(cvGet("newFileFolderPath") || ""); f.dataset.cvsp = "locf";
+      f.style.cssText = "width:220px;color:var(--text-chrome);background:var(--bg-surface)";
+      f.onmousedown = ev => ev.stopPropagation();
+      f.onkeydown = ev => { ev.stopPropagation(); if (ev.key === "Enter") f.blur(); };
+      f.onchange = () => { cvSet({ newFileFolderPath: f.value.trim().replace(/^\/+|\/+$/g, "") }); if (typeof updateTitle === "function") updateTitle(); };
+      f.oninput = () => { if (typeof updateTitle === "function") updateTitle(); };
+      r("Folder for new canvas files", "New canvas files are created in this folder.", [f]);
+    }
+    r("Default mouse wheel behavior", "What a plain mouse wheel does on a board. Hold Ctrl for the other one.",
+      [dropdown("wheel", "defaultWheelBehavior", [["pan", "Pan the board"], ["zoom", "Zoom the board"]])]);
+    r("Default Ctrl + Drag behavior", "What a Ctrl + drag on an empty part of the board does.",
+      [dropdown("cdrag", "defaultModDragBehavior", [["menu", "Show the add menu"], ["text", "Add a text card"], ["note", "Add a note from the vault"],
+        ["media", "Add media from the vault"], ["web", "Add a web page"], ["group", "Create a group"]])]);
+    r("Show card names", "When to show a file card's name above it.",
+      [dropdown("names", "showCardNames", [["always", "Always"], ["hover", "On hover"], ["never", "Never"]])]);
+    const tg = (ctl, key) => { const t = toggle(!!cvGet(key), () => { cvSet({ [key]: !cvGet(key) }); rebuildCanvasPage(); }); t.dataset.cvsp = ctl; return t; };
+    r("Snap to grid", "Moved and resized cards line up with the board's grid.", [tg("grid", "snapToGrid")]);
+    r("Snap to objects", "Moved and resized cards line up with the edges and centres of nearby cards.", [tg("obj", "snapToObjects")]);
+    const s = el("input", "cvsp-range"); s.type = "range"; s.min = "0"; s.max = "400"; s.step = "10";
+    s.value = String(cvGet("zoomThreshold")); s.dataset.cvsp = "zth"; s.title = s.value + "%";
+    s.style.cssText = "width:160px;accent-color:var(--accent-mauve, currentColor);cursor:pointer";
+    const val = el("span", "cvsp-val", s.value + "%"); val.style.cssText = "min-width:42px;text-align:right;font-variant-numeric:tabular-nums";
+    s.onmousedown = ev => ev.stopPropagation();
+    s.onkeydown = ev => ev.stopPropagation();
+    s.oninput = () => { val.textContent = s.value + "%"; s.title = s.value + "%"; cvSet({ zoomThreshold: Number(s.value) }); if (typeof updateTitle === "function") updateTitle(); };
+    const rs = iconBtn("cvsp-reset", SVG('<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/>'), "Restore default", () => {
+      cvSet({ zoomThreshold: CV_DEF.zoomThreshold }); rebuildCanvasPage();
+    });
+    rs.dataset.cvsp = "zthreset";
+    const box = el("div", "sctl"); box.append(val, s, rs);
+    r("Zoom threshold for hiding card content", "Below this zoom level cards show only their outline (100% is the default).", [box]);
+    sRowsShown = n; sEnabledShown = n;
+  }
+  function showCorePane(id) {
+    leaveTab(); closeSpMenu();
+    const pg = clearPage(id, "rows");
+    if (id === "core") buildCore(pg); else buildCanvasPage(pg);
+    if (typeof updateTitle === "function") updateTitle();
+    return true;
+  }
+  function coreTok() {
+    let t = "";
+    if (sPane === "core") {
+      const tg = document.querySelector('#spage .toggle[data-corecv="canvas"]');
+      if (tg) {
+        const g = document.querySelector("#spage .cpcgear"), a = document.querySelector("#spage .cpcplus");
+        t += " [cpcore=canvas:" + ctr(tg) + "," + (tg.classList.contains("on") ? 1 : 0) + "," + (g ? ctr(g) : "0,0") + "," + (a ? ctr(a) : "0,0") + "]";
+      }
+    } else if (sPane === "core-canvas") {
+      for (const d of document.querySelectorAll("#spage [data-cvsp]")) {
+        const k = d.dataset.cvsp;
+        const v = k === "grid" ? (cvGet("snapToGrid") ? 1 : 0) : k === "obj" ? (cvGet("snapToObjects") ? 1 : 0)
+          : k === "zth" ? d.value : k === "locf" ? d.value : k === "zthreset" ? "" : d.dataset.val;
+        t += " [cvsp=" + k + ":" + ctr(d) + "," + String(v).replace(/[\]|]/g, "") + "]";
+      }
+      if (spMenu && spMenu.isConnected) for (const it of spMenu.querySelectorAll(".cvsp-opt")) t += " [cvspopt=" + it.dataset.v + ":" + ctr(it) + "]";
+    }
+    return t;
   }
   /* ---- census ---- */
   const ctr = d => { const b = d.getBoundingClientRect(); return Math.round(b.left + b.width / 2) + "," + Math.round(b.top + b.height / 2); };
@@ -280,6 +524,8 @@
         const p = (host.app.internalPlugins.plugins || {})[tg.dataset.core];
         t += " [cpc=" + tg.dataset.core + ":" + ctr(tg) + "," + (tg.classList.contains("on") ? 1 : 0) + "," + (p && p._loaded ? 1 : 0) + "]";
       }
+    } else if (sPane === "core" || sPane === "core-canvas") {
+      t += coreTok();
     } else if (String(sPane).startsWith("plg:") && setting.activeTab && setting.activeTab.containerEl.isConnected) {
       const ce = setting.activeTab.containerEl;
       t += " [ptab:" + setting.activeTab.id + "," + ce.querySelectorAll(".setting-item").length + "," + ce.querySelectorAll("*").length + "]";
@@ -290,7 +536,7 @@
   /* kept for older callers: app.setting.openTabById */
   const openTab = id => setting.openTabById(id);
 
-  const api = Object.freeze({ nav, show, tok, tabsChanged, close: () => { stopBrowsing(); closeUi(); }, openTab, pane, mount, builtin, adoptBrowser });
+  const api = Object.freeze({ nav, show, tok, tabsChanged, close: () => { stopBrowsing(); closeSpMenu(); closeUi(); }, openTab, pane, mount, builtin, adoptBrowser });
   Object.defineProperty(window, "__osPluginSettings", { value: api, writable: false, configurable: false });
   Object.defineProperty(window, "openPluginSettingTab", { value: openTab, writable: false, configurable: false });
 })();

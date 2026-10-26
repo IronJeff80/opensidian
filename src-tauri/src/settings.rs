@@ -372,11 +372,103 @@ pub fn model() -> Model {
     Model { nav, rows, counts }
 }
 
+/* goal cvf-board (CVR-A-013/014/015/016/079/092/093, CVR-C-103): the Canvas core plugin's two VAULT
+   config files, in stock's format — <vault>/.obsidian/canvas.json (the Canvas settings page and the
+   board's snap toggles) and <vault>/.obsidian/core-plugins.json (the Canvas on/off switch). They work in
+   a restricted vault: this is app code, not a plugin, so nothing here goes through plugin_vfs.
+   Reached through the `settings_model` command's optional `vcfg` argument (the one settings command the
+   app already registers): absent = the settings model as before; present = read (no patch) or merge a
+   patch into one of the two files and return the file's whole object afterwards.
+   Same rules as graph.json in main.rs: a MERGE into the parsed object (keys we do not own round-trip),
+   an unparsable or non-object file is REFUSED rather than replaced, only our keys with their types are
+   accepted, and the write goes through the vault dir fd (no-follow `.obsidian`, random temp, renameat),
+   2-space pretty JSON like stock. */
+pub const CANVAS_REL: &str = ".obsidian/canvas.json";
+pub const CORE_REL: &str = ".obsidian/core-plugins.json";
+
+/// one vault-config request from the frontend (ui/plugins/settings.js)
+#[derive(Debug, serde::Deserialize)]
+pub struct VaultCfg {
+    /// "canvas" | "core-plugins"
+    pub file: String,
+    /// None = read; Some(object) = merge these keys
+    #[serde(default)]
+    pub patch: Option<serde_json::Value>,
+}
+
+fn vcfg_rel(file: &str) -> Result<&'static str, String> {
+    match file {
+        "canvas" => Ok(CANVAS_REL),
+        "core-plugins" => Ok(CORE_REL),
+        f => Err(format!("vault config {f:?} is not one of ours")),
+    }
+}
+
+/// the keys each file accepts from us, each with its type
+fn vcfg_key_ok(file: &str, k: &str, v: &serde_json::Value) -> Result<(), String> {
+    let one_of = |set: &[&str]| v.as_str().is_some_and(|s| set.contains(&s));
+    let ok = match (file, k) {
+        ("canvas", "newFileLocation") => one_of(&["same", "root", "folder"]),
+        ("canvas", "newFileFolderPath") => v.as_str().is_some_and(|s| s.len() <= 1024 && !s.contains('\0') && !s.split('/').any(|c| c == "..")),
+        ("canvas", "defaultWheelBehavior") => one_of(&["pan", "zoom"]),
+        ("canvas", "defaultModDragBehavior") => one_of(&["menu", "text", "note", "media", "web", "group"]),
+        ("canvas", "showCardNames") => one_of(&["always", "hover", "never"]),
+        ("canvas", "zoomThreshold") => v.as_f64().is_some_and(|x| x.is_finite() && (0.0..=400.0).contains(&x)),
+        ("canvas", "snapToGrid") | ("canvas", "snapToObjects") => v.is_boolean(),
+        ("core-plugins", "canvas") => v.is_boolean(),
+        _ => return Err(format!("{file}.json: key {k:?} is not ours to write")),
+    };
+    if ok { Ok(()) } else { Err(format!("{file}.json: bad value for {k:?}")) }
+}
+
+/// the whole file as an object; absent / empty = {}; unparsable / not an object = Err (never replaced)
+fn vcfg_load(root: &std::path::Path, rel: &str) -> Result<serde_json::Value, String> {
+    let p = root.join(rel);
+    let cur = match std::fs::symlink_metadata(&p) {
+        Ok(m) if m.len() > 1 << 20 => return Err(format!("{rel} is over 1 MiB — refusing it")),
+        Ok(_) => std::fs::read_to_string(&p).map_err(|e| format!("{rel}: {e}"))?,
+        Err(_) => String::new(),
+    };
+    if cur.trim().is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+    let v: serde_json::Value = serde_json::from_str(&cur).map_err(|e| format!("{rel} is not JSON ({e}) — refusing to overwrite it"))?;
+    if v.is_object() { Ok(v) } else { Err(format!("{rel} is not a JSON object — refusing to overwrite it")) }
+}
+
+pub fn vcfg_in(root: &std::path::Path, req: &VaultCfg) -> Result<serde_json::Value, String> {
+    let rel = vcfg_rel(&req.file)?;
+    let Some(patch) = &req.patch else {
+        // a read never fails the caller: an unreadable file reads as {} (defaults), the write refuses it
+        return Ok(vcfg_load(root, rel).unwrap_or_else(|_| serde_json::json!({})));
+    };
+    let p = patch.as_object().ok_or("vault config patch is not an object")?;
+    for (k, val) in p {
+        vcfg_key_ok(&req.file, k, val)?;
+    }
+    let mut v = vcfg_load(root, rel)?;
+    let o = v.as_object_mut().ok_or("not an object")?;
+    for (k, val) in p {
+        o.insert(k.clone(), val.clone());
+    }
+    let body = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+    crate::vaultfs::mkdir_p(root, std::path::Path::new(".obsidian")).map_err(|e| e.to_string())?;
+    crate::vaultfs::write_atomic(root, std::path::Path::new(rel), body.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(v)
+}
+
 /// the whole table, for the frontend. Cheap (parse is memoised); the pane is
 /// still built lazily per tab in ui/main.js — see the 100 ms first-paint rule.
+/// With `vcfg` (goal cvf-board): one vault config read / merge instead, see VaultCfg.
 #[tauri::command]
-pub fn settings_model() -> Model {
-    model()
+pub(crate) fn settings_model(v: tauri::State<crate::Vault>, vcfg: Option<VaultCfg>) -> Result<serde_json::Value, String> {
+    match vcfg {
+        None => serde_json::to_value(model()).map_err(|e| e.to_string()),
+        Some(req) => {
+            let root = crate::cur_vault(&v).ok_or("no vault open")?;
+            vcfg_in(&root, &req)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -590,5 +682,42 @@ mod tests {
         assert_eq!(HELP_URL, "https://www.opensidian.org");
         assert!(js.contains(&format!("help: () => sOpenExt(\"{HELP_URL}\")")), "SACT.help does not open HELP_URL");
         assert!(js.contains("inv(\"update_check\")"), "SACT.check_updates does not call the update_check command");
+    }
+
+    /* goal cvf-board: canvas.json / core-plugins.json — merge keeps foreign keys, refuses what is not ours,
+       never replaces an unparsable file, writes 2-space JSON */
+    #[test]
+    fn vault_cfg_merges_refuses_and_keeps_foreign_keys() {
+        let root = std::env::temp_dir().join(format!("opensidian-vcfg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let req = |file: &str, patch: Option<serde_json::Value>| VaultCfg { file: file.into(), patch };
+        // absent file reads as {}
+        assert_eq!(vcfg_in(&root, &req("canvas", None)).unwrap(), serde_json::json!({}));
+        // a write creates .obsidian and the file, 2-space indent
+        vcfg_in(&root, &req("canvas", Some(serde_json::json!({"snapToGrid": false, "snapToObjects": true})))).unwrap();
+        let body = std::fs::read_to_string(root.join(CANVAS_REL)).unwrap();
+        assert!(body.contains("\n  \"snapToGrid\": false"), "not 2-space JSON: {body}");
+        // a foreign key written by stock survives our merge
+        std::fs::write(root.join(CANVAS_REL), "{\"stockOnly\": 7, \"snapToGrid\": true}").unwrap();
+        let v = vcfg_in(&root, &req("canvas", Some(serde_json::json!({"defaultWheelBehavior": "zoom"})))).unwrap();
+        assert_eq!(v, serde_json::json!({"stockOnly": 7, "snapToGrid": true, "defaultWheelBehavior": "zoom"}));
+        // not our key / wrong type / bad enum value: refused, file untouched
+        let before = std::fs::read_to_string(root.join(CANVAS_REL)).unwrap();
+        assert!(vcfg_in(&root, &req("canvas", Some(serde_json::json!({"stockOnly": 1})))).is_err());
+        assert!(vcfg_in(&root, &req("canvas", Some(serde_json::json!({"snapToGrid": "no"})))).is_err());
+        assert!(vcfg_in(&root, &req("canvas", Some(serde_json::json!({"showCardNames": "sometimes"})))).is_err());
+        assert!(vcfg_in(&root, &req("canvas", Some(serde_json::json!({"newFileFolderPath": "../out"})))).is_err());
+        assert!(vcfg_in(&root, &req("app", Some(serde_json::json!({"canvas": true})))).is_err());
+        assert_eq!(std::fs::read_to_string(root.join(CANVAS_REL)).unwrap(), before);
+        // core-plugins.json: only "canvas", a bool; an array-format file (old stock) is refused, not replaced
+        let v = vcfg_in(&root, &req("core-plugins", Some(serde_json::json!({"canvas": false})))).unwrap();
+        assert_eq!(v, serde_json::json!({"canvas": false}));
+        assert!(vcfg_in(&root, &req("core-plugins", Some(serde_json::json!({"graph": false})))).is_err());
+        std::fs::write(root.join(CORE_REL), "[\"canvas\"]").unwrap();
+        assert!(vcfg_in(&root, &req("core-plugins", Some(serde_json::json!({"canvas": true})))).is_err());
+        assert_eq!(std::fs::read_to_string(root.join(CORE_REL)).unwrap(), "[\"canvas\"]");
+        assert_eq!(vcfg_in(&root, &req("core-plugins", None)).unwrap(), serde_json::json!({}));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

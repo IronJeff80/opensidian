@@ -620,7 +620,10 @@
           if (inEditor(e.target) && !(e.ctrlKey || e.metaKey)) return;
           if (window.CanvasNav && window.CanvasNav.onWheel(this, e)) return;   // goal cv-nav: shift+wheel pans sideways, space+wheel zooms
           e.preventDefault();
-          if (e.ctrlKey || e.metaKey) this.zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.002));
+          // goal cvf-board CVR-A-013: Settings > Canvas "Default mouse wheel behavior" (canvas.json) — Zoom makes the
+          // plain wheel zoom and Ctrl + wheel pan; Pan (default) the other way round
+          const cfg = window.__osCanvasCfg, wz = !!(cfg && cfg.get("defaultWheelBehavior") === "zoom");
+          if ((e.ctrlKey || e.metaKey) !== wz) this.zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.002));
           else { this.tx -= e.deltaX; this.ty -= e.deltaY; this.applyTransform(); }
         }, { passive: false });
         w.addEventListener("keydown", e => {
