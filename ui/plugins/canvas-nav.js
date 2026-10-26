@@ -165,7 +165,8 @@
   }
   function setOption(c, k, v) {
     c.options[k] = !!v;
-    if (CFGK.includes(k) && cfg()) cfg().set({ [k]: !!v });
+    // stock writes both snap keys on any toggle (CVR-A-079: "keys kept")
+    if (CFGK.includes(k) && cfg()) cfg().set({ snapToGrid: c.options.snapToGrid !== false, snapToObjects: c.options.snapToObjects !== false });
     if (k === "readOnly") {
       syncRO(c);
       if (c.readonly) { for (const n of c.nodes.values()) if (n.isEditing) try { n.stopEditing(); } catch (_) {} }
