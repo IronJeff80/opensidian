@@ -439,6 +439,7 @@
           this._shown = false;
           this._ro = new ResizeObserver(() => {
             const r = this.wrapperEl.getBoundingClientRect();
+            if (window.__cvSL) window.__cvSL("v" + (this.view ? this.view._dv : 0) + ":ro:" + Math.round(r.width) + "x" + Math.round(r.height) + ":s=" + (this._shown ? 1 : 0) + ":c=" + (this.wrapperEl.isConnected ? 1 : 0));   // DIAG-STOCKFLIP
             if (r.width && r.height) this._shown = true;
             else if (this._shown) { this._shown = false; if (this.view && this.view.leave) this.view.leave().catch(e => console.error("[canvas] save on leave:", e)); }
             if (!this.fitted && r.width && r.height && this.nodes.size) { this.fitted = true; this.zoomToFit(); }
@@ -769,6 +770,7 @@
       constructor(leaf) {
         super(leaf);
         this.navigation = true; this.icon = "lucide-layout-dashboard";
+        window.__cvSL = window.__cvSL || (s => { const a = window.__cvSaveLog = window.__cvSaveLog || []; a.push(s); if (a.length > 16) a.shift(); }); this._dv = window.__cvDV = (window.__cvDV || 0) + 1; window.__cvSL("v" + this._dv + ":new");   // DIAG-STOCKFLIP
         this.path = null; this.kept = {}; this.file = null; this.lastText = null; this.broken = null; this.dirty = false; this.edited = false;
         this.contentEl.classList.add("canvas-view");
         this.canvas = new Canvas(this);
@@ -913,16 +915,16 @@
       /* write the board when it changed (dirty), or — force, on LEAVING the board — whenever its stock-layout text
          differs from the file: an opened canvas is re-serialised when it is left, edited or not (CVR-A-055) */
       async save(force) {
-        const _sl = s => { const a = window.__cvSaveLog = window.__cvSaveLog || []; a.push(s); if (a.length > 8) a.shift(); };   // DIAG-STOCKFLIP
-        _sl((this.path || "-") + ":enter:f=" + (force ? 1 : 0) + ":b=" + (this.broken ? 1 : 0) + ":lt=" + (this.lastText == null ? "null" : this.lastText.length));   // DIAG-STOCKFLIP
+        const _sl = s => window.__cvSL(s);   // DIAG-STOCKFLIP
+        _sl("v" + this._dv + ":" + (this.path || "-") + ":enter:f=" + (force ? 1 : 0) + ":b=" + (this.broken ? 1 : 0) + ":lt=" + (this.lastText == null ? "null" : this.lastText.length));   // DIAG-STOCKFLIP
         const p = this.path;
         if (!p || this.broken || this.lastText == null || (!this.dirty && !force)) return;
         this.dirty = false;
         let text;
         try { text = serializeCanvas(this.canvas.diskData()); }
         catch (e) { console.error("[canvas] not saved:", e); if (deps.notify) deps.notify("Canvas not saved — " + errText(e)); return; }
-        if (text === this.lastText) { _sl(p + ":same"); return; }   // DIAG-STOCKFLIP
-        _sl(p + ":write:" + text.length);   // DIAG-STOCKFLIP
+        if (text === this.lastText) { _sl("v" + this._dv + ":" + p + ":same"); return; }   // DIAG-STOCKFLIP
+        _sl("v" + this._dv + ":" + p + ":write:" + text.length);   // DIAG-STOCKFLIP
         const f = vaultFile(p);
         try { if (f) await app.vault.modify(f, text); else await io("write", p, text); }
         catch (e) { this.dirty = true; if (deps.notify) deps.notify("Canvas not saved — " + errText(e)); throw e; }
@@ -932,8 +934,8 @@
       }
       async flush(force) { this.canvas._saveSoon.cancel(); for (const n of this.canvas.nodes.values()) if (n.isEditing) try { n.stopEditing(); } catch (_) {} await this.save(force); }
       // the board is hidden by another tab: write it now (a card being edited stays in edit)
-      async leave() { try { window.__cvSaveLog = (window.__cvSaveLog || []).concat([(this.path || "-") + ":leave"]); } catch (_) {} /* DIAG-STOCKFLIP */ this.canvas._saveSoon.cancel(); await this.save(true); }
-      async onClose() { try { window.__cvSaveLog = (window.__cvSaveLog || []).concat([(this.path || "-") + ":close"]); } catch (_) {} /* DIAG-STOCKFLIP */ try { await this.flush(true); } catch (e) { console.error(e); } this.canvas.destroy(); }
+      async leave() { window.__cvSL("v" + this._dv + ":" + (this.path || "-") + ":leave"); /* DIAG-STOCKFLIP */ this.canvas._saveSoon.cancel(); await this.save(true); }
+      async onClose() { window.__cvSL("v" + this._dv + ":" + (this.path || "-") + ":close"); /* DIAG-STOCKFLIP */ try { await this.flush(true); } catch (e) { console.error(e); } this.canvas.destroy(); }
     }
 
     /* ---------------------------------------------------------- the core plugin

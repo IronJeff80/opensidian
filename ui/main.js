@@ -7939,7 +7939,7 @@ function canvasTok() {
   const dirs = [...document.querySelectorAll("#tree .trow.folder")].filter(vis).slice(0, 8);   // where "New canvas" (folder menu) is right-clicked
   if (rows.length && dirs.length) t += " [cvdir:" + dirs.map(r => esc(r.dataset.folder) + "@" + c(r)).join("|") + "]";
   if (vis(cvRibbonBtn)) t += " [ribbon:canvas@" + c(cvRibbonBtn) + "]";   // cv-vault CV-108
-  if (window.__cvSaveLog) t += " [cvsl:" + window.__cvSaveLog.slice(-8).map(esc).join("|") + "]";   // DIAG-STOCKFLIP
+  if (window.__cvSaveLog) t += " [cvsl:" + window.__cvSaveLog.slice(-16).map(esc).join("|") + "]";   // DIAG-STOCKFLIP
   t += cvEmbTok();                                                       // cv-vault CV-139
   t += cvGflTok();                                                       // cvf-links CVR-A-102
   let v = null;
