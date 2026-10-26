@@ -7585,7 +7585,7 @@ async function cvCloseLeaves(p) {
    count stays and every tab retitles. A failed rename leaves the leaves where they were. */
 async function cvRetarget(old, np) {
   const ls = cvLeavesOf(old);
-  for (const l of ls) { try { if (l.view.flush) await l.view.flush(); } catch (_) {} }
+  for (const l of ls) { try { if (l.view.flush) await l.view.flush(true); } catch (_) {} }
   try { await inv("canvas_io", { op: "rename", path: old, data: np }); }
   catch (err) { say(String(err && err.message || err), "canvas"); await refreshTree(); return false; }
   await refreshTree();
