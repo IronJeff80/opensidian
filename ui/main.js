@@ -7423,7 +7423,17 @@ async function cmdNewCanvas(folder) {
     try { await inv("canvas_io", { op: "create", path: p, data: body }); }
     catch (e) { if (/EEXIST/.test(String(e && e.message || e))) continue; say(String(e && e.message || e), "canvas"); return null; }
     await refreshTree();
-    await openCanvas(p);
+    /* goal cvf-create CVR-A-002: the new board takes the CURRENT tab (the active note / board goes), unless that
+       tab is pinned. The leaf shim opens a typed view beside its tab, so the old tab is saved first and closed
+       after the board is up. CVR-A-005: then its header title is focused and selected for a rename. */
+    const g = fg(), t0 = g && g.active >= 0 ? g.tabs[g.active] : null;
+    if (t0 && !t0.pinned) { try { await flushSave(g); } catch (_) {} }
+    const leaf = await openCanvas(p);
+    if (t0 && !t0.pinned && leaf) {
+      const i = g.tabs.indexOf(t0);
+      if (i >= 0 && g.tabs[g.active] !== t0) { try { await closeTab(g, i, "replace", "canvas-new", true); } catch (e) { console.error("[canvas] replace tab:", e); } }
+    }
+    try { const v = leaf && leaf.view; if (v && v.editTitle) v.editTitle(); } catch (_) {}
     return p;
   }
   say("Could not find a free name for the new canvas", "canvas");
@@ -7519,6 +7529,7 @@ async function cvRetarget(old, np) {
   return true;
 }
 let cvRenamePending = null;
+window.__osCvRetarget = (old, np) => cvRetarget(old, np);   // goal cvf-create CVR-A-005/018: the canvas header title renames through here
 function cvRename(p) {
   const inp = $("rninput");
   cvRenamePending = p;
@@ -8799,7 +8810,7 @@ const CMDS = [
   ["file-explorer:new-file",   "Create new note",                     ["ctrl+n"],               cmdNewNote],
   ["file-explorer:new-file-in-new-pane", "Create note to the right",  ["ctrl+shift+n"],         async () => { await splitWith(fg(), "row", null); await cmdNewNote(); }],
   ["file-explorer:new-folder", "Create new folder",                   [],                       () => { $("fnew").hidden = false; $("fname").value = ""; $("fname").focus(); }],
-  ["canvas:new-file",          "Create new canvas",                   [],                       () => cmdNewCanvas(cvNewCanvasFolder()), CV_PALETTE_HIDE_OFF ? () => !!(CANVAS && CANVAS.isRegistered()) : null],
+  ["canvas:new-file",          "Canvas: Create new canvas",           [],                       () => cmdNewCanvas(cvNewCanvasFolder()), CV_PALETTE_HIDE_OFF ? () => !!(CANVAS && CANVAS.isRegistered()) : null],
   // goal cv-files CV-149 (REDUCED): there is no empty-tab surface (zero tabs = a blank pane), so the
   // "New canvas" action of an empty workspace is a palette row offered only while no tab is open
   ["canvas:new-file-no-tab",   "New canvas",                          [],                       () => cmdNewCanvas(""),
