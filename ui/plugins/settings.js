@@ -376,7 +376,10 @@
   function spAway(ev) { if (spMenu && !spMenu.contains(ev.target)) closeSpMenu(); }
   function dropdown(ctl, key, opts) {
     const d = el("div", "sctl dropdown live");
-    const cur = String(cvGet(key));
+    // an option may carry a stored value apart from its id: [id, label, stored] (cvf-create: loc "same" is written "current")
+    const sv = o => (o.length > 2 ? o[2] : o[0]);
+    const curV = String(cvGet(key));
+    const cur = (opts.find(o => sv(o) === curV) || [curV])[0];
     const lab = (opts.find(o => o[0] === cur) || opts[0])[1];
     d.textContent = lab; d.title = lab; d.style.width = "220px";
     d.dataset.cvsp = ctl; d.dataset.val = cur; d.tabIndex = 0;
@@ -389,14 +392,15 @@
       m.setAttribute("role", "listbox");
       m.style.cssText = "position:fixed;z-index:200;left:" + Math.round(b.left) + "px;top:" + Math.round(b.bottom + 2) + "px;min-width:" +
         Math.round(b.width) + "px;background:var(--bg-base);border:1px solid var(--border-strong);border-radius:6px;padding:4px;box-shadow:0 4px 14px var(--shadow-popover);font-size:13px;color:var(--text-chrome)";
-      for (const [v, t] of opts) {
+      for (const o of opts) {
+        const [v, t] = o;
         const it = el("div", "cvsp-opt", (v === cur ? "✓ " : "") + t);
         it.dataset.v = v; it.setAttribute("role", "option");
         it.style.cssText = "padding:4px 10px;border-radius:4px;cursor:pointer;white-space:nowrap";
         it.onmouseenter = () => { it.style.background = "var(--bg-surface)"; };
         it.onmouseleave = () => { it.style.background = ""; };
         it.onmousedown = e => e.stopPropagation();
-        it.onclick = e => { e.stopPropagation(); closeSpMenu(); cvSet({ [key]: v }); rebuildCanvasPage(); };
+        it.onclick = e => { e.stopPropagation(); closeSpMenu(); cvSet({ [key]: sv(o) }); rebuildCanvasPage(); };
         m.appendChild(it);
       }
       document.body.appendChild(m); spMenu = m;
@@ -419,7 +423,7 @@
     let n = 0;
     const r = (label, desc, ctls) => { n++; return row(c, label, desc, ctls); };
     r("Default location for new canvas files", "Where a new canvas goes when you create one from the palette or the ribbon.",
-      [dropdown("loc", "newFileLocation", [["current", "Same folder as current file"], ["root", "Vault folder"], ["folder", "In the folder specified below"]])]);
+      [dropdown("loc", "newFileLocation", [["same", "Same folder as current file", "current"], ["root", "Vault folder"], ["folder", "In the folder specified below"]])]);
     if (cvGet("newFileLocation") === "folder") {
       const f = el("input", "sctl text live");
       f.type = "text"; f.spellcheck = false; f.autocomplete = "off"; f.placeholder = "Example: folder/sub";
