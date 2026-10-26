@@ -25,6 +25,13 @@
      [ptab:<id>,<setting-items>,<elements>]  a plugin tab is on screen (display() ran) */
 "use strict";
 (function () {
+  /* gh-icons #20: monochrome inline svg icons (drawn for this app, currentColor) in place of
+     text pictographs / emoji; class "gi" sizes them (style.css / plugins.css) */
+  const I = d => '<svg class="gi" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' + d + "</svg>";
+  const GI = {
+    gear: I('<circle cx="8" cy="8" r="2"/><circle cx="8" cy="8" r="4.4"/><path d="M8 1.6v2M8 12.4v2M1.6 8h2M12.4 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4"/>'),
+    check: I('<path d="M3.5 8.5l3 3 6-7"/>'),
+  };
   const host = window.__osPluginHost;
   if (!host || !host.app) return;
   const setting = host.app.setting;
@@ -218,7 +225,7 @@
       const st = host.status.get(id);
       const ctls = [];
       if (loaded && tabOf(id)) {
-        const g = el("div", "sctl cpgear", "⚙"); g.title = "Options"; g.tabIndex = 0;
+        const g = el("div", "sctl cpgear"); g.innerHTML = GI.gear; g.title = "Options"; g.tabIndex = 0;
         g.onclick = ev => { ev.stopPropagation(); showSettingsPage("plg:" + id); };
         ctls.push(g);
       }
@@ -395,7 +402,8 @@
         Math.round(b.width) + "px;background:var(--bg-base);border:1px solid var(--border-strong);border-radius:6px;padding:4px;box-shadow:0 4px 14px var(--shadow-popover);font-size:13px;color:var(--text-chrome)";
       for (const o of opts) {
         const [v, t] = o;
-        const it = el("div", "cvsp-opt", (v === cur ? "✓ " : "") + t);
+        const it = el("div", "cvsp-opt", t);
+        if (v === cur) { const k = el("span", "cvsp-chk"); k.innerHTML = GI.check; it.prepend(k); }   // gh-icons: svg check mark, not a text glyph
         it.dataset.v = v; it.setAttribute("role", "option");
         it.style.cssText = "padding:4px 10px;border-radius:4px;cursor:pointer;white-space:nowrap";
         it.onmouseenter = () => { it.style.background = "var(--bg-surface)"; };
