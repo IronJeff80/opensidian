@@ -10718,6 +10718,11 @@ async function startGraph(g, cfg) {
         }
         if (labels) { ctx.globalAlpha = gp.a * la; ctx.fillStyle = gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - (p.r + gp.dr) * NS - 4); } }
       }
+      // gh-graphdpr: .graphgl is absolutely positioned with no CSS size, so a canvas shows at its
+      // INTRINSIC size = its backing in CSS px; once the backing is css x dpr that is dpr x too big
+      // (measured: GDK_SCALE=2 -> GL canvas 894x1336 CSS over a 447x668 pane). Pin its CSS box to the 2D one.
+      const gst = g.glcv && g.glcv.style, gw = cssW + "px", gh = cssH + "px";
+      if (gst && (gst.width !== gw || gst.height !== gh)) { gst.width = gw; gst.height = gh; }
       glr.draw(cv.width, cv.height, dpr === 1 ? view : { scale: view.scale * dpr, tx: view.tx * dpr, ty: view.ty * dpr },   // gh-graphdpr: device px
         nArr, nc, eArr, ec, RGB[P.bg], D.line * dpr);   // bg: the clear colour, from the token like every other colour here
     } else for (const gp of groups.values()) {
