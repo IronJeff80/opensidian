@@ -124,16 +124,6 @@
     if (!HB.raf) { const tick = t => { if (HB.f1 < 0) HB.f1 = t - HB.down; if (HB.up < 0) HB.fdn++; else HB.fup++; HB.gap = Math.max(HB.gap, t - HB.pf); HB.pf = t; HB.raf = performance.now() - HB.down < 3000 ? requestAnimationFrame(tick) : 0; }; HB.raf = requestAnimationFrame(tick); }
   }, true);
   window.addEventListener("pointerup", () => { HB.up = performance.now(); }, true);
-  /* CVR-C-107: keep the frame clock running while the pointer is active over a board. WebKitGTK stops its refresh
-     timer when nothing animates and restarting it on the press can cost a few hundred ms of unpainted drag; an
-     empty rAF loop that lasts WARM ms past the last pointer event keeps it ticking (idle board: no frames) */
-  const WARM = 1500; let warmT = 0, warmRaf = 0;
-  const warm = e => {
-    if (!e.target || !e.target.closest || !e.target.closest(".canvas-wrapper")) return;
-    warmT = performance.now();
-    if (!warmRaf) { const tick = () => { warmRaf = performance.now() - warmT < WARM ? requestAnimationFrame(tick) : 0; }; warmRaf = requestAnimationFrame(tick); }
-  };
-  for (const ev of ["pointermove", "pointerdown"]) window.addEventListener(ev, warm, { capture: true, passive: true });
   const idOf = o => (o.m || o.s || o).id;
   function dragIds(c, s) {
     const d = s.drag;
