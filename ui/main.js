@@ -3866,6 +3866,11 @@ function utBuild() {             // pane/focus census in the window title (headl
         const r = cvEl.getBoundingClientRect();
         gpx += " [gcv:" + fkind + ":" + Math.round(r.left) + "," + Math.round(r.top) +
                "," + Math.round(r.width) + "," + Math.round(r.height) + "]";
+        // gh-graphdpr: [gdpr:<kind>:<dpr>:<css w>x<css h>:<label/2D backing w>x<h>:<gl css w>x<h>:<gl backing w>x<h>]
+        // a phase asserts backing == round(css x dpr) on BOTH canvases ("-" = no GL canvas shown)
+        const gd = fgr.graphDpr ? fgr.graphDpr() : null, gc = fgr.glcv && !fgr.glcv.hidden ? fgr.glcv : null;
+        if (gd) gpx += " [gdpr:" + fkind + ":" + gd.dpr + ":" + gd.cssW + "x" + gd.cssH + ":" + cvEl.width + "x" + cvEl.height +
+               ":" + (gc ? gc.clientWidth + "x" + gc.clientHeight + ":" + gc.width + "x" + gc.height : "-:-") + "]";
       }
     }
   }
@@ -10072,7 +10077,20 @@ async function startGraph(g, cfg) {
   g.editor.style.display = "none"; g.preview.style.display = "none";
   g.lp.style.display = "none";
   const cv = g.graph; cv.hidden = false;
-  cv.width = cv.clientWidth; cv.height = cv.clientHeight;
+  // gh-graphdpr (GitHub #23 "pixelated graphs"): the backing store was clientWidth x clientHeight,
+  // i.e. CSS px, so at devicePixelRatio 2 the browser upscaled a 1x bitmap (blurred labels and discs).
+  // Now backing = round(css x dpr) for BOTH canvases (labels/2D here, WebGL via glr.draw); the view
+  // (view.scale/tx/ty, toWorld, hit-testing) stays in CSS px and dpr is applied only at draw time,
+  // so zoom re-renders at full resolution. cssW/cssH = the CSS size; at dpr 1 nothing changes.
+  let dpr = 1, cssW = 0, cssH = 0;
+  const fitDpr = () => {               // true = the backing store changed (caller redraws)
+    dpr = window.devicePixelRatio || 1; cssW = cv.clientWidth; cssH = cv.clientHeight;
+    const bw = Math.round(cssW * dpr), bh = Math.round(cssH * dpr);
+    if (cv.width === bw && cv.height === bh) return false;
+    cv.width = bw; cv.height = bh; return true;
+  };
+  fitDpr();
+  g.graphDpr = () => ({ dpr, cssW, cssH });   // census [gdpr:]
   const fetchP = cfg.fetch(), prefP = graphRendererPref();   // backend works while the renderer comes up
   const gcP = cfg.scope ? Promise.resolve(cfg.scope()) : null;   // graph-controls scope: graph.json (read beside the fetch) or the lg tab's options
   const ctx = cv.getContext("2d");
@@ -10212,7 +10230,7 @@ async function startGraph(g, cfg) {
   // cv.onwheel is the ONLY writer of view.scale besides the two ggkeep restores (the tab's own
   // last view on a switch back, and graph.json scale snapped to a notch on a fresh open); no fit/reset button or key sets it,
   // and the local graph shares this startGraph, so the recon §1 bound there covers every view.
-  const view = { scale: 1, tx: cv.width / 2, ty: cv.height / 2, notch: 0, ax: null, ay: null, wx: 0, wy: 0 };
+  const view = { scale: 1, tx: cssW / 2, ty: cssH / 2, notch: 0, ax: null, ay: null, wx: 0, wy: 0 };
   const GZ_OUT = 47, GZ_IN = -20, GZ_MIN = 1 / 128, GZ_MAX = 8;   // the wheel lattice, see cv.onwheel
   const notchScale = n => n === 0 ? 1 : Math.min(GZ_MAX, Math.max(GZ_MIN, Math.pow(0.9, n)));
   // Obsidian force defaults (R16.1) and the gains that turn a slider value into
@@ -10611,13 +10629,14 @@ async function startGraph(g, cfg) {
   function draw() {
     const dT0 = perf.now();
     const P = palette();               // one token read per frame, none per node
+    if ((window.devicePixelRatio || 1) !== dpr) fitDpr();   // gh-graphdpr: dpr changed (monitor / zoom) without a resize
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     // background: the 2D path PAINTS --graph-bg (a transparent canvas would show the pane behind it,
     // which happens to be the same token today and is not a contract); over WebGL the 2D canvas only
     // carries labels, so it stays clear and the GL clear colour below is the one that paints.
     if (glr) ctx.clearRect(0, 0, cv.width, cv.height);
     else { ctx.globalAlpha = 1; ctx.fillStyle = P.bg; ctx.fillRect(0, 0, cv.width, cv.height); }
-    ctx.setTransform(view.scale, 0, 0, view.scale, view.tx, view.ty);
+    ctx.setTransform(view.scale * dpr, 0, 0, view.scale * dpr, view.tx * dpr, view.ty * dpr);   // gh-graphdpr: CSS-px view -> device-px backing
     // hover: hovered node + its edges/neighbors lit accent, rest faded
     const litE = ([i, j]) => hov < 0 || i === hov || j === hov;
     const litN = i => hov < 0 || i === hov || adj[hov].has(i);
@@ -10667,7 +10686,7 @@ async function startGraph(g, cfg) {
     const groups = new Map();         // key -> { col, a, res, dr, idx: [] }
     const GS = g.gcScope ? g.gcScope.st.groups : null;   // graphctx GC19: p.col = first matching colour group (graph_view)
     // world-space cull: nodes outside the viewport are not drawn (R16.4 overflow)
-    const [wx0, wy0] = toWorld(0, 0), [wx1, wy1] = toWorld(cv.width, cv.height), pad = 40 / view.scale;
+    const [wx0, wy0] = toWorld(0, 0), [wx1, wy1] = toWorld(cssW, cssH), pad = 40 / view.scale;
     for (let i = 0; i < N.length; i++) {
       const p = N[i], isC = cn !== null && p.n === cn;
       if (i >= shown) continue;
@@ -10694,12 +10713,13 @@ async function startGraph(g, cfg) {
         const c = RGB[gp.col], ring = gp.res ? 0 : 1.5;
         for (const i of gp.idx) {
           const p = N[i], o = nc * 8;
-          nArr[o] = p.x; nArr[o + 1] = p.y; nArr[o + 2] = (p.r + gp.dr) * NS + ring / 2; nArr[o + 3] = ring;   // 2D strokes straddle the radius
+          nArr[o] = p.x; nArr[o + 1] = p.y; nArr[o + 2] = (p.r + gp.dr) * NS + ring / 2; nArr[o + 3] = ring * dpr;   // ring width is device px in the shader (gh-graphdpr); 2D strokes straddle the radius
           nArr[o + 4] = c[0]; nArr[o + 5] = c[1]; nArr[o + 6] = c[2]; nArr[o + 7] = gp.a; nc++;
         }
         if (labels) { ctx.globalAlpha = gp.a * la; ctx.fillStyle = gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - (p.r + gp.dr) * NS - 4); } }
       }
-      glr.draw(cv.width, cv.height, view, nArr, nc, eArr, ec, RGB[P.bg], D.line);   // bg: the clear colour, from the token like every other colour here
+      glr.draw(cv.width, cv.height, dpr === 1 ? view : { scale: view.scale * dpr, tx: view.tx * dpr, ty: view.ty * dpr },   // gh-graphdpr: device px
+        nArr, nc, eArr, ec, RGB[P.bg], D.line * dpr);   // bg: the clear colour, from the token like every other colour here
     } else for (const gp of groups.values()) {
       ctx.globalAlpha = gp.a; ctx.beginPath();
       for (const i of gp.idx) { const p = N[i], r = (p.r + gp.dr) * NS; ctx.moveTo(p.x + r, p.y); ctx.arc(p.x, p.y, r, 0, 7); }
@@ -10875,10 +10895,19 @@ async function startGraph(g, cfg) {
   if (window.ResizeObserver) {
     const ro = g.ro = new ResizeObserver(() => {
       if (cv.hidden || !g.graphOn || g.simGen !== gen) { ro.disconnect(); return; }
-      if (cv.width === cv.clientWidth && cv.height === cv.clientHeight) return;
-      cv.width = cv.clientWidth; cv.height = cv.clientHeight; redraw();
+      if (fitDpr()) redraw();          // gh-graphdpr: backing = round(css x dpr)
     });
     ro.observe(cv);
+  }
+  // gh-graphdpr: a dpr change with no CSS resize (window moved to another monitor, GDK scale)
+  // fires no ResizeObserver — watch the resolution media query, re-fit, redraw
+  if (window.matchMedia) {
+    const dprWatch = () => {
+      const mq = matchMedia("(resolution: " + dpr + "dppx)");
+      const on = () => { mq.removeEventListener("change", on); if (cv.hidden || !g.graphOn || g.simGen !== gen) return; fitDpr(); redraw(); dprWatch(); };
+      mq.addEventListener("change", on);
+    };
+    dprWatch();
   }
   // wheel: cursor-anchored zoom, 0.9 per notch out / 1/0.9 in (R16.5);
   // scale is derived from a notch counter so 3 out + 3 in is EXACTLY 1.00
