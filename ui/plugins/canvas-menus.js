@@ -166,7 +166,17 @@
     m.onClose = () => { if (open && open.m === m) open = null; later(c); };
     open = { kind, type: "prompt", m, input };
     m.open();
-    setTimeout(() => { try { input.focus(); input.select(); } catch (_) {} later(c); }, 0);
+    // focus the field once the opening click is over; a late focus move (the card re-rendering under
+    // the closed menu) must not leave the typing outside the prompt, so check again while it is fresh
+    let typed = false;
+    input.addEventListener("keydown", () => { typed = true; }, { once: true });
+    const grab = sel => {
+      if (!m.containerEl.isConnected || typed || document.activeElement === input) return;
+      try { input.focus(); if (sel) input.select(); } catch (_) {}
+    };
+    setTimeout(() => { grab(true); later(c); }, 0);
+    setTimeout(() => grab(true), 80);
+    setTimeout(() => grab(true), 250);
     return m;
   }
   const pickNote = (c, then) => picker(c, "note", "Add a note from the vault…", files(c, f => f.extension === "md"), f => f.path, f => then(f.path));
@@ -427,6 +437,10 @@
       if (o.off) { i.setDisabled(true); if (o.why) i.dom.title = o.why; }
       i.onClick(() => {
         if (o.off || !fn) return;
+        // the click on the menu row left the focus on <body>: give it back to the board first, so its
+        // keys (Ctrl+Z after Paste) work and a prompt the action opens returns the focus there
+        const a = document.activeElement;
+        if ((!a || a === document.body) && c.wrapperEl && c.wrapperEl.isConnected) try { c.wrapperEl.focus({ preventScroll: true }); } catch (_) {}
         try { const r = fn(); if (r && typeof r.catch === "function") r.catch(er => console.error("[canvas] menu:", er)); } catch (er) { console.error("[canvas] menu:", er); }
       });
     });
