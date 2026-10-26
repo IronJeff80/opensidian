@@ -99,15 +99,9 @@
       if (typeof sPane !== "undefined" && sPane === pane) d.classList.add("sel");
       n.appendChild(d);
     };
-    // goal cvf-board: Options > Core plugins (pane "core"), then the Core plugins group: Canvas while it is on
-    if (canvasPlugin()) entry("core", "Core plugins");
+    // af-fix 2b (operator rule 2026-10-01, noplugins NP_WANT): no Core plugins entry, no CORE PLUGINS group,
+    // no Canvas entry — the Canvas settings pane opens from the board's own settings control (canvas-nav.js)
     entry("community", "Community plugins");
-    const cp = canvasPlugin();
-    if (cp && cp.enabled) {
-      const ch = el("div", "snavh", "Core plugins"); ch.dataset.cp = "1";
-      n.appendChild(ch);
-      entry("core-canvas", "Canvas");
-    }
     const tabs = setting.pluginTabs.filter(t => t && t.id);
     if (!tabs.length) return;
     const h = el("div", "snavh", "Community plugins"); h.dataset.cp = "1";
@@ -150,7 +144,7 @@
   /* showSettingsPage(id) asks here first: true = handled */
   function show(id) {
     if (inBuiltin) return false;
-    if ((id === "core" || id === "core-canvas") && canvasPlugin()) return showCorePane(id);   // goal cvf-board
+    if (id === "core-canvas" && canvasPlugin()) return showCorePane(id);   // goal cvf-board; af-fix 2b: no nav entry, opened by the board gear
     closeSpMenu();
     let t;
     if (id === "community") t = builtinOf("community");
@@ -270,20 +264,19 @@
     try { await f(); } catch (e) { console.error("[plugin] settings:", e); }
     busy = false;
     if (settingsOpen && sPane === "community") rebuild();
-    else if (settingsOpen && (sPane === "core" || sPane === "core-canvas")) showCorePane(sPane);   // goal cvf-board
+    else if (settingsOpen && sPane === "core-canvas") showCorePane(sPane);   // goal cvf-board
     if (typeof refreshTree === "function") refreshTree().catch(() => {});   // canvas on/off: .canvas rows follow
     const n = document.getElementById("snav"); if (n && n.dataset.built === "1") nav(n);
   }
-  /* ---- goal cvf-board: the Canvas core plugin's vault config + its two settings pages ----
+  /* ---- goal cvf-board: the Canvas core plugin's vault config + its settings pane ----
      <vault>/.obsidian/canvas.json (the Canvas page below, the board's snap toggles) and
-     <vault>/.obsidian/core-plugins.json ({"canvas": bool}, the Core plugins switch), stock's files and
+     <vault>/.obsidian/core-plugins.json ({"canvas": bool}: honoured at launch, written by the Community plugins pane switch), stock's files and
      key names, read once when the vault is known and merged through the backend (settings.rs VaultCfg,
      reached via settings_model's vcfg argument; works in a restricted vault — this is app code).
      window.__osCanvasCfg is the one reader the canvas plugins use (canvas.js wire(), canvas-nav.js):
        get(key) -> the value or its default; set(patch) -> merge + write; on(fn) -> fn(changedKeys).
-     Panes: "core" (Options > Core plugins: the Canvas row with gear, + and its switch) and
-     "core-canvas" (Core plugins group > Canvas). Census while settings is open:
-       [cpcore=canvas:x,y,<on>,<gear x>,<gear y>,<plus x>,<plus y>]
+     Pane "core-canvas" (af-fix 2b: no Settings nav entry; the board settings control opens it via
+     openCanvasSettings). Census while settings is open:
        [cvsp=<ctl>:x,y,<value>]   loc locf wheel cdrag names grid obj zth zthreset
        [cvspopt=<value>:x,y]      the open dropdown's options */
   /* goal cvf-create CVR-A-010/011 (ruling 03:00Z): stock leaves newFileLocation unset = vault root. Off while phase
@@ -351,8 +344,6 @@
   })();
 
   const SVG = (paths, extra) => '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"' + (extra || "") + ">" + paths + "</svg>";
-  const GEAR = SVG('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>');
-  const PLUS = SVG('<circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/>');
   function iconBtn(cls, svg, title, onclick) {
     const b = el("div", "sctl " + cls); b.innerHTML = svg; b.title = title; b.tabIndex = 0;
     b.setAttribute("role", "button"); b.setAttribute("aria-label", title);
@@ -360,22 +351,6 @@
     b.onclick = ev => { ev.stopPropagation(); onclick(); };
     b.onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); onclick(); } };
     return b;
-  }
-
-  function buildCore(pg) {
-    const p = canvasPlugin();
-    const c = el("div", "scard"); pg.appendChild(c);
-    if (!p) { row(c, "No core plugins", "This build has no core plugin.", [], true); sRowsShown = 1; sEnabledShown = 0; return; }
-    const on = !!p.enabled;
-    const ctls = [];
-    if (on) {
-      const g = iconBtn("cpcgear", GEAR, "Options", () => showSettingsPage("core-canvas")); g.dataset.core = "canvas"; ctls.push(g);
-      const a = iconBtn("cpcplus", PLUS, "Hotkeys", () => showSettingsPage("hotkeys")); a.dataset.core = "canvas"; ctls.push(a);
-    }
-    const t = toggle(on, () => act(() => setCanvasOn(!on)));
-    t.dataset.corecv = "canvas"; ctls.push(t);
-    row(c, CORE_DESC.canvas[0], CORE_DESC.canvas[1], ctls).dataset.core = "canvas";
-    sRowsShown = 1; sEnabledShown = 1;
   }
 
   /* the dropdown: our own small menu under the control (no native popup — the census sees its options) */
@@ -472,19 +447,27 @@
   function showCorePane(id) {
     leaveTab(); closeSpMenu();
     const pg = clearPage(id, "rows");
-    if (id === "core") buildCore(pg); else buildCanvasPage(pg);
+    // af-fix 2b: no nav entry is selected on this pane, so it names itself
+    const hd = el("div", "snavh cvsp-title", "Canvas"); hd.style.cssText = "margin:0 0 8px"; pg.appendChild(hd);
+    buildCanvasPage(pg);
     if (typeof updateTitle === "function") updateTitle();
     return true;
   }
+  /* af-fix 2b: the board's settings control (canvas-nav.js) opens Settings on the Canvas pane; closing
+     Settings puts back the pane it had before, so ctrl+, never lands on a pane the nav does not list */
+  let cvPrevPane = null;
+  async function openCanvasSettings() {
+    if (!canvasPlugin() || typeof openSettings !== "function") return false;
+    if (typeof settingsOpen !== "undefined" && settingsOpen) { if (sPane !== "core-canvas") cvPrevPane = sPane; showCorePane("core-canvas"); return true; }
+    if (sPane !== "core-canvas") cvPrevPane = sPane;
+    sPane = "core-canvas";
+    await openSettings();
+    return true;
+  }
+  function leaveCanvasPane() { if (sPane === "core-canvas") { sPane = cvPrevPane || "general"; cvPrevPane = null; } }
   function coreTok() {
     let t = "";
-    if (sPane === "core") {
-      const tg = document.querySelector('#spage .toggle[data-corecv="canvas"]');
-      if (tg) {
-        const g = document.querySelector("#spage .cpcgear"), a = document.querySelector("#spage .cpcplus");
-        t += " [cpcore=canvas:" + ctr(tg) + "," + (tg.classList.contains("on") ? 1 : 0) + "," + (g ? ctr(g) : "0,0") + "," + (a ? ctr(a) : "0,0") + "]";
-      }
-    } else if (sPane === "core-canvas") {
+    if (sPane === "core-canvas") {
       for (const d of document.querySelectorAll("#spage [data-cvsp]")) {
         const k = d.dataset.cvsp;
         const v = k === "grid" ? (cvGet("snapToGrid") ? 1 : 0) : k === "obj" ? (cvGet("snapToObjects") ? 1 : 0)
@@ -519,7 +502,7 @@
         const p = (host.app.internalPlugins.plugins || {})[tg.dataset.core];
         t += " [cpc=" + tg.dataset.core + ":" + ctr(tg) + "," + (tg.classList.contains("on") ? 1 : 0) + "," + (p && p._loaded ? 1 : 0) + "]";
       }
-    } else if (sPane === "core" || sPane === "core-canvas") {
+    } else if (sPane === "core-canvas") {
       t += coreTok();
     } else if (String(sPane).startsWith("plg:") && setting.activeTab && setting.activeTab.containerEl.isConnected) {
       const ce = setting.activeTab.containerEl;
@@ -531,7 +514,7 @@
   /* kept for older callers: app.setting.openTabById */
   const openTab = id => setting.openTabById(id);
 
-  const api = Object.freeze({ nav, show, tok, tabsChanged, close: () => { stopBrowsing(); closeSpMenu(); closeUi(); }, openTab, pane, mount, builtin, adoptBrowser });
+  const api = Object.freeze({ nav, show, tok, tabsChanged, close: () => { stopBrowsing(); closeSpMenu(); closeUi(); leaveCanvasPane(); }, openTab, openCanvasSettings, pane, mount, builtin, adoptBrowser });
   Object.defineProperty(window, "__osPluginSettings", { value: api, writable: false, configurable: false });
   Object.defineProperty(window, "openPluginSettingTab", { value: openTab, writable: false, configurable: false });
 })();
