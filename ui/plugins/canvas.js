@@ -775,6 +775,16 @@
         this.contentEl.classList.add("canvas-view");
         this.canvas = new Canvas(this);
         this.contentEl.appendChild(this.canvas.wrapperEl);
+        /* a board tab hidden by another tab is LEAVING the board as much as a 0x0 resize is: the container's hidden
+           flag is watched too, so the leave write does not wait on a resize notice that may never come (CVR-A-004/055) */
+        if (typeof MutationObserver === "function") {
+          this._mo = new MutationObserver(() => {
+            const c = this.canvas;
+            window.__cvSL("v" + this._dv + ":mo:hid=" + (this.containerEl.hidden ? 1 : 0) + ":sh=" + (c && c._shown ? 1 : 0));   // DIAG-STOCKFLIP
+            if (c && this.containerEl.hidden && c._shown) { c._shown = false; this.leave().catch(e => console.error("[canvas] save on leave:", e)); }
+          });
+          this._mo.observe(this.containerEl, { attributes: true, attributeFilter: ["hidden"] });
+        }
         this.errorEl = null;
         this.buildHeader();
       }
@@ -851,6 +861,10 @@
         if (!p || p === this.path) return;
         await this.flush(true);
         await this.loadPath(p, true);
+        // shown: the board is on screen once it has a size, whether or not a resize notice reported it
+        requestAnimationFrame(() => { const c = this.canvas, w = c && c.wrapperEl; if (!w) return; const r = w.getBoundingClientRect();
+          window.__cvSL("v" + this._dv + ":raf:" + Math.round(r.width) + "x" + Math.round(r.height) + ":sh=" + (c._shown ? 1 : 0));   // DIAG-STOCKFLIP
+          if (r.width && r.height && !this.containerEl.hidden) c._shown = true; });
       }
       /* open file p on this board. The file is read and parsed BEFORE the board lets go of what it shows: a file
          that does not parse (malformed JSON, whitespace only) opened from a tab (refuse) does not mount at all —
@@ -935,7 +949,7 @@
       async flush(force) { this.canvas._saveSoon.cancel(); for (const n of this.canvas.nodes.values()) if (n.isEditing) try { n.stopEditing(); } catch (_) {} await this.save(force); }
       // the board is hidden by another tab: write it now (a card being edited stays in edit)
       async leave() { window.__cvSL("v" + this._dv + ":" + (this.path || "-") + ":leave"); /* DIAG-STOCKFLIP */ this.canvas._saveSoon.cancel(); await this.save(true); }
-      async onClose() { window.__cvSL("v" + this._dv + ":" + (this.path || "-") + ":close"); /* DIAG-STOCKFLIP */ try { await this.flush(true); } catch (e) { console.error(e); } this.canvas.destroy(); }
+      async onClose() { if (this._mo) this._mo.disconnect(); window.__cvSL("v" + this._dv + ":" + (this.path || "-") + ":close"); /* DIAG-STOCKFLIP */ try { await this.flush(true); } catch (e) { console.error(e); } this.canvas.destroy(); }
     }
 
     /* ---------------------------------------------------------- the core plugin

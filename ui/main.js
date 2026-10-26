@@ -7940,6 +7940,7 @@ function canvasTok() {
   if (rows.length && dirs.length) t += " [cvdir:" + dirs.map(r => esc(r.dataset.folder) + "@" + c(r)).join("|") + "]";
   if (vis(cvRibbonBtn)) t += " [ribbon:canvas@" + c(cvRibbonBtn) + "]";   // cv-vault CV-108
   if (window.__cvSaveLog) t += " [cvsl:" + window.__cvSaveLog.slice(-16).map(esc).join("|") + "]";   // DIAG-STOCKFLIP
+  try { t += " [cvvs:" + PLG.app.workspace.getLeavesOfType("canvas").map(l => l.view).filter(Boolean).map(x => { const w = x.canvas && x.canvas.wrapperEl, r = w ? w.getBoundingClientRect() : { width: -1, height: -1 }; return "v" + x._dv + ":" + esc(x.path || "-") + ":lt=" + (x.lastText == null ? "null" : x.lastText.length) + ":sh=" + (x.canvas && x.canvas._shown ? 1 : 0) + ":hid=" + (x.containerEl.hidden ? 1 : 0) + ":con=" + (x.containerEl.isConnected ? 1 : 0) + ":w=" + (w && w.isConnected ? 1 : 0) + ":" + Math.round(r.width) + "x" + Math.round(r.height); }).join("|") + "]"; } catch (e) { t += " [cvvs:err " + esc(String(e)) + "]"; }   // DIAG-STOCKFLIP
   t += cvEmbTok();                                                       // cv-vault CV-139
   t += cvGflTok();                                                       // cvf-links CVR-A-102
   let v = null;
