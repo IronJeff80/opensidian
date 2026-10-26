@@ -279,8 +279,11 @@
        [cpcore=canvas:x,y,<on>,<gear x>,<gear y>,<plus x>,<plus y>]
        [cvsp=<ctl>:x,y,<value>]   loc locf wheel cdrag names grid obj zth zthreset
        [cvspopt=<value>:x,y]      the open dropdown's options */
+  /* goal cvf-create CVR-A-010/011 (ruling 03:00Z): stock leaves newFileLocation unset = vault root. Off while phase
+     cvvault CV-107 asserts same-folder (operator go list); flipping it is this one line. */
+  const CV_NEWLOC_STOCK = false;
   const CV_DEF = Object.freeze({
-    newFileLocation: "same", newFileFolderPath: "", defaultWheelBehavior: "pan", defaultModDragBehavior: "menu",
+    newFileLocation: CV_NEWLOC_STOCK ? "root" : "current", newFileFolderPath: "", defaultWheelBehavior: "pan", defaultModDragBehavior: "menu",
     showCardNames: "always", zoomThreshold: 100, snapToGrid: true, snapToObjects: true,
   });
   const cvc = { canvas: {}, core: {}, loaded: false, subs: [] };
@@ -289,7 +292,9 @@
     return inv("settings_model", { vcfg: patch === undefined ? { file } : { file, patch } });
   };
   const say_ = m => { try { if (typeof say === "function") say(m, "canvas"); } catch (_) {} };
-  const cvGet = k => (Object.prototype.hasOwnProperty.call(cvc.canvas, k) && cvc.canvas[k] != null ? cvc.canvas[k] : CV_DEF[k]);
+  // goal cvf-create (ruling 03:00Z): same-folder is written "current", as stock writes it; an older "same" reads as "current"
+  const cvRaw = k => (Object.prototype.hasOwnProperty.call(cvc.canvas, k) && cvc.canvas[k] != null ? cvc.canvas[k] : CV_DEF[k]);
+  const cvGet = k => (k === "newFileLocation" && cvRaw(k) === "same" ? "current" : cvRaw(k));
   const cvEmit = keys => { for (const f of cvc.subs) { try { f(keys); } catch (e) { console.error("[canvas] cfg listener:", e); } } };
   // writes go out in order, one at a time (a slider drag is many patches; the file holds the last)
   let cvQ = Promise.resolve();
@@ -414,7 +419,7 @@
     let n = 0;
     const r = (label, desc, ctls) => { n++; return row(c, label, desc, ctls); };
     r("Default location for new canvas files", "Where a new canvas goes when you create one from the palette or the ribbon.",
-      [dropdown("loc", "newFileLocation", [["same", "Same folder as current file"], ["root", "Vault folder"], ["folder", "In the folder specified below"]])]);
+      [dropdown("loc", "newFileLocation", [["current", "Same folder as current file"], ["root", "Vault folder"], ["folder", "In the folder specified below"]])]);
     if (cvGet("newFileLocation") === "folder") {
       const f = el("input", "sctl text live");
       f.type = "text"; f.spellcheck = false; f.autocomplete = "off"; f.placeholder = "Example: folder/sub";
