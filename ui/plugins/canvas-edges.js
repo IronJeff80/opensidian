@@ -82,6 +82,9 @@
       ".canvas-edge-toolbar > button, .canvas-edge-popup > button { padding: 2px 7px; font-size: 12px; cursor: pointer }",
       ".canvas-edge-popup > button.canvas-edge-swatch { width: 22px; height: 22px; padding: 0; border-radius: 50%; border: 2px solid var(--background-modifier-border, #555) }",
       ".canvas-edge-label-input { position: absolute; left: 0; top: 0; width: 180px; transform: translate(-50%, -50%); pointer-events: auto; font-size: 14px; text-align: center }",
+      ".canvas-edge-popup > button.canvas-edge-swatch.mod-custom { font-size: 14px; line-height: 1; color: var(--text-normal, #ddd) }",
+      ".canvas-edge-hex-input { width: 90px; font-size: 13px; font-family: var(--font-monospace, monospace); pointer-events: auto }",
+      ".canvas-edge-hex-input.is-invalid { outline: 1px solid var(--text-error, #e93147) }",
       ".canvas-edge-menu { position: absolute; z-index: 20; min-width: 170px; padding: 4px; background: var(--background-secondary, #262626);" +
         " border: 1px solid var(--background-modifier-border, #444); border-radius: 6px; box-shadow: 0 4px 14px rgba(0,0,0,.35) }",
       ".canvas-edge-menu-item { padding: 4px 10px; border-radius: 4px; cursor: pointer; color: var(--text-normal, #ddd) }",
@@ -206,11 +209,13 @@
   }
   function paintPin(c) {
     const S = c._cve, z = c.zoom || 1;
-    S.pin.textContent = "";
     const id = S.label ? S.label.id : S.sel, g = id && S.geo.get(id), e = id && c.edges.get(id);
-    if (!g || !e || (S.drag && S.drag.moved)) { S.pin.style.display = "none"; if (S.label && !g) S.label = null; return; }
+    if (S.hex && (S.hex.id !== id || S.pop !== "hex")) S.hex = null;
+    if (!g || !e || (S.drag && S.drag.moved)) { S.pin.textContent = ""; S.pin.style.display = "none"; if (S.label && !g) S.label = null; return; }
     const m = bez(g, 0.5);
     S.pin.style.display = ""; S.pin.style.left = m[0] + "px"; S.pin.style.top = m[1] + "px"; S.pin.style.transform = "scale(" + (1 / z) + ")";
+    if (S.hex && S.hex.input.isConnected && S.pin.contains(S.hex.input)) return;   // typing a colour: keep the field (and its focus)
+    S.pin.textContent = "";
     if (S.label) { S.pin.appendChild(S.label.input); return; }
     if (c.readonly) return;
     const bar = el("div", "canvas-edge-toolbar", S.pin);
@@ -222,9 +227,30 @@
     b("del", "Delete", "Delete connection", () => removeEdge(c, id));
     b("color", "Colour", "Connection colour", () => { S.pop = S.pop === "color" ? null : "color"; paintPin(c); ping(c); });
     b("dir", "Direction", "Line direction", () => { S.pop = S.pop === "dir" ? null : "dir"; paintPin(c); ping(c); });
+    b("zoom", "Zoom", "Zoom to selection", () => zoomTo(c, id));
     b("label", "Label", "Edit label", () => openLabel(c, id));
     if (e.label) b("unlabel", "Remove label", "Remove label", () => { delete e.label; S.pop = null; save(c); });
-    if (S.pop === "color") {
+    if (S.pop === "hex") {
+      const p = el("div", "canvas-edge-popup", S.pin); p.dataset.pop = "hex";
+      const inp = el("input", "canvas-edge-hex-input", p);
+      inp.type = "text"; inp.spellcheck = false; inp.maxLength = 7; inp.placeholder = "#rrggbb"; inp.setAttribute("aria-label", "Custom colour");
+      inp.value = /^#/.test(e.color || "") ? e.color : "#";
+      S.hex = { id, input: inp };
+      inp.addEventListener("keydown", ev => {
+        ev.stopPropagation();
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          let v = inp.value.trim().toLowerCase(); if (v && v[0] !== "#") v = "#" + v;
+          if (/^#[0-9a-f]{3}$/.test(v)) v = "#" + v[1] + v[1] + v[2] + v[2] + v[3] + v[3];
+          if (!/^#[0-9a-f]{6}$/.test(v)) { inp.classList.add("is-invalid"); return; }
+          S.hex = null; setColor(c, id, v); try { c.wrapperEl.focus({ preventScroll: true }); } catch (_) {}
+        } else if (ev.key === "Escape") {
+          ev.preventDefault(); S.hex = null; S.pop = null; paintPin(c); ping(c); try { c.wrapperEl.focus({ preventScroll: true }); } catch (_) {}
+        } else inp.classList.remove("is-invalid");
+      });
+      for (const t of ["pointerdown", "mousedown", "dblclick", "contextmenu", "wheel"]) inp.addEventListener(t, ev => ev.stopPropagation());
+      setTimeout(() => { try { inp.focus(); inp.select(); } catch (_) {} }, 0);
+    } else if (S.pop === "color") {
       const p = el("div", "canvas-edge-popup", S.pin); p.dataset.pop = "color";
       const none = b("none", "∅", "No colour", () => setColor(c, id, null), p); none.classList.add("canvas-edge-swatch");
       const colorOf = S.ctx.colorOf || (() => null);
@@ -232,6 +258,9 @@
         const s = b(k, "", "Colour " + k, () => setColor(c, id, k), p); s.classList.add("canvas-edge-swatch");
         s.style.background = colorOf(k) || ""; if (e.color === k) s.style.borderColor = "var(--text-normal, #ddd)";
       }
+      const cu = b("custom", "+", "Custom colour", () => { S.pop = "hex"; paintPin(c); ping(c); }, p);
+      cu.classList.add("canvas-edge-swatch", "mod-custom");
+      if (/^#/.test(e.color || "")) { cu.style.background = e.color; cu.style.borderColor = "var(--text-normal, #ddd)"; }
     } else if (S.pop === "dir") {
       const p = el("div", "canvas-edge-popup", S.pin); p.dataset.pop = "dir";
       b("none", "— None", "Nondirectional", () => setDir(c, id, "none"), p);
@@ -267,7 +296,8 @@
   function setDir(c, id, d) {
     const e = c.edges.get(id); if (!e || c.readonly) return;
     e.fromEnd = d === "bi" ? "arrow" : "none";
-    e.toEnd = d === "none" ? "none" : "arrow";
+    if (d === "bi") delete e.toEnd;          // the toEnd default is already arrow: write only what differs
+    else e.toEnd = d === "none" ? "none" : "arrow";
     c._cve.pop = null; save(c);
   }
   function select(c, id) {
@@ -310,8 +340,23 @@
     if (!g || !e) return;
     const far = Math.hypot(g.p2[0] - p[0], g.p2[1] - p[1]) >= Math.hypot(g.p1[0] - p[0], g.p1[1] - p[1]) ? e.toNode : e.fromNode;
     const d = nodeData(c, far); if (!d) return;
-    const r = c.wrapperEl.getBoundingClientRect(), z = c.zoom || 1;
-    c.tx = r.width / 2 - (d.x + d.width / 2) * z; c.ty = r.height / 2 - (d.y + d.height / 2) * z;
+    const r = c.wrapperEl.getBoundingClientRect();
+    c.zoom = 1;                                // following a connection lands at 100%, the target centred
+    c.tx = r.width / 2 - (d.x + d.width / 2); c.ty = r.height / 2 - (d.y + d.height / 2);
+    c.applyTransform();
+    refresh(c); ping(c);
+  }
+  // edge toolbar "zoom to selection": fit the curve's box (at most 100%), its midpoint centred
+  function zoomTo(c, id) {
+    const S = c._cve, g = S.geo.get(id);
+    if (!g) return;
+    const r = c.wrapperEl.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    const ps = [0, 0.25, 0.5, 0.75, 1].map(t => bez(g, t)), m = ps[2], pad = 80;
+    let hw = 1, hh = 1;
+    for (const q of ps) { hw = Math.max(hw, Math.abs(q[0] - m[0])); hh = Math.max(hh, Math.abs(q[1] - m[1])); }
+    c.zoom = Math.max(0.1, Math.min(1, (r.width / 2 - pad) / hw, (r.height / 2 - pad) / hh));
+    c.tx = r.width / 2 - m[0] * c.zoom; c.ty = r.height / 2 - m[1] * c.zoom;
     c.applyTransform();
     refresh(c); ping(c);
   }
@@ -492,6 +537,7 @@
     list("cvepal", '.canvas-edge-popup[data-pop="color"] > button');
     list("cvedir", '.canvas-edge-popup[data-pop="dir"] > button');
     if (S.label && vis(S.label.input)) t += " [cvelab:" + esc(S.label.id) + "]";
+    if (S.hex && vis(S.hex.input)) t += " [cvehex:" + esc(S.hex.id) + "@" + ctr(S.hex.input) + "]";
     if (S.menu && vis(S.menu)) t += " [cvemenu:" + [...S.menu.querySelectorAll(".canvas-edge-menu-item")].map(x => x.dataset.act + "@" + ctr(x)).join("|") + "]";
     const fit = c.controlsEl && c.controlsEl.querySelector(".canvas-control.mod-zoom-fit");
     if (vis(fit)) t += " [cvefit:" + ctr(fit) + "]";
