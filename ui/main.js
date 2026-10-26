@@ -8769,6 +8769,10 @@ async function undoCloseTab() {
   updateTitle();
   return true;
 }
+/* goal cvf-board2 CVR-A-093 (DEFERRED, pending operator go): stock Obsidian drops "Create new canvas" from the
+   palette while the Canvas core plugin is off. Until the go, false keeps the row present and refusing (old phase
+   canvasui step 5); the follow-up goal flips only this flag. Ribbon + explorer hiding do not depend on it. */
+const CV_PALETTE_HIDE_OFF = false;
 const CMDS = [
   ["app:open-settings",        "Open settings",                       ["ctrl+,"],               () => cmdSettings()],
   // R14: the theme switch is a registry entry like any other — no bespoke
@@ -8795,7 +8799,7 @@ const CMDS = [
   ["file-explorer:new-file",   "Create new note",                     ["ctrl+n"],               cmdNewNote],
   ["file-explorer:new-file-in-new-pane", "Create note to the right",  ["ctrl+shift+n"],         async () => { await splitWith(fg(), "row", null); await cmdNewNote(); }],
   ["file-explorer:new-folder", "Create new folder",                   [],                       () => { $("fnew").hidden = false; $("fname").value = ""; $("fname").focus(); }],
-  ["canvas:new-file",          "Create new canvas",                   [],                       () => cmdNewCanvas(cvNewCanvasFolder()), () => !!(CANVAS && CANVAS.isRegistered())],
+  ["canvas:new-file",          "Create new canvas",                   [],                       () => cmdNewCanvas(cvNewCanvasFolder()), CV_PALETTE_HIDE_OFF ? () => !!(CANVAS && CANVAS.isRegistered()) : null],
   // goal cv-files CV-149 (REDUCED): there is no empty-tab surface (zero tabs = a blank pane), so the
   // "New canvas" action of an empty workspace is a palette row offered only while no tab is open
   ["canvas:new-file-no-tab",   "New canvas",                          [],                       () => cmdNewCanvas(""),
