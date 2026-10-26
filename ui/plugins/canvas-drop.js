@@ -152,11 +152,14 @@
   }
   /* an MP4 / MOV declares its picture size in the first video track header (ISO BMFF moov/trak/tkhd: width and
      height, 16.16 fixed point); read from the vault's bytes, no decode. -> {w, h} or null */
+  let vdiag = "";                       // census: how the last video got (or missed) its size
   async function mp4Dims(p) {
     let b;
-    try { b = await adapterBytes(p); } catch (_) { return null; }
-    if (!b) return null;
+    try { b = await adapterBytes(p); } catch (e) { vdiag += "|tkhd:read-" + String(e && e.message || e).slice(0, 40); return null; }
+    if (!b) { vdiag += "|tkhd:nofile"; return null; }
+    if (!(b instanceof ArrayBuffer) && b.buffer instanceof ArrayBuffer) b = b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
     const v = new DataView(b), n = b.byteLength;
+    vdiag += "|tkhd:n=" + n;
     const walk = (s, e, depth) => {
       for (let o = s; o + 8 <= e;) {
         let sz = v.getUint32(o), hd = 8;
@@ -171,7 +174,10 @@
       }
       return null;
     };
-    return walk(0, n, 0);
+    const r = walk(0, n, 0), top = [];
+    for (let o = 0, k = 0; o + 8 <= n && k < 6; k++) { const sz = v.getUint32(o); top.push(String.fromCharCode(v.getUint8(o + 4), v.getUint8(o + 5), v.getUint8(o + 6), v.getUint8(o + 7)) + sz); if (sz < 8) break; o += sz; }
+    vdiag += r ? "|tkhd=" + r.w + "x" + r.h : "|tkhd:none:" + top.join(",");
+    return r;
   }
   async function adapterBytes(p) {
     const f = app && app.vault && app.vault.getAbstractFileByPath ? app.vault.getAbstractFileByPath(p) : null;
@@ -182,7 +188,8 @@
     if (AUD.has(ext)) return { width: CARD, height: AUDIO_H };
     if (IMG.has(ext) || VID.has(ext)) {
       let s = await probe(p, 2000);
-      if (!s && VID.has(ext)) s = await mp4Dims(p);   // no decoder for it (no metadata event): the size the file itself declares
+      vdiag = s ? "probe" : "probe:none";
+      if (!s && VID.has(ext)) { try { s = await mp4Dims(p); } catch (e) { vdiag += "|tkhd:" + String(e && e.message || e).slice(0, 40); s = null; } }   // no decoder for it (no metadata event): the size the file itself declares
       if (s) return { width: CARD, height: Math.max(1, Math.round(CARD * s.h / s.w)) };
     }
     return { width: CARD, height: CARD };
@@ -247,7 +254,7 @@
     const size = await oneSize(d.paths[0]);
     if (!c.wrapperEl.isConnected || ro(c)) return;
     placeRow(c, d.paths, anchor(p, size), size);
-    last.ex = "file|" + size.width + "x" + size.height;
+    last.ex = "file|" + size.width + "x" + size.height + (vdiag ? "|" + vdiag : ""); vdiag = "";
     ping(c);
   }
   function say(c, msg) {
