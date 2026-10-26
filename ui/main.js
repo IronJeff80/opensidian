@@ -7825,6 +7825,17 @@ async function cvEmbedPaint(s, link) {   // link: the reading view's a.wiki to r
   s.appendChild(svg);
   updateTitle();
 }
+/* cvf-links CVR-A-095: the live-preview widget is a CLONE of the parsed span (editor.js Leaf.toDOM), which drops
+   the listener and was never painted (the parsed original is not in the document). Paint each clone as CM6 mounts it. */
+const cvEmbObs = new MutationObserver(ms => {
+  for (const m of ms) for (const n of m.addedNodes) {
+    if (n.nodeType !== 1) continue;
+    const L = n.classList.contains("cv-embed") ? [n] : [...n.getElementsByClassName("cv-embed")];
+    for (const s of L) if (!s._cvEmb && s.closest(".cm-editor")) cvEmbedPaint(s, null);
+  }
+});
+if (document.body) cvEmbObs.observe(document.body, { childList: true, subtree: true });
+else document.addEventListener("DOMContentLoaded", () => cvEmbObs.observe(document.body, { childList: true, subtree: true }));
 /* census [cvemb:<path>@x,y|r=<rects>|p=<paths>|txt=<chars>] — the first painted canvas embed of the focused note view */
 /* census [gfl:gg@<group id>=<a>><b>;...] — the links the focused global graph draws, by node name (up to 80) */
 function cvGflTok() {
