@@ -146,11 +146,39 @@
       } else done(null);
     });
   }
+  /* an MP4 / MOV declares its picture size in the first video track header (ISO BMFF moov/trak/tkhd: width and
+     height, 16.16 fixed point); read from the vault's bytes, no decode. -> {w, h} or null */
+  async function mp4Dims(p) {
+    let b;
+    try { b = await adapterBytes(p); } catch (_) { return null; }
+    if (!b) return null;
+    const v = new DataView(b), n = b.byteLength;
+    const walk = (s, e, depth) => {
+      for (let o = s; o + 8 <= e;) {
+        let sz = v.getUint32(o), hd = 8;
+        const ty = String.fromCharCode(v.getUint8(o + 4), v.getUint8(o + 5), v.getUint8(o + 6), v.getUint8(o + 7));
+        if (sz === 1 && o + 16 <= e) { sz = v.getUint32(o + 8) * 4294967296 + v.getUint32(o + 12); hd = 16; } else if (sz === 0) sz = e - o;
+        if (sz < hd || o + sz > e) return null;
+        if (ty === "tkhd") {
+          const ver = v.getUint8(o + hd), wo = o + hd + (ver === 1 ? 88 : 76);
+          if (wo + 8 <= o + sz) { const w = v.getUint32(wo) / 65536, h = v.getUint32(wo + 4) / 65536; if (w > 0 && h > 0) return { w, h }; }
+        } else if (depth < 4 && (ty === "moov" || ty === "trak")) { const r = walk(o + hd, o + sz, depth + 1); if (r) return r; }
+        o += sz;
+      }
+      return null;
+    };
+    return walk(0, n, 0);
+  }
+  async function adapterBytes(p) {
+    const f = app && app.vault && app.vault.getAbstractFileByPath ? app.vault.getAbstractFileByPath(p) : null;
+    return f ? await app.vault.readBinary(f) : null;
+  }
   async function oneSize(p) {
     const ext = extOf(p);
     if (AUD.has(ext)) return { width: CARD, height: AUDIO_H };
     if (IMG.has(ext) || VID.has(ext)) {
-      const s = await probe(p, 2000);
+      let s = await probe(p, 2000);
+      if (!s && VID.has(ext)) s = await mp4Dims(p);   // no decoder for it (no metadata event): the size the file itself declares
       if (s) return { width: CARD, height: Math.max(1, Math.round(CARD * s.h / s.w)) };
     }
     return { width: CARD, height: CARD };
@@ -405,6 +433,9 @@
       return "noimg:" + (items || []).map(it => (it.types || []).join("+")).join(",");
     }, e => "err:" + (e && e.name));
   }
+  function acbText() {
+    try { return navigator.clipboard && typeof navigator.clipboard.readText === "function" ? navigator.clipboard.readText().then(t => String(t || ""), () => "") : null; } catch (_) { return null; }
+  }
   async function imgPaste(pf) {
     let a = null;
     try { a = await Promise.race([pf.acb || Promise.resolve("none"), new Promise(r => setTimeout(() => r("timeout"), 2000))]); } catch (e) { a = "err:" + (e && e.name); }
@@ -417,7 +448,11 @@
     }
     last.paste += "|acb=" + String(a).slice(0, 40);
     const imgs = await waitImg(1500);
-    const ktx = !imgs.length && catcher ? String(catcher.innerText || catcher.textContent || "") : "";
+    let ktx = !imgs.length && catcher ? String(catcher.innerText || catcher.textContent || "") : "";
+    if (!imgs.length && !ktx && pf.acbt) {   // the async Clipboard API's text, asked inside the gesture (onPaste)
+      let t = ""; try { t = await Promise.race([pf.acbt, new Promise(r => setTimeout(() => r(""), 1000))]); } catch (_) {}
+      if (t) { ktx = t; last.paste += "|acbt"; }
+    }
     if (ktx) { giveBack(); const c1 = pf && pf.c; last.paste += "|ktext"; if (!c1 || ro(c1)) return ping(c1); return textPaste(c1, ktx); }
     const src = imgs.length ? String(imgs[0].currentSrc || imgs[0].src || "") : "";
     last.paste += "|img=" + (imgs.length ? (src.split(":")[0] || "?") : "0");
@@ -442,11 +477,14 @@
       if (!file) for (const f of cd ? [...(cd.files || [])] : []) if (PASTE_EXT[f.type]) { file = f; break; }
     } catch (_) {}
     last.paste = (file ? file.type + ":" + file.size : "none") + "|types=" + types.join(",") + "|t=" + (onCatcher ? "catcher" : "doc");
-    if (!file && onCatcher && pf && types.every(t => t !== "text/plain" && t !== "text/html")) { pf.wantImg = true; pf.acb = acbRead(); return; }   // the engine inserts it (imgPaste); the async Clipboard API is asked inside the gesture
+    // WebKitGTK may list no types for an X selection offered only as UTF8_STRING, yet still answer getData("text/plain")
+    let tx0 = ""; if (!file) try { tx0 = cd ? String(cd.getData("text/plain") || "") : ""; } catch (_) {}
+    if (tx0) last.paste += "|gd:" + tx0.length;
+    if (!file && !tx0 && onCatcher && pf && types.every(t => t !== "text/plain" && t !== "text/html")) { pf.wantImg = true; pf.acb = acbRead(); pf.acbt = acbText(); return; }   // the engine inserts it (imgPaste); the async Clipboard API is asked inside the gesture
     e.preventDefault();
     giveBack();
     const c = pf && pf.c;
-    if (!file && c && !ro(c)) { let tx = ""; try { tx = cd ? cd.getData("text/plain") : ""; } catch (_) {} if (tx) return textPaste(c, tx); }
+    if (!file && c && !ro(c) && tx0) return textPaste(c, tx0);
     if (!file || !c || ro(c)) return ping(c);
     return savePaste(c, file.type, await file.arrayBuffer());
   }
