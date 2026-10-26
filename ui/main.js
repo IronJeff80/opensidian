@@ -762,6 +762,7 @@ $("ldiv").onmousedown = e => {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
     if (w) inv("set_sidebar_w", { w }).catch(() => {});
+    updateTitle();                         // gh-icons #21: republish the sidebar geometry ([ghw:]) the drag changed
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
@@ -775,6 +776,7 @@ $("rdiv").onmousedown = e => {             // resizable divider (clamped 140-600
   const up = () => {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
+    updateTitle();                         // gh-icons #21: republish the sidebar geometry ([ghw:]) the drag changed
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
