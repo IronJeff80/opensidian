@@ -27,6 +27,12 @@
      at the foot of the stack, until the canvasui / cvnav CV-127 / cvjourney J4 / cvworks oracles change. false = stock */
   const DEFER_073 = true;
   const GRID = 20;                        // plugins.css .canvas-wrapper background-size at zoom 1
+  /* goal cvf-zoom: zoom feel (CVR-C-067 / 068). One wheel notch (Ctrl, or Space held) zooms x WHEEL_STEP about the
+     pointer, the + / - controls x CTL_STEP about the board centre; a trackpad's small pixel deltas zoom smoothly
+     at the same rate per NOTCH_PX. Far out (dots under GRID_MIN px apart) the dot grid doubles its spacing until they are GRID_FAR
+     px apart (CVR-C-077), so it never turns into a dense dot field. */
+  const WHEEL_STEP = 1.32, CTL_STEP = Math.SQRT2, NOTCH_PX = 50, GRID_MIN = 5, GRID_FAR = 8;
+  let hover = null;                       // the board under the pointer: Space + wheel works without focusing it
   const boards = new Set();
   let space = false;                      // Space is held (one keyboard: module-wide)
   let active = null;                      // the board the user last touched (commands act on it)
@@ -84,7 +90,9 @@
 
   /* ------------------------------------------------ viewport */
   function paintGrid(c) {
-    const w = c.wrapperEl, s = GRID * c.zoom;
+    const w = c.wrapperEl; let s = GRID * c.zoom;
+    // CVR-C-077: 20 x zoom down to 25 %; below that (dots under GRID_MIN px) every 2nd, 4th... dot, GRID_FAR..2 x GRID_FAR px apart
+    if (s > 0 && s < GRID_MIN) while (s < GRID_FAR) s *= 2;
     w.style.backgroundSize = s + "px " + s + "px";
     w.style.backgroundPosition = c.tx + "px " + c.ty + "px";
   }
@@ -93,7 +101,7 @@
     const r = c.wrapperEl.getBoundingClientRect();
     if (!r.width || !r.height) return;
     const pad = 40, w = Math.max(1, x1 - x0), h = Math.max(1, y1 - y0);
-    c.zoom = Math.max(0.1, Math.min(maxZ, (r.width - 2 * pad) / w, (r.height - 2 * pad) / h));
+    c.zoom = Math.max(0.05, Math.min(maxZ, (r.width - 2 * pad) / w, (r.height - 2 * pad) / h));
     c.tx = r.width / 2 - (x0 + x1) / 2 * c.zoom; c.ty = r.height / 2 - (y0 + y1) / 2 * c.zoom;
     c.applyTransform();
   }
@@ -116,13 +124,22 @@
 
   /* ------------------------------------------------ input */
   // canvas.js wire() wheel listener -> here first; true = handled
+  // one notch (a line / page delta, or a pixel delta of at least NOTCH_PX) = one WHEEL_STEP; smaller deltas scale smoothly
+  function wheelFactor(e) {
+    const d = e.deltaY || e.deltaX || 0;
+    if (!d) return 1;
+    if (e.deltaMode !== 0 || Math.abs(d) >= NOTCH_PX) return d < 0 ? WHEEL_STEP : 1 / WHEEL_STEP;
+    return Math.pow(WHEEL_STEP, -d / NOTCH_PX);
+  }
   function onWheel(c, e) {
-    if (e.ctrlKey || e.metaKey) return false;               // canvas.js: ctrl+wheel zooms
-    if (space) {
+    // Space + wheel, and Ctrl + wheel (the plain wheel when Settings > Canvas says Zoom), zoom about the pointer
+    const g = cfg(), wz = !!(g && g.get("defaultWheelBehavior") === "zoom");
+    if (space || (e.ctrlKey || e.metaKey) !== wz) {
       e.preventDefault();
-      c.zoomAt(e.clientX, e.clientY, Math.exp(-(e.deltaY || e.deltaX) * 0.002));
+      c.zoomAt(e.clientX, e.clientY, wheelFactor(e));
       return true;
     }
+    if (e.ctrlKey || e.metaKey) return false;               // wheel = Zoom: canvas.js pans on Ctrl + wheel
     if (e.shiftKey) {                                        // WebKitGTK may already turn it into deltaX
       e.preventDefault();
       c.tx -= Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
@@ -330,6 +347,8 @@
     w.addEventListener("keyup", e => { if (e.key === " " || e.code === "Space") { if (!inEditor(e.target)) e.preventDefault(); spaceUp(); } });
     w.addEventListener("blur", spaceUp);
     w.addEventListener("pointerdown", () => { active = c; }, true);
+    w.addEventListener("pointerenter", () => { hover = c; });
+    w.addEventListener("pointerleave", () => { if (hover === c) hover = null; });
     w.addEventListener("focusin", () => { active = c; });
     // Space + drag: pan from anywhere, a card included; capture phase, so canvas.js's move/select never starts
     w.addEventListener("pointerdown", e => {
@@ -354,6 +373,13 @@
     };
     w.addEventListener("pointerup", end, true);
     w.addEventListener("pointercancel", end, true);
+    // goal cvf-zoom CVR-C-067: the + / - controls step x CTL_STEP (canvas.js's own buttons; capture, so theirs never runs)
+    if (c.controlsEl) c.controlsEl.addEventListener("click", e => {
+      const b = e.target && e.target.closest ? e.target.closest(".mod-zoom-in, .mod-zoom-out") : null;
+      if (!b || b.disabled) return;
+      e.stopPropagation(); e.preventDefault();
+      c.zoomBy(b.classList.contains("mod-zoom-in") ? CTL_STEP : 1 / CTL_STEP);
+    }, true);
     // controls: appended after canvas.js's own (+ Text, zoom in/out, fit)
     if (c.controlsEl) {
       const btn = (cls, label, txt, fn) => {
@@ -447,6 +473,15 @@
   }
   window.addEventListener("keyup", e => { if (e.key === " " || e.code === "Space") spaceUp(); }, true);
   window.addEventListener("blur", spaceUp);
+  // goal cvf-zoom CVR-C-068: Space held while the pointer is over a board arms Space + wheel / Space + drag even when
+  // the keyboard focus is elsewhere (the file explorer row that opened the board); typing into a field is untouched
+  window.addEventListener("keydown", e => {
+    if (!(e.key === " " || e.code === "Space") || e.ctrlKey || e.metaKey || e.altKey) return;
+    const c = hover;
+    if (!live(c) || inEditor(e.target) || (e.target && e.target.closest && e.target.closest(".modal-container, .modal, .menu"))) return;
+    e.preventDefault();
+    if (!space) { space = true; c.wrapperEl.classList.add("is-space-held"); }
+  }, true);
 
   /* ------------------------------------------------ card names, zoom threshold, Ctrl+drag (goal cvf-board)
      Show card names (always | hover | never) and the zoom threshold (percent; a card's content is not drawn
