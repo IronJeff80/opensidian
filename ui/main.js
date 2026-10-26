@@ -7826,6 +7826,14 @@ async function cvEmbedPaint(s, link) {   // link: the reading view's a.wiki to r
   updateTitle();
 }
 /* census [cvemb:<path>@x,y|r=<rects>|p=<paths>|txt=<chars>] — the first painted canvas embed of the focused note view */
+/* census [gfl:gg@<group id>=<a>><b>;...] — the links the focused global graph draws, by node name (up to 80) */
+function cvGflTok() {
+  const g = state && fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
+  if (!t || t.kind !== "gg" || !g.graphOn || !g.graphLinks) return "";
+  const L = g.graphLinks();
+  if (L.length > 80) return " [gfl:gg@" + g.id + "=" + L.length + "]";
+  return " [gfl:gg@" + g.id + "=" + L.map(([a, b]) => String(a).replace(/[[\];>|]/g, "_") + ">" + String(b).replace(/[[\];>|]/g, "_")).join(";") + "]";
+}
 function cvEmbTok() {
   const g = state && fg();
   if (!g || !g.preview) return "";
@@ -7888,6 +7896,7 @@ function canvasTok() {
   if (rows.length && dirs.length) t += " [cvdir:" + dirs.map(r => esc(r.dataset.folder) + "@" + c(r)).join("|") + "]";
   if (vis(cvRibbonBtn)) t += " [ribbon:canvas@" + c(cvRibbonBtn) + "]";   // cv-vault CV-108
   t += cvEmbTok();                                                       // cv-vault CV-139
+  t += cvGflTok();                                                       // cvf-links CVR-A-102
   let v = null;
   try { v = PLG.app.workspace.getLeavesOfType("canvas").map(l => l.view).find(x => x && vis(x.containerEl)) || null; } catch (_) {}
   if (!v) return t;
@@ -10701,6 +10710,7 @@ async function startGraph(g, cfg) {
     gcUnbind(g);
   }
   g.graphEdges = () => gr.edges.length;   // census [gfe:] (GC15 changes the link count, not the node set)
+  g.graphLinks = () => gr.edges.map(([i, j]) => [gr.nodes[i], gr.nodes[j]]).filter(([a, b]) => a && b).map(([a, b]) => [a.name, b.name]);   // census [gfl:] (cvf-links)
   g.graphNodes = () => {              // census: node screen coords (window px) for the graphnav smoke
     const r = cv.getBoundingClientRect();
     return N.map(p => ({ n: p.n, kind: p.kind, col: p.col, x: Math.round(r.left + p.x * view.scale + view.tx), y: Math.round(r.top + p.y * view.scale + view.ty) }));
