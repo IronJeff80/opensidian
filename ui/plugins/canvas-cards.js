@@ -22,9 +22,9 @@
    no code at load beyond one stylesheet and one frozen global, window.__osCanvasCards,
    whose hooks canvas.js's node render() bodies call, and whose census(view) main.js
    canvasTok() appends ([cvcard:] [cvext:]).
-   Media bytes ride the app's image scheme (opensidian-img://localhost/<path>), which
-   serves the image types the app allows; anything else the scheme refuses stays an
-   empty element rather than a fetch of anything outside the vault. */
+   Image bytes ride the app's image scheme (opensidian-img://localhost/<path>); audio/video
+   bytes come from main.rs media_read (vault-confined, whitelisted, no-follow, 256 MiB cap) as
+   a blob: URL, read only once the card is on screen. */
 (function () {
   "use strict";
   const IMG = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"]);
@@ -38,20 +38,72 @@
   const nameOf = p => String(p || "").split("/").pop();
   const mediaUrl = p => "opensidian-img://localhost/" + String(p).split("/").map(encodeURIComponent).join("/");
   // goal cvf-mediasrv: WebKitGTK's media player reads http(s) and blob: only (no handler for the
-  // image scheme), so an audio/video card gets a Blob built from bounded media_read slices
+  // image scheme), so an audio/video card gets a Blob built from bounded media_read slices.
+  // Lazy: the bytes are read only once the card has been on screen for a moment (or on play),
+  // never for every media card when a board opens. A file over MEDIA_MAX (main.rs MEDIA_BLOB_MAX)
+  // is refused by the first call, before any byte is read, and the card says it cannot play.
+  // Every object URL is revoked when its card re-renders, leaves the board or the board closes
+  // (MEDIA.live: url -> media element; an element no longer in the document is swept).
   const MIME = { mp3: "audio/mpeg", m4a: "audio/mp4", ogg: "audio/ogg", wav: "audio/wav", flac: "audio/flac", webm: "video/webm", mp4: "video/mp4", ogv: "video/ogg", mov: "video/quicktime" };
+  const MEDIA_MAX = 256 * 1024 * 1024, MEDIA_DWELL = 150;
+  const MEDIA = { live: new Map(), reads: 0, timer: 0 };
+  function mediaSweep() {
+    for (const [u, m] of MEDIA.live) if (!m.isConnected) { URL.revokeObjectURL(u); MEDIA.live.delete(u); }
+    if (!MEDIA.live.size && MEDIA.timer) { clearInterval(MEDIA.timer); MEDIA.timer = 0; }
+  }
+  function mediaRevoke(cc) {
+    if (cc) clearTimeout(cc.t);
+    if (cc && cc.io) { cc.io.disconnect(); cc.io = null; }
+    if (cc && cc.blob) { URL.revokeObjectURL(cc.blob); MEDIA.live.delete(cc.blob); cc.blob = ""; }
+  }
   async function mediaBlob(p) {
     const T = window.__TAURI__, inv = T && T.core && T.core.invoke;
     if (!inv) throw new Error("no ipc");
     const parts = []; let off = 0, size = 0;
     do {
+      MEDIA.reads++;
       const buf = await inv("media_read", { path: p, offset: off });
       size = Number(new DataView(buf, 0, 8).getBigUint64(0));
+      if (size > MEDIA_MAX) throw new Error("too large");
       const c = buf.slice(8);
       if (!c.byteLength && off < size) throw new Error("short read");
       parts.push(c); off += c.byteLength;
     } while (off < size);
     return URL.createObjectURL(new Blob(parts, { type: MIME[extOf(p)] || "" }));
+  }
+  // wire one card's player: load on dwell-in-view or on play; cc is the card's _cc
+  function mediaLazy(node, ctx, p, m, cc) {
+    const go = () => {
+      if (cc.state) return;
+      cc.state = "loading";
+      if (cc.io) { cc.io.disconnect(); cc.io = null; }
+      clearTimeout(cc.t);
+      mediaBlob(p).then(u => {
+        if (node._cc !== cc || !m.isConnected) { URL.revokeObjectURL(u); return; }
+        cc.blob = u; cc.state = "ready"; MEDIA.live.set(u, m);
+        if (!MEDIA.timer) MEDIA.timer = setInterval(mediaSweep, 2000);
+        m.src = u; ping(ctx);
+      }, e => {
+        if (node._cc !== cc) return;
+        const big = /too large/.test(String(e && e.message || e));
+        cc.state = big ? "big" : "error";
+        if (big) {
+          m.style.display = "none";
+          const w = mk("div", "canvas-file-media-error", node.contentEl);
+          w.textContent = "Cannot play " + nameOf(p) + ": the file is larger than 256 MB.";
+          cc.err = w;
+        } else console.error("[canvas] media card " + p + ":", e);
+        ping(ctx);
+      });
+    };
+    m.addEventListener("play", go);
+    if (typeof IntersectionObserver !== "function") { go(); return; }
+    cc.io = new IntersectionObserver(en => {
+      const e = en[en.length - 1];
+      clearTimeout(cc.t);
+      if (e.isIntersecting) cc.t = setTimeout(go, MEDIA_DWELL);
+    });
+    cc.io.observe(m);
   }
   const mk = (tag, cls, parent) => { const e = document.createElement(tag); if (cls) e.className = cls; if (parent) parent.appendChild(e); return e; };
   const ping = ctx => { if (ctx && ctx.deps && typeof ctx.deps.changed === "function") try { ctx.deps.changed(); } catch (_) {} };
@@ -69,6 +121,7 @@
     ".canvas-node-container > .canvas-file-img { display: block; width: 100%; height: 100%; object-fit: contain }\n" +
     ".canvas-node-container > .canvas-file-media { display: block; width: 100%; max-height: 100%; box-sizing: border-box; padding: 8px }\n" +
     ".canvas-node.is-selected.cc-media > .canvas-node-content-blocker { display: none }\n" +
+    ".canvas-node-container > .canvas-file-media-error { padding: 8px 12px; color: var(--text-muted, #999); font-size: var(--font-ui-small, 13px) }\n" +
     ".canvas-file-other { padding: 8px 12px; display: flex; flex-direction: column; gap: 4px }\n" +
     ".canvas-file-other-ext { color: var(--text-muted, #999); font-size: 12px; text-transform: uppercase }\n" +
     ".canvas-node-label > .canvas-group-label-input { font: inherit; color: var(--text-normal, #ddd); min-width: 160px }\n" +
@@ -387,7 +440,7 @@
     wire(node, ctx);
     const p = String(node.data.file || ""), ext = ctx.file && ctx.file.extension ? String(ctx.file.extension).toLowerCase() : extOf(p);
     node.containerEl.classList.remove("cc-media");
-    if (node._cc && node._cc.blob) { URL.revokeObjectURL(node._cc.blob); node._cc.blob = ""; }
+    mediaRevoke(node._cc);
     // the vault model lists notes, canvases and images only: no TFile for an .mp3/.zip says nothing
     const tracked = ext === "md" || ext === "canvas" || IMG.has(ext);
     if (ext === "md" || ext === "canvas" || (ctx.missing && tracked) || !p) { node._cc = { kind: ext === "md" && !ctx.missing ? "note" : "missing" }; return false; }   // goal cv-model: a note not in the vault model is missing, not a note
@@ -406,9 +459,8 @@
       const m = mk(kind, "canvas-file-media", host);
       m.controls = true; m.preload = "metadata";
       node.containerEl.classList.add("cc-media");
-      const cc = node._cc = { kind, media: m, blob: "" };
-      mediaBlob(p).then(u => { if (node._cc !== cc) { URL.revokeObjectURL(u); return; } cc.blob = u; m.src = u; },
-        e => { console.error("[canvas] media card " + p + ":", e); ping(ctx); });
+      const cc = node._cc = { kind, media: m, blob: "", state: "", io: null, t: 0, err: null };
+      mediaLazy(node, ctx, p, m, cc);
       return true;
     }
     const box = mk("div", "canvas-file-other", host);
@@ -666,6 +718,18 @@
              "|rep=" + esc(cs.backgroundRepeat) + "|url=" + (bg && cs.backgroundImage.includes(mediaUrl(bg)) ? 1 : 0) + "]";
       }
     }
+    // goal cvf-mediasrv: [cvmblob:<live object URLs>|vis=<media cards on screen>|rd=<media_read calls>] [cvmbig:<id>@x,y]
+    mediaSweep();
+    const wr = v.canvas.wrapperEl ? v.canvas.wrapperEl.getBoundingClientRect() : null;
+    let mv = 0;
+    for (const n of v.canvas.nodes.values()) {
+      const s = n._cc;
+      if (!s || (s.kind !== "audio" && s.kind !== "video") || !n.containerEl.isConnected) continue;
+      const r = n.containerEl.getBoundingClientRect();
+      if (wr && r.width && r.height && r.right > wr.left && r.left < wr.right && r.bottom > wr.top && r.top < wr.bottom) mv++;
+      if (s.state === "big" && vis(s.err)) t += " [cvmbig:" + esc(n.id) + "@" + ctr(s.err) + "]";
+    }
+    t += " [cvmblob:" + MEDIA.live.size + "|vis=" + mv + "|rd=" + MEDIA.reads + "]";
     t += " [cvcard:@pan|" + Math.round(v.canvas.tx) + "," + Math.round(v.canvas.ty) + "]";
     // goal cvf-groups: [cvgtb:arrange@x,y|label@x,y|background@x,y] [cvgpal:custom@x,y] [cvgpick:hex@x,y|ok@x,y]
     const g = v.canvas._ccG, gv = e => !!e && !e.hidden && vis(e);
