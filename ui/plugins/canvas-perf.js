@@ -107,23 +107,7 @@
     const s = S(c);
     s.drag = d || null;
     if (d && d !== s.dobj) { s.dobj = d; s.moves = 0; s.emin = 0; s.emax = 0; s.eupd = 0; const ids = dragIds(c, s); s.did = ids && ids.length ? ids[0] : null; }
-    if (d) dtime(s);
   }
-  /* goal cvf-zoom CVR-C-107: drag timing for the census ([cvpdt:]): moves seen, first/last move (ms ago), and the
-     frames painted since the first move with the largest gap between two of them (a main thread that falls behind) */
-  function dtime(s) {
-    const now = performance.now(), T = s.dt && now - s.dt.last < 1000 ? s.dt : (s.dt = { n: 0, first: now, last: now, fr: 0, gap: 0, pf: now, raf: 0 });
-    T.n++; T.last = now;
-    if (!T.raf) { const tick = t => { T.fr++; T.gap = Math.max(T.gap, t - T.pf); T.pf = t; T.raf = performance.now() - T.last < 2000 ? requestAnimationFrame(tick) : 0; }; T.pf = now; T.raf = requestAnimationFrame(tick); }
-  }
-  /* diagnostic heartbeat: from each pointerdown count the frames painted (rAF) while the button is down and after it
-     is up, the delay to the first one and the largest gap: [cvphb:] */
-  const HB = { down: -1, up: -1, f1: -1, fdn: 0, fup: 0, gap: 0, pf: 0, raf: 0 };
-  window.addEventListener("pointerdown", () => {
-    const now = performance.now(); Object.assign(HB, { down: now, up: -1, f1: -1, fdn: 0, fup: 0, gap: 0, pf: now });
-    if (!HB.raf) { const tick = t => { if (HB.f1 < 0) HB.f1 = t - HB.down; if (HB.up < 0) HB.fdn++; else HB.fup++; HB.gap = Math.max(HB.gap, t - HB.pf); HB.pf = t; HB.raf = performance.now() - HB.down < 3000 ? requestAnimationFrame(tick) : 0; }; HB.raf = requestAnimationFrame(tick); }
-  }, true);
-  window.addEventListener("pointerup", () => { HB.up = performance.now(); }, true);
   const idOf = o => (o.m || o.s || o).id;
   function dragIds(c, s) {
     const d = s.drag;
@@ -191,8 +175,6 @@
       if (n.data && n.data.type === "group" && n.labelEl && n.labelEl.getClientRects().length) t += "|lab=" + R(n.labelEl);
       t += "]";
     }
-    if (HB.down >= 0) { const n = performance.now(); t += " [cvphb:down=" + Math.round(n - HB.down) + "|up=" + (HB.up < 0 ? "-" : Math.round(n - HB.up)) + "|f1=" + Math.round(HB.f1) + "|fdn=" + HB.fdn + "|fup=" + HB.fup + "|gap=" + Math.round(HB.gap) + "]"; }
-    if (s.dt) { const n = performance.now(), T = s.dt; t += " [cvpdt:n=" + T.n + "|first=" + Math.round(n - T.first) + "|last=" + Math.round(n - T.last) + "|fr=" + T.fr + "|gap=" + Math.round(T.gap) + "]"; }
     const dn = s.did && c.nodes.get(s.did);
     if (dn && dn.containerEl && dn.containerEl.getClientRects().length) t += " [cvpdrag:" + String(dn.id).replace(/[[\]|@]/g, "_") + "@" + R(dn.containerEl) + "]";
     return t;
