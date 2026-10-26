@@ -7701,6 +7701,39 @@ function canvasTok() {
   if (window.__osCanvasFiles) try { t += window.__osCanvasFiles.census(v); } catch (_) {}
   // goal cv-perf: [cvperf:vis=|total=|eupd=|emin=|emax=|moves=] painted cards and the last drag's edge re-paths (ui/plugins/canvas-perf.js)
   if (window.CanvasPerf) try { t += window.CanvasPerf.census(v); } catch (_) {}
+  // goal cvf-textedit: [cvted:<id>|ed=|sel=|cm=|bd=|mono=|h1=|cl=|l1=|l2=] each text card in edit or selected (at most 4):
+  // edit mode, the is-selected class, a CM6 editor, body / line-1 font px, monospace body, caret line, lines 1-2 as painted;
+  // [cvsug:n=<rows>|<first row>|foot=<0|1>@x,y] a visible link suggester (ui/plugins/canvas-cards.js)
+  try {
+    const VW = window.__osModules && window.__osModules["@codemirror/view"];
+    const fpx = x => parseFloat(getComputedStyle(x).fontSize) || 0;
+    const txt = x => esc(String(x.textContent || "").replace(/​/g, "")).replace(/\s+/g, " ").trim().slice(0, 40);
+    let k = 0;
+    for (const n of v.canvas.nodes.values()) {
+      if (k >= 4 || !n.data || n.data.type !== "text" || !vis(n.containerEl)) continue;
+      const ed = !!n.isEditing, sel = n.containerEl.classList.contains("is-selected");
+      if (!ed && !sel) continue;
+      k++;
+      const cme = ed ? n.contentEl.querySelector(".cm-editor") : null;
+      let s = " [cvted:" + esc(n.id) + "|ed=" + (ed ? 1 : 0) + "|sel=" + (sel ? 1 : 0) + "|cm=" + (cme ? 1 : 0);
+      if (cme) {
+        const cc = cme.querySelector(".cm-content") || cme, ls = [...cme.querySelectorAll(".cm-line")];
+        const big = l => { let m = fpx(l); for (const x of l.querySelectorAll("*")) if (String(x.textContent).trim()) m = Math.max(m, fpx(x)); return Math.round(m); };
+        let cl = 0, fo = 0;
+        try { const w = VW.EditorView.findFromDOM(cme); cl = w.state.doc.lineAt(w.state.selection.main.head).number; fo = w.hasFocus ? 1 : 0; } catch (_) {}
+        const ae = document.activeElement, aen = ae ? esc(String(ae.tagName || "").toLowerCase() + "." + String(ae.className || "").split(/\s+/)[0]).slice(0, 30) : "";
+        s += "|bd=" + Math.round(fpx(cc)) + "|mono=" + (/mono/i.test(getComputedStyle(cc).fontFamily) ? 1 : 0) + "|h1=" + (ls[0] ? big(ls[0]) : 0) +
+             "|cl=" + cl + "|l1=" + (ls[0] ? txt(ls[0]) : "") + "|l2=" + (ls[1] ? txt(ls[1]) : "") + "|fo=" + fo + "|ae=" + aen;
+      }
+      t += s + "]";
+    }
+    const sg = [...document.querySelectorAll(".canvas-link-suggest")].find(vis);
+    if (sg) {
+      const it = [...sg.querySelectorAll(".canvas-link-suggest-item")].filter(vis);
+      t += " [cvsug:n=" + it.length + "|" + (it[0] ? txt(it[0].querySelector(".canvas-link-suggest-title") || it[0]) : "") +
+           "|foot=" + (vis(sg.querySelector(".canvas-link-suggest-foot")) ? 1 : 0) + "@" + c(sg) + "]";
+    }
+  } catch (_) {}
   return t;
 }
 function folderMenu(e, f) {                 // right-click an explorer folder row: New canvas in that folder
