@@ -104,7 +104,10 @@
   }
   function restore(c, s) {
     const h = H(c);
+    const keep = [...c.selection].map(n => n.id);         // the selection outlives the rebuild (CVR-A-114)
     rebuild(c, JSON.parse(s));
+    c.deselectAll();
+    for (const id of keep) { const n = c.nodes.get(id); if (n) c.select(n, true); }
     h.last = snap(c);
     h.busy = true;
     try { c.requestSave(); } finally { h.busy = false; }

@@ -37,11 +37,11 @@
   // stock lays a dropped card with its TOP-LEFT on the drop point; develop centres it, and 961-cvjourney (J1, J3..J6)
   // asserts the centring. Coordinator ruling 2 (2026-10-26 03:15Z): stock placement waits behind this flag until the
   // operator lets cvjourney change. false = every explorer / toolbar drop is centred on the point (first card of a row).
-  const CV_DROP_TOPLEFT = false;
+  const CV_DROP_TOPLEFT = true;
   // stock adds a dropped folder's files recursively, one row at a 445 pitch; develop adds its direct files only, laid out by
   // CanvasArrange's grid with the grid's top-left on the point, and 954-cvdrop CV-100 asserts that. Coordinator ruling 3
   // (2026-10-26 03:30Z): the stock folder drop waits behind this flag. false = develop's folder drop.
-  const CV_DROP_FOLDER_STOCK = false;
+  const CV_DROP_FOLDER_STOCK = true;
   const IMG = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"]);
   const HOST = window.__osPluginHost;   // captured at load: the loader seals the host before plugins run
   const app = HOST && HOST.app ? HOST.app : null, X = HOST && HOST.api ? HOST.api : null;
@@ -350,8 +350,13 @@
     copied = ok ? txt : null; copyFailed = !ok;
     last.paste = "copy|" + (ok ? "os" : "internal-only");
   }
-  function internalPaste(c) {
-    try { return !!(window.CanvasHistory && window.CanvasHistory.paste(c)); } catch (_) { return false; }
+  function internalPaste(c) {   // our own card copy: cv-history pastes it, CanvasSelect centres it on the view in the same task (one undo step, CVR-A-119/C-055)
+    try {
+      const before = new Set(c.nodes.keys()), S = window.CanvasSelect;
+      if (!(window.CanvasHistory && window.CanvasHistory.paste(c))) return false;
+      if (S && typeof S.centrePaste === "function") S.centrePaste(c, before);
+      return true;
+    } catch (_) { return false; }
   }
   function linkClass(c) {   // canvas.js exposes its node classes read-only on the board (coordinator grant 2026-10-26)
     return (c && c.NODE_CLASS && c.NODE_CLASS.link) || null;

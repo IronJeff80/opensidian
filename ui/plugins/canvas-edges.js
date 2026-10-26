@@ -18,11 +18,11 @@
 
    - hovering near a card's side (inside it, or the band just outside) paints ONE
      connection handle, centred on that side's border; none near the card's centre.
-     Dragging it onto a card makes an edge with both sides set, onto empty board
-     makes a text card at the drop point and connects it
+     Dragging it onto a card makes an edge with both sides set; onto empty board
+     the edge dangles and a menu offers a card or a note from the vault there
    - an edge is hit within HIT px of its curve; a press selects it, Delete or
      Backspace removes it, a double press edits its label
-   - a hovered or selected edge paints a handle on each end: dragging an end onto
+   - a hovered edge gets a light halo; the selected edge paints a handle on each end: dragging an end onto
      a card reconnects it (same edge, same id, side re-picked), onto empty board
      removes the edge; on the selected edge, its line just before a card grabs that end too
    - the selected edge has a toolbar: delete, colour (palette), direction
@@ -67,7 +67,7 @@
     s.id = "canvas-edges-style";
     s.textContent = [
       ".canvas-edge-hit { cursor: pointer }",
-      ".canvas-edge.is-hovered > .canvas-edge-line { stroke-width: 3px !important }",
+      ".canvas-edge.is-hovered > .canvas-edge-hit { stroke: rgba(160, 160, 160, 0.3) !important }",
       ".canvas-edge.is-selected > .canvas-edge-line { stroke-width: 4px !important }",
       ".canvas-edge.is-dragging { opacity: 0.25 }",
       ".canvas-edge-label { cursor: pointer }",
@@ -235,7 +235,7 @@
     const hn = S.hnode && nodeData(c, S.hnode);
     if (hn && S.hside && !c.readonly && !(S.drag && S.drag.kind)) dot("canvas-edge-handle", S.handlesEl, handlePos(c, hn, S.hside), { node: hn.id, side: S.hside });
     S.endsEl.textContent = "";
-    if (!c.readonly && !(S.drag && S.drag.moved)) for (const id of new Set([S.hover, S.sel])) {
+    if (!c.readonly && !(S.drag && S.drag.moved)) for (const id of [S.sel]) {   // a hovered edge gets a halo, no end handles (CVR-C-081)
       const g = id && S.geo.get(id); if (!g) continue;
       dot("canvas-edge-end", S.endsEl, g.p1, { edge: id, end: "from" });
       dot("canvas-edge-end", S.endsEl, g.p2, { edge: id, end: "to" });
@@ -476,25 +476,13 @@
     window.addEventListener("pointercancel", up, true);
   }
   function drop(c, d, p) {
-    const S = c._cve, newId = S.ctx.newId;
     if (d.kind === "new") {
       const from = nodeData(c, d.node); if (!from) return;
       const tgt = nodeAt(c, p, 0, d.node);
       let to, toSide;
       if (tgt) { to = tgt.data; toSide = sideNear(c, to, p, from); }
-      else {   // empty board: a text card whose facing side sits on the drop point
-        const a = anchor(from, d.side), dx = p[0] - a[0], dy = p[1] - a[1], W = 250, H = 60;
-        let x, y;
-        if (Math.abs(dy) >= Math.abs(dx)) { toSide = dy >= 0 ? "top" : "bottom"; x = p[0] - W / 2; y = dy >= 0 ? p[1] : p[1] - H; }
-        else { toSide = dx >= 0 ? "left" : "right"; y = p[1] - H / 2; x = dx >= 0 ? p[0] : p[0] - W; }
-        const n = c.createTextNode({ pos: { x, y }, size: { width: W, height: H }, save: false });
-        to = n.data;
-      }
-      const ids = new Set([...c.nodes.keys(), ...c.edges.keys()]);
-      const id = typeof newId === "function" ? newId(ids) : "e" + Date.now().toString(16);
-      c.edges.set(id, { id, fromNode: from.id, fromSide: d.side, toNode: to.id, toSide });
-      S.sel = null;
-      save(c);
+      else return openDrop(c, from, d.side, p);   // empty board: the edge dangles, a menu asks what to add, nothing written yet
+      connect(c, from, d.side, to, toSide);
       return;
     }
     const e = c.edges.get(d.id); if (!e) return;
@@ -504,6 +492,41 @@
     e[k + "Node"] = tgt.data.id;
     e[k + "Side"] = endSide(c, tgt.data, p, d.trail);
     save(c);
+  }
+  function connect(c, from, side, to, toSide) {
+    const S = c._cve, newId = S.ctx.newId;
+    const ids = new Set([...c.nodes.keys(), ...c.edges.keys()]);
+    const id = typeof newId === "function" ? newId(ids) : "e" + Date.now().toString(16);
+    c.edges.set(id, { id, fromNode: from.id, fromSide: side, toNode: to.id, toSide });
+    S.sel = null;
+    save(c);
+  }
+  // a connection dropped on empty board: its line stays drawn to the drop point and a small menu offers a text card or a
+  // note from the vault there; only a choice writes (card + edge, one save); Escape or a press elsewhere drops it
+  function openDrop(c, from, side, p) {
+    const S = c._cve;
+    closeMenu(c);
+    const a = anchor(from, side), dx = p[0] - a[0], dy = p[1] - a[1];
+    const toSide = Math.abs(dy) >= Math.abs(dx) ? (dy >= 0 ? "top" : "bottom") : (dx >= 0 ? "left" : "right");
+    const place = (W, H) => toSide === "top" ? { x: p[0] - W / 2, y: p[1] } : toSide === "bottom" ? { x: p[0] - W / 2, y: p[1] - H }
+      : toSide === "left" ? { x: p[0], y: p[1] - H / 2 } : { x: p[0] - W, y: p[1] - H / 2 };
+    const add = (n) => { const f = nodeData(c, from.id); if (f && n) connect(c, f, side, n.data, toSide); refresh(c); ping(c); };
+    preview(c, a, p, side);
+    const q = c.toClient(p[0], p[1]), r = c.wrapperEl.getBoundingClientRect();
+    const m = el("div", "canvas-edge-menu", c.wrapperEl);
+    m.dataset.kind = "drop";
+    m.style.left = (q.x - r.left) + "px"; m.style.top = (q.y - r.top) + "px";
+    const item = (act, txt, fn) => {
+      const i = el("div", "canvas-edge-menu-item", m); i.dataset.act = act; i.textContent = txt;
+      i.addEventListener("click", e => { e.stopPropagation(); closeMenu(c); fn(); });
+    };
+    item("card", "Add card", () => add(c.createTextNode({ pos: place(250, 60), size: { width: 250, height: 60 }, save: false })));
+    const pick = window.CanvasMenus && window.CanvasMenus.pickNote;
+    if (pick) item("note", "Add note from vault", () => pick(c, path =>
+      add(c.createFileNode({ file: path, pos: place(400, 400), size: { width: 400, height: 400 }, save: false }))));
+    for (const ty of ["pointerdown", "dblclick", "wheel"]) m.addEventListener(ty, e => e.stopPropagation());
+    S.menu = m;
+    ping(c);
   }
   function onDbl(c, ev) {
     const S = c._cve, t = ev.target;
@@ -537,7 +560,7 @@
     select(c, id);
     ping(c);
   }
-  function closeMenu(c) { const S = c._cve; if (S.menu) { S.menu.remove(); S.menu = null; ping(c); } }
+  function closeMenu(c) { const S = c._cve; if (S.menu) { if (S.menu.dataset.kind === "drop") S.previewEl.style.display = "none"; S.menu.remove(); S.menu = null; ping(c); } }
   function onKey(c, ev) {
     const S = c._cve, t = ev.target;
     if (S.label && t === S.label.input) return;
@@ -580,7 +603,7 @@
     list("cvedir", '.canvas-edge-popup[data-pop="dir"] > button');
     if (S.label && vis(S.label.input)) t += " [cvelab:" + esc(S.label.id) + "]";
     if (S.hex && vis(S.hex.input)) t += " [cvehex:" + esc(S.hex.id) + "@" + ctr(S.hex.input) + "]";
-    if (S.menu && vis(S.menu)) t += " [cvemenu:" + [...S.menu.querySelectorAll(".canvas-edge-menu-item")].map(x => x.dataset.act + "@" + ctr(x)).join("|") + "]";
+    if (S.menu && vis(S.menu)) t += " [" + (S.menu.dataset.kind === "drop" ? "cvedrop" : "cvemenu") + ":" + [...S.menu.querySelectorAll(".canvas-edge-menu-item")].map(x => x.dataset.act + "@" + ctr(x)).join("|") + "]";
     const fit = c.controlsEl && c.controlsEl.querySelector(".canvas-control.mod-zoom-fit");
     if (vis(fit)) t += " [cvefit:" + ctr(fit) + "]";
     return t;

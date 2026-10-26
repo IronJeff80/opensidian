@@ -702,6 +702,6 @@
     return t;
   }
 
-  const api = { install, census, groupAround, groupAt, convertToFile };
+  const api = { install, census, groupAround, groupAt, convertToFile, pickNote };
   Object.defineProperty(window, "CanvasMenus", { configurable: true, enumerable: false, writable: false, value: Object.freeze(api) });
 })();
