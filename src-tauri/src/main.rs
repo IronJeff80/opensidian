@@ -370,18 +370,6 @@ fn serve_image(root: &Path, target: &str) -> Option<(&'static str, Vec<u8>)> {
    fd with O_NOFOLLOW at every component (a symlinked directory is refused even
    when it points back inside the vault), and the type comes from OUR list. */
 
-/// WebKitGTK reads this (comma list) to let its GStreamer player load extra schemes
-const GST_ALLOWED_ENV: &str = "WEBKIT_GST_ALLOWED_URI_PROTOCOLS";
-
-/// the env value with IMG_SCHEME added once; whatever the user already set is kept
-fn gst_allowed_protocols(cur: Option<&str>) -> String {
-    let mut v: Vec<&str> = cur.unwrap_or("").split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
-    if !v.contains(&IMG_SCHEME) {
-        v.push(IMG_SCHEME);
-    }
-    v.join(",")
-}
-
 /// ext -> Content-Type. Anything not listed is a 404.
 const MEDIA_TYPES: [(&str, &str); 12] = [
     ("mp3", "audio/mpeg"),
@@ -580,6 +568,47 @@ fn media_rename_in(root: &Path, from: &str, to: &str) -> Result<(), String> {
 fn media_rename(v: State<Vault>, from: String, to: String) -> Result<(), String> {
     let root = cur_vault(&v).ok_or("no vault open")?;
     media_rename_in(&root, &from, &to)
+}
+
+/// a canvas audio/video card's file larger than this is not loaded (the Blob
+/// lives in memory); the card stays an empty player
+const MEDIA_BLOB_MAX: u64 = 512 * 1024 * 1024;
+
+/// cvf-mediasrv (option A): WebKitGTK's GStreamer player only reads http(s) and
+/// blob: (no URI handler for a custom scheme), so the card assembles a Blob
+/// from bounded slices. Same gate as serve_media: NUL, `safe_rel`, the
+/// MEDIA_TYPES whitelist, the no-follow regular-file open; plus the size cap.
+/// Ok((file size, at most MEDIA_CHUNK bytes from `offset`)).
+fn media_read_in(root: &Path, path: &str, offset: u64) -> Result<(u64, Vec<u8>), String> {
+    use std::io::{Read, Seek, SeekFrom};
+    if path.contains('\0') {
+        return Err("invalid name".into());
+    }
+    let rel = safe_rel(path).ok_or("invalid name")?;
+    rel.extension().and_then(|e| e.to_str()).and_then(media_mime).ok_or("not a media file")?;
+    let mut f = media_open(root, &rel).ok_or("not found")?;
+    let size = f.metadata().map_err(|e| e.to_string())?.len();
+    if size > MEDIA_BLOB_MAX {
+        return Err("too large".into());
+    }
+    if offset > size {
+        return Err("offset past end".into());
+    }
+    f.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
+    let mut body = Vec::with_capacity(MEDIA_CHUNK.min(size - offset) as usize);
+    f.take(MEDIA_CHUNK).read_to_end(&mut body).map_err(|e| e.to_string())?;
+    Ok((size, body))
+}
+
+/// raw IPC body: 8-byte big-endian file size, then the slice (an ArrayBuffer in JS)
+#[tauri::command]
+fn media_read(v: State<Vault>, path: String, offset: u64) -> Result<tauri::ipc::Response, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    let (size, body) = media_read_in(&root, &path, offset)?;
+    let mut out = Vec::with_capacity(8 + body.len());
+    out.extend_from_slice(&size.to_be_bytes());
+    out.extend_from_slice(&body);
+    Ok(tauri::ipc::Response::new(out))
 }
 
 /// percent-ENCODE a vault-relative path for the `opensidian-img:` URL. Unreserved
@@ -5968,11 +5997,6 @@ fn main() {
     // BEFORE GTK starts, so GNOME groups every window under the launcher; the X11
     // class follows after gtk_init via appid::plugin() (appid.rs).
     appid::apply();
-    // cvf-mediasrv: WebKitGTK's GStreamer player refuses any URL scheme it does not
-    // know (isProtocolAllowed -> MEDIA_ERR_SRC_NOT_SUPPORTED, measured on the box),
-    // so audio/video cards on IMG_SCHEME never load. Name the ONE scheme we serve,
-    // before any webview (the web process inherits the env at spawn).
-    std::env::set_var(GST_ALLOWED_ENV, gst_allowed_protocols(std::env::var(GST_ALLOWED_ENV).ok().as_deref()));
     // RENAME MIGRATION (goal opensidian): old -> new table in migrate.rs —
     //   ~/.rustidian.json -> ~/.opensidian.json,
     //   <vault>/.rustidian-bookmarks -> <vault>/.opensidian-bookmarks (per vault, read_bm_tree),
@@ -6278,7 +6302,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, canvas_io, canvas_attach, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, media_rename, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
             read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
@@ -9344,17 +9368,6 @@ mod tests {
     }
 
     #[test]
-    fn gst_allowed_protocols_adds_only_the_media_scheme_once() {
-        assert_eq!(gst_allowed_protocols(None), "opensidian-img");
-        assert_eq!(gst_allowed_protocols(Some("")), "opensidian-img");
-        assert_eq!(gst_allowed_protocols(Some("foo")), "foo,opensidian-img");
-        assert_eq!(gst_allowed_protocols(Some("opensidian-img")), "opensidian-img");
-        assert_eq!(gst_allowed_protocols(Some(" a , ,opensidian-img")), "a,opensidian-img");
-        // never a scheme we do not serve (no http(s), no file)
-        assert!(!gst_allowed_protocols(None).split(',').any(|s| matches!(s, "http" | "https" | "file")));
-    }
-
-    #[test]
     fn media_range_bounds_single_range_only() {
         let (root, outside) = media_vault("media-range");
         let get = |h: &str| serve_media(&root, "tone.mp3", Some(h)).unwrap();
@@ -9471,6 +9484,44 @@ mod tests {
         let _ = fs::remove_dir_all(&outside);
     }
 
+    #[test]
+    fn media_read_returns_bounded_slices_with_the_size() {
+        let (root, outside) = media_vault("mread-ok");
+        assert_eq!(media_read_in(&root, "tone.mp3", 0).unwrap(), (10, b"0123456789".to_vec()));
+        assert_eq!(media_read_in(&root, "tone.mp3", 7).unwrap(), (10, b"789".to_vec()));
+        assert_eq!(media_read_in(&root, "tone.mp3", 10).unwrap(), (10, Vec::new()));
+        assert!(media_read_in(&root, "tone.mp3", 11).is_err());
+        assert_eq!(media_read_in(&root, "sub/clip.MP4", 0).unwrap().1, b"vid");
+        // a big file comes back one MEDIA_CHUNK at a time
+        let big = fs::File::create(root.join("big.webm")).unwrap();
+        big.set_len(MEDIA_CHUNK + 5).unwrap();
+        let (n, b) = media_read_in(&root, "big.webm", 0).unwrap();
+        assert_eq!((n, b.len() as u64), (MEDIA_CHUNK + 5, MEDIA_CHUNK));
+        assert_eq!(media_read_in(&root, "big.webm", MEDIA_CHUNK).unwrap().1.len(), 5);
+        // over the cap: refused without reading (sparse file)
+        fs::File::create(root.join("huge.mp4")).unwrap().set_len(MEDIA_BLOB_MAX + 1).unwrap();
+        assert_eq!(media_read_in(&root, "huge.mp4", 0).unwrap_err(), "too large");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn media_read_refuses_traversal_symlinks_and_other_types() {
+        use std::os::unix::fs::symlink;
+        let (root, outside) = media_vault("mread-bad");
+        symlink("/etc/hostname", root.join("evil.mp3")).unwrap();
+        symlink(&outside, root.join("outdir")).unwrap();
+        fs::write(root.join("note.md"), b"x").unwrap();
+        fs::write(root.join("pic.png"), b"x").unwrap();
+        let abs = outside.join("secret.mp3");
+        for p in ["evil.mp3", "outdir/secret.mp3", "../secret.mp3", "sub/../../secret.mp3", abs.to_str().unwrap(),
+                  "tone.mp3\0", "note.md", "pic.png", "missing.mp3", "sub"] {
+            assert!(media_read_in(&root, p, 0).is_err(), "{p:?} was read");
+        }
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
     /// R29 + S1: the CSP is a security boundary, so it is asserted as an EXACT
     /// string. A future widening (`img-src *`, an http origin, a stray
     /// 'unsafe-inline' in script-src) then fails a test instead of shipping
@@ -9485,15 +9536,15 @@ mod tests {
         assert_eq!(
             csp,
             "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
-             img-src 'self' data: opensidian-img:; media-src 'self' opensidian-img:; font-src 'self'; \
+             img-src 'self' data: opensidian-img:; media-src 'self' blob:; font-src 'self'; \
              connect-src ipc: http://ipc.localhost",
             "the CSP changed — if that was deliberate, say why in the commit message"
         );
-        // cvf-mediasrv (ruling 1.1): audio/video ride OUR scheme and nothing else —
-        // no wildcard, no remote origin, no blob:/data: in media-src
+        // cvf-mediasrv (option A): audio/video play from a Blob the card builds —
+        // media-src: self + blob: only (the card Blob) — no wildcard, no remote origin, no data:, no scheme
         let media = csp.split("; ").find(|d| d.starts_with("media-src ")).unwrap();
-        assert_eq!(media, format!("media-src 'self' {IMG_SCHEME}:"));
-        assert!(!media.contains('*') && !media.contains("http") && !media.contains("data:") && !media.contains("blob:"), "media-src names a remote origin: {media}");
+        assert_eq!(media, "media-src 'self' blob:");
+        assert!(!media.contains('*') && !media.contains("http") && !media.contains("data:") && !media.contains(IMG_SCHEME), "media-src widened: {media}");
         // R29: the image widening is ONE scheme token, and it is ours
         let img = csp.split("; ").find(|d| d.starts_with("img-src ")).unwrap();
         assert_eq!(img, format!("img-src 'self' data: {IMG_SCHEME}:"));
@@ -9526,12 +9577,18 @@ mod tests {
             .unwrap()
             .to_string();
         assert_eq!(csp_by_trust(&base, false), base);
-        assert!(!csp_by_trust(&base, false).split_whitespace().any(|t| t == "'unsafe-eval'" || t.starts_with("blob:")));
+        // restricted: no eval, no blob: in script-src / worker-src (media-src 'self' blob: is the media card Blob, cvf-mediasrv)
+        let sw = |c: &str| c.split("; ").filter(|d| d.starts_with("script-src") || d.starts_with("worker-src")).collect::<Vec<_>>().join(" ");
+        assert!(!csp_by_trust(&base, false).split_whitespace().any(|t| t == "'unsafe-eval'"));
+        assert!(!sw(&csp_by_trust(&base, false)).split_whitespace().any(|t| t.starts_with("blob:")));
+        // trusted widening adds nothing to media-src
+        let ms = |c: &str| c.split("; ").find(|d| d.starts_with("media-src")).map(str::to_owned);
+        assert_eq!(ms(&csp_by_trust(&base, true)), ms(&base));
         let t = csp_by_trust(&base, true);
         assert_eq!(
             t,
             "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval' 'unsafe-eval' blob:; \
-             style-src 'self' 'unsafe-inline'; img-src 'self' data: opensidian-img:; media-src 'self' opensidian-img:; font-src 'self'; \
+             style-src 'self' 'unsafe-inline'; img-src 'self' data: opensidian-img:; media-src 'self' blob:; font-src 'self'; \
              connect-src ipc: http://ipc.localhost 'self'; worker-src 'self' blob:"
         );
         // every directive other than script-src / worker-src / connect-src is byte-identical

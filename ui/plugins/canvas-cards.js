@@ -37,6 +37,22 @@
   const extOf = p => { const n = String(p || "").split("/").pop(); const d = n.lastIndexOf("."); return d > 0 ? n.slice(d + 1).toLowerCase() : ""; };
   const nameOf = p => String(p || "").split("/").pop();
   const mediaUrl = p => "opensidian-img://localhost/" + String(p).split("/").map(encodeURIComponent).join("/");
+  // goal cvf-mediasrv: WebKitGTK's media player reads http(s) and blob: only (no handler for the
+  // image scheme), so an audio/video card gets a Blob built from bounded media_read slices
+  const MIME = { mp3: "audio/mpeg", m4a: "audio/mp4", ogg: "audio/ogg", wav: "audio/wav", flac: "audio/flac", webm: "video/webm", mp4: "video/mp4", ogv: "video/ogg", mov: "video/quicktime" };
+  async function mediaBlob(p) {
+    const T = window.__TAURI__, inv = T && T.core && T.core.invoke;
+    if (!inv) throw new Error("no ipc");
+    const parts = []; let off = 0, size = 0;
+    do {
+      const buf = await inv("media_read", { path: p, offset: off });
+      size = Number(new DataView(buf, 0, 8).getBigUint64(0));
+      const c = buf.slice(8);
+      if (!c.byteLength && off < size) throw new Error("short read");
+      parts.push(c); off += c.byteLength;
+    } while (off < size);
+    return URL.createObjectURL(new Blob(parts, { type: MIME[extOf(p)] || "" }));
+  }
   const mk = (tag, cls, parent) => { const e = document.createElement(tag); if (cls) e.className = cls; if (parent) parent.appendChild(e); return e; };
   const ping = ctx => { if (ctx && ctx.deps && typeof ctx.deps.changed === "function") try { ctx.deps.changed(); } catch (_) {} };
   const later = (ctx, ms) => setTimeout(() => ping(ctx), ms || 30);
@@ -371,6 +387,7 @@
     wire(node, ctx);
     const p = String(node.data.file || ""), ext = ctx.file && ctx.file.extension ? String(ctx.file.extension).toLowerCase() : extOf(p);
     node.containerEl.classList.remove("cc-media");
+    if (node._cc && node._cc.blob) { URL.revokeObjectURL(node._cc.blob); node._cc.blob = ""; }
     // the vault model lists notes, canvases and images only: no TFile for an .mp3/.zip says nothing
     const tracked = ext === "md" || ext === "canvas" || IMG.has(ext);
     if (ext === "md" || ext === "canvas" || (ctx.missing && tracked) || !p) { node._cc = { kind: ext === "md" && !ctx.missing ? "note" : "missing" }; return false; }   // goal cv-model: a note not in the vault model is missing, not a note
@@ -388,9 +405,10 @@
       const kind = AUD.has(ext) ? "audio" : "video";
       const m = mk(kind, "canvas-file-media", host);
       m.controls = true; m.preload = "metadata";
-      m.src = mediaUrl(p);
       node.containerEl.classList.add("cc-media");
-      node._cc = { kind, media: m };
+      const cc = node._cc = { kind, media: m, blob: "" };
+      mediaBlob(p).then(u => { if (node._cc !== cc) { URL.revokeObjectURL(u); return; } cc.blob = u; m.src = u; },
+        e => { console.error("[canvas] media card " + p + ":", e); ping(ctx); });
       return true;
     }
     const box = mk("div", "canvas-file-other", host);
