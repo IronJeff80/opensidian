@@ -7444,7 +7444,7 @@ function cvNewCanvasFolder() {
   const cf = window.__osCanvasCfg, loc = cf ? cf.get("newFileLocation") : "";
   if (loc === "root") return "";
   if (loc === "folder") return String(cf.get("newFileFolderPath") || "").replace(/^\/+|\/+$/g, "");
-  return cvActiveFolder();
+  return cvActiveFolder();   // "current" (stock name; settings.js maps an older "same" to it)
 }
 // open a .canvas file in a canvas tab of the focused group (the view type must be registered: core plugin on)
 async function openCanvas(path, how) {     // how: "split" -> a new pane to the right (CVR-A-083 Open to the right)
@@ -7467,7 +7467,17 @@ async function cmdNewCanvas(folder) {
     try { await inv("canvas_io", { op: "create", path: p, data: body }); }
     catch (e) { if (/EEXIST/.test(String(e && e.message || e))) continue; say(String(e && e.message || e), "canvas"); return null; }
     await refreshTree();
-    await openCanvas(p);
+    /* goal cvf-create CVR-A-002: the new board takes the CURRENT tab (the active note / board goes), unless that
+       tab is pinned. The leaf shim opens a typed view beside its tab, so the old tab is saved first and closed
+       after the board is up. CVR-A-005: then its header title is focused and selected for a rename. */
+    const g = fg(), t0 = g && g.active >= 0 ? g.tabs[g.active] : null;
+    if (t0 && !t0.pinned) { try { await flushSave(g); } catch (_) {} }
+    const leaf = await openCanvas(p);
+    if (t0 && !t0.pinned && leaf) {
+      const i = g.tabs.indexOf(t0);
+      if (i >= 0 && g.tabs[g.active] !== t0) { try { await closeTab(g, i, "user-close", "canvas-new", true); } catch (e) { console.error("[canvas] replace tab:", e); } }
+    }
+    try { const v = leaf && leaf.view; if (v && v.editTitle) v.editTitle(); } catch (_) {}
     return p;
   }
   say("Could not find a free name for the new canvas", "canvas");
@@ -7563,6 +7573,7 @@ async function cvRetarget(old, np) {
   return true;
 }
 let cvRenamePending = null;
+window.__osCvRetarget = (old, np) => cvRetarget(old, np);   // goal cvf-create CVR-A-005/018: the canvas header title renames through here
 function cvRename(p) {
   const inp = $("rninput");
   cvRenamePending = p;
@@ -7981,6 +7992,41 @@ function canvasTok() {
   } catch (_) {}
   return t;
 }
+/* goal cvf-create CVR-A-009 (coordinator ruling 03:00Z): the full folder menu in stock order. Off until the operator's
+   go on phase canvasui step 4 (asserts the single-item menu); flipping it on is this one line. Rows without a backend
+   (no folder rename/delete/copy/move command, no clipboard write, no file-manager handler, no bases) are listed
+   disabled with the reason, as the other explorer menus do. */
+const CV_FOLDERMENU_FULL = false;
+function folderMenuFull(item, sep, f) {
+  const dir = String(f || "").replace(/^\/+|\/+$/g, "");
+  item("New note", async () => {
+    if (!state) return;
+    const g = fg();
+    await flushSave(g);
+    let name = (dir ? dir + "/" : "") + "Untitled", r = await createNote(name);
+    for (let i = 1; r === "exists" && i < 100; i++) { name = (dir ? dir + "/" : "") + "Untitled " + i; r = await createNote(name); }
+    if (r !== "ok") return;
+    await refreshTree();
+    g.tabs.push(mkTab(name));
+    g.active = g.tabs.length - 1;
+    await loadActive(g);
+  });
+  item("New folder", () => { $("fnew").hidden = false; $("fname").value = dir ? dir + "/" : ""; $("fname").focus(); });
+  item("New canvas", () => cmdNewCanvas(f));
+  item("New base", null, "Missing subsystem: bases (.base files) are not implemented");
+  sep();
+  item("Make a copy", null, "Missing subsystem: no folder copy command in the backend");
+  item("Move folder to...", null, "Missing subsystem: no folder move command in the backend");
+  item("Search in folder", null, "Missing subsystem: the search pane has no path: scope from a menu");
+  sep();
+  item("Bookmark", null, "Bookmarks hold note names (.obsidian/bookmarks.json, R9.4); a folder is not a note");
+  item("Copy path", null, "Missing subsystem: a programmatic clipboard write (clipboard access exists only inside real copy/paste events, ui/editor.js)");
+  sep();
+  item("Show in system explorer", null, "Missing subsystem: a file-manager handler");
+  sep();
+  item("Rename...", null, "Missing subsystem: no folder rename command in the backend");
+  item("Delete", null, "Missing subsystem: no folder delete command in the backend");
+}
 function folderMenu(e, f) {                 // right-click an explorer folder row: New canvas in that folder
   if (!CANVAS || !CANVAS.isRegistered()) return;   // no row to offer -> the browser's own (suppressed) menu stays as before
   e.preventDefault();
@@ -7988,8 +8034,9 @@ function folderMenu(e, f) {                 // right-click an explorer folder ro
   closeMenu();
   const m = document.createElement("div");
   m.className = "ctxmenu";
-  const { item } = bmMenuItems(m);
-  item("New canvas", () => cmdNewCanvas(f));
+  const { item, sep } = bmMenuItems(m);
+  if (CV_FOLDERMENU_FULL) folderMenuFull(item, sep, f);
+  else item("New canvas", () => cmdNewCanvas(f));
   m.dataset.mt = "folder:" + String(f).replace(/[|\]]/g, "");
   placeMenu(m, e.clientX, e.clientY);
 }
@@ -9036,7 +9083,7 @@ const CMDS = [
   ["file-explorer:new-file",   "Create new note",                     ["ctrl+n"],               cmdNewNote],
   ["file-explorer:new-file-in-new-pane", "Create note to the right",  ["ctrl+shift+n"],         async () => { await splitWith(fg(), "row", null); await cmdNewNote(); }],
   ["file-explorer:new-folder", "Create new folder",                   [],                       () => { $("fnew").hidden = false; $("fname").value = ""; $("fname").focus(); }],
-  ["canvas:new-file",          "Create new canvas",                   [],                       () => cmdNewCanvas(cvNewCanvasFolder()), CV_PALETTE_HIDE_OFF ? () => !!(CANVAS && CANVAS.isRegistered()) : null],
+  ["canvas:new-file",          "Canvas: Create new canvas",           [],                       () => cmdNewCanvas(cvNewCanvasFolder()), CV_PALETTE_HIDE_OFF ? () => !!(CANVAS && CANVAS.isRegistered()) : null],
   // goal cv-files CV-149 (REDUCED): there is no empty-tab surface (zero tabs = a blank pane), so the
   // "New canvas" action of an empty workspace is a palette row offered only while no tab is open
   ["canvas:new-file-no-tab",   "New canvas",                          [],                       () => cmdNewCanvas(""),
