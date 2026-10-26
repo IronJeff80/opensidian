@@ -63,7 +63,9 @@
   }
   function lod(c) {
     const w = c.wrapperEl; if (!w) return;
-    const on = lodOf(c);
+    // not on boards of BIG cards or more: the bare box would undo cvf-board's .cvn-hide-content there and paint
+    // every card of a fitted big board at open (cvperf CV-168, round 4 bisect VB/VC); nothing to read at that size anyway.
+    const on = c.nodes.size < BIG && lodOf(c);
     if (on !== w.classList.contains("cvp-lod")) w.classList.toggle("cvp-lod", on);
   }
   function cull(c) {
