@@ -6608,8 +6608,29 @@ async function moveNoteTo(nm, folder) {
 // .active highlight. R20: treeHighlight() is the zero-IPC half (tab switch /
 // focus change); refreshTree() re-lists the vault (watcher, create, rename).
 let treeSig = "", treeRows = new Map(), treeActive = null;
+/* goal cvf-filecards CVR-B-037 (seam, coordinator grant 2026-10-26; cvf-media reuses it): a canvas file card that is the
+   lone selection makes ITS file the active file while its board tab is the one showing — the explorer highlights its
+   row and the status bar counts its backlinks. setCanvasActiveFile(vault path | null); the board hands it back with null.
+   Bound to the tab it was set from, so a closed / switched-away board never leaves a stale active file behind. */
+let cvAct = null;                        // { name: note name (no .md), tab }
+const cvActName = () => { const g = state && fg(); const t = g && g.active >= 0 ? g.tabs[g.active] : null; return cvAct && t && cvAct.tab === t ? cvAct.name : null; };
+function setCanvasActiveFile(p) {
+  const g = state && fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
+  cvAct = p && t ? { name: wsPathIn(String(p)), tab: t } : null;
+  treeHighlight();
+  if (!g) return;
+  if (cvAct) {
+    const nm = cvAct.name;
+    g.stWc.hidden = g.stCc.hidden = true;      // a board has no words of its own: the line is the card note's backlinks
+    inv("backlinks", { name: nm }).then(bl => {
+      if (cvActName() !== nm) return;
+      g.stBl.textContent = bl.length + (bl.length === 1 ? " backlink" : " backlinks");
+      g.status.hidden = false;
+    }).catch(() => {});
+  } else if (t && t.kind === "unk") g.status.hidden = true;   // back to the board: no status line (loadActive)
+}
 function treeHighlight() {
-  const r = treeRows.get(cur()) || null;
+  const r = treeRows.get(cvActName() || cur()) || null;
   if (r === treeActive) return;
   treeSelClear();                        // cv-journeys: a navigation ends a multi-row selection (stock)
   if (treeActive) treeActive.classList.remove("active");
@@ -6849,6 +6870,7 @@ async function updateStatus(g) {
   g.stWc.style.display = g.stCc.style.display = "";
   const n = curOf(g);
   if (!n || g.graphOn) { g.status.hidden = true; return; }
+  g.stWc.hidden = g.stCc.hidden = false;      // cvf-filecards: a board card note hid them (setCanvasActiveFile)
   const v = g.editor.value;
   const w = (v.match(/\S+/g) || []).length;
   g.stWc.textContent = w + (w === 1 ? " word" : " words");
@@ -7989,6 +8011,13 @@ function canvasTok() {
       t += " [cvsug:n=" + it.length + "|" + (it[0] ? txt(it[0].querySelector(".canvas-link-suggest-title") || it[0]) : "") +
            "|foot=" + (vis(sg.querySelector(".canvas-link-suggest-foot")) ? 1 : 0) + "@" + c(sg) + "]";
     }
+  } catch (_) {}
+  // goal cvf-filecards: [cvfact:tree=<the explorer's active row: note path .md | board path | ->|bl=<status-bar backlinks text | ->]
+  try {
+    const ar = document.querySelector("#tree .trow.active");
+    const an = ar ? (ar.dataset.note != null ? ar.dataset.note + ".md" : ar.dataset.canvas || ar.dataset.file || "-") : "-";
+    const g = fg(), bl = g && g.status && !g.status.hidden && g.stBl ? String(g.stBl.textContent || "").trim() : "";
+    t += " [cvfact:tree=" + esc(an) + "|bl=" + esc(bl || "-") + "]";
   } catch (_) {}
   return t;
 }
