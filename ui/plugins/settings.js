@@ -292,9 +292,13 @@
     return inv("settings_model", { vcfg: patch === undefined ? { file } : { file, patch } });
   };
   const say_ = m => { try { if (typeof say === "function") say(m, "canvas"); } catch (_) {} };
-  // goal cvf-create (ruling 03:00Z): same-folder is written "current", as stock writes it; an older "same" reads as "current"
+  // goal cvf-create (ruling 03:00Z): same-folder is "current" (stock's name); "same" (written today, see below) reads as "current"
   const cvRaw = k => (Object.prototype.hasOwnProperty.call(cvc.canvas, k) && cvc.canvas[k] != null ? cvc.canvas[k] : CV_DEF[k]);
-  const cvGet = k => (k === "newFileLocation" && cvRaw(k) === "same" ? "current" : cvRaw(k));
+  const cvNorm = (k, v) => (k === "newFileLocation" && v === "same" ? "current" : v);
+  const cvGet = k => cvNorm(k, cvRaw(k));
+  /* the backend (src-tauri/src/settings.rs, not this goal's file) accepts only "same" for same-folder today, so the
+     dropdown writes "same" and reads both; writing "current" is this one line once the backend takes it (BLOCKERS.md) */
+  const CV_LOC_SAME_WRITE = "same";
   const cvEmit = keys => { for (const f of cvc.subs) { try { f(keys); } catch (e) { console.error("[canvas] cfg listener:", e); } } };
   // writes go out in order, one at a time (a slider drag is many patches; the file holds the last)
   let cvQ = Promise.resolve();
@@ -379,7 +383,7 @@
     // an option may carry a stored value apart from its id: [id, label, stored] (cvf-create: loc "same" is written "current")
     const sv = o => (o.length > 2 ? o[2] : o[0]);
     const curV = String(cvGet(key));
-    const cur = (opts.find(o => sv(o) === curV) || [curV])[0];
+    const cur = (opts.find(o => cvNorm(key, sv(o)) === curV) || [curV])[0];
     const lab = (opts.find(o => o[0] === cur) || opts[0])[1];
     d.textContent = lab; d.title = lab; d.style.width = "220px";
     d.dataset.cvsp = ctl; d.dataset.val = cur; d.tabIndex = 0;
@@ -423,7 +427,7 @@
     let n = 0;
     const r = (label, desc, ctls) => { n++; return row(c, label, desc, ctls); };
     r("Default location for new canvas files", "Where a new canvas goes when you create one from the palette or the ribbon.",
-      [dropdown("loc", "newFileLocation", [["same", "Same folder as current file", "current"], ["root", "Vault folder"], ["folder", "In the folder specified below"]])]);
+      [dropdown("loc", "newFileLocation", [["same", "Same folder as current file", CV_LOC_SAME_WRITE], ["root", "Vault folder"], ["folder", "In the folder specified below"]])]);
     if (cvGet("newFileLocation") === "folder") {
       const f = el("input", "sctl text live");
       f.type = "text"; f.spellcheck = false; f.autocomplete = "off"; f.placeholder = "Example: folder/sub";
