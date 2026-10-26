@@ -620,6 +620,8 @@
     try { e.dataTransfer.dropEffect = "copy"; } catch (_) {}
   }
   function onDrop(c, e) {
+    // goal cvf-drop (coordinator grant 2026-10-26): canvas-drop.js lays out every explorer drop (file, selection, folder)
+    if (window.CanvasDrop && typeof window.CanvasDrop.drop === "function") { window.CanvasDrop.drop(c, e); return; }
     const fs = dragged(c);
     if (ro(c) || !fs.length) return;
     e.preventDefault(); e.stopPropagation();

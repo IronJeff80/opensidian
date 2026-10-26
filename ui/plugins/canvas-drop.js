@@ -95,8 +95,8 @@
   /* ---------------------------------------------- goal cvf-drop: everything dragged from the file explorer
      The explorer's mouse machine (main.js) offers a drag over a plugin view as dragover/drop whose payload is
      app.dragManager.draggable: {type:"file", file}, {type:"files", files} (a Shift+click selection) or
-     {type:"folder", file: TFolder}. This file takes all three over a board, in CAPTURE on the document, so the
-     drop is decided here once (canvas-menus' own wrapper handler never sees a drop this file took).
+     {type:"folder", file: TFolder}. This file takes all three over a board: canvas-menus' wrapper drop handler hands every
+     drop to drop() below (one handler per drop; coordinator grant 2026-10-26).
      Measured on stock 1.13.7 (docs/recon-cv2/A, black-box):
        one file      -> one card whose TOP-LEFT is the drop point; 400 wide; a note / PDF / anything else 400 high,
                         an image or a video as high as its aspect makes it (320x200 -> 400x250), audio 42 high
@@ -191,11 +191,14 @@
     e.preventDefault();
     try { e.dataTransfer.dropEffect = "copy"; } catch (_) {}
   }
-  async function onDrop(e) {
-    const d = payload(); if (!d) return;
-    const c = boardAt(e.target); if (!c || ro(c)) return;
+  // canvas-menus' wrapper drop handler -> here; true = taken (the rest runs async)
+  function drop(c, e) {
+    const d = payload(); if (!d || !c || ro(c)) return false;
     e.preventDefault(); e.stopPropagation();
-    const p = c.toCanvas(e.clientX, e.clientY);
+    place2(c, d, c.toCanvas(e.clientX, e.clientY));
+    return true;
+  }
+  async function place2(c, d, p) {
     if (d.kind === "folder") {
       if (d.paths.length > CAP) {
         last.fold = d.name + "|n=0|cap=" + CAP;
@@ -263,18 +266,15 @@
     if (catcher) catcher.textContent = "";
     if (p && p.back && p.back.isConnected && document.activeElement === catcher) try { p.back.focus({ preventScroll: true }); } catch (_) {}
   }
-  /* goal cvf-drop: the OS clipboard wins (stock, CVR-A-035/036, C-057/058/059). Ctrl+V on a board is decided here
-     before cv-history sees the key: text -> a 250x60 text card centred on the view, opened for editing (the literal
+  /* goal cvf-drop: the OS clipboard wins (stock, CVR-A-035/036, C-057/058/059). Ctrl+V on a board: cv-history's key entry asks
+     pasteKey() first (coordinator grant 2026-10-26): text -> a 250x60 text card centred on the view, opened for editing (the literal
      text: "[[Beta]]" or a vault path stays text); an http(s) URL alone -> a 400x400 link card centred on the view; an
      image -> "Pasted image <stamp>.png" (below). A card copy (Ctrl+C on the board, cv-history) is ALSO written to the
      OS clipboard as its JSON, so a paste of exactly that text is our own copy and goes back to cv-history's paste;
      a copy the OS clipboard refused leaves Ctrl+V to cv-history as before. */
   let copied = null, copyFailed = false;
-  function onCopyKey(e) {
-    if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || String(e.key).toLowerCase() !== "c" || !app || inEd(e.target)) return;
-    const top = e.target === document.body || e.target === document.documentElement;
-    const c = boardAt(e.target) || (top ? activeBoard() : null);
-    if (!c || !c.selection || !c.selection.size) return;
+  function mirror(c) {   // cv-history's Ctrl+C entry calls this after its own copy (coordinator grant)
+    if (!app || !c || !c.selection || !c.selection.size) return;
     const ids = new Set([...c.selection].map(n => n.id));
     const txt = JSON.stringify({ nodes: [...c.selection].map(n => n.data), edges: [...c.edges.values()].filter(x => ids.has(x.fromNode) && ids.has(x.toNode)) });
     const k = catcherEl(), back = document.activeElement;
@@ -322,16 +322,12 @@
     const taken = c.ids();
     for (;;) { const b = new Uint8Array(8); crypto.getRandomValues(b); const id = Array.from(b, x => x.toString(16).padStart(2, "0")).join(""); if (!taken.has(id)) return id; }
   }
-  function onPasteKey(e) {
-    if (e.defaultPrevented || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || String(e.key).toLowerCase() !== "v") return;
-    if (!app) { last.paste = "key|no-app"; return; }
-    if (inEd(e.target)) return;
-    // the keydown lands on the focused element: a card, the wrapper, or body (a click on the empty board focuses nothing)
-    const top = e.target === document.body || e.target === document.documentElement;
-    const c = boardAt(e.target) || (top ? activeBoard() : null);
-    if (!c || ro(c)) { if (top) { last.paste = "key|no-board"; ping(c); } return; }
-    if (copyFailed) return;             // goal cvf-drop: the last card copy never reached the OS clipboard: cv-history pastes it (old road)
-    e.stopPropagation();                // goal cvf-drop: the OS clipboard decides (text / URL / image); a paste of our own card copy hands back to cv-history
+  /* Ctrl+V on board c, from cv-history's key entry (the wrapper or a card has focus) or from onPasteKey below (body
+     has focus: a click on the empty board focuses nothing). true = armed: the key's default action must run (no
+     preventDefault), the paste lands in the catcher. false = the last card copy never reached the OS clipboard:
+     cv-history pastes it (old road). */
+  function pasteKey(c) {
+    if (!app || !c || ro(c) || copyFailed) return false;
     pasteFor = { c, back: document.activeElement };
     const k = catcherEl();
     k.textContent = "";
@@ -343,6 +339,15 @@
       if (pasteFor && last.paste === "key|armed") { last.paste = "key|no-paste-event"; internalPaste(c); ping(c); }
       giveBack();
     }, 0);
+    return true;
+  }
+  function onPasteKey(e) {   // only a key cv-history cannot see: focus on body, a board up
+    if (e.defaultPrevented || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || String(e.key).toLowerCase() !== "v") return;
+    if (!app) { last.paste = "key|no-app"; return; }
+    if (e.target !== document.body && e.target !== document.documentElement) return;
+    const c = activeBoard();
+    if (!c || ro(c)) { last.paste = "key|no-board"; return ping(c); }
+    if (!pasteKey(c)) { internalPaste(c); ping(c); }
   }
   function b64(buf) {
     const u = new Uint8Array(buf); let s = "";
@@ -474,7 +479,7 @@
   }
   const invG = () => { try { return typeof inv === "function" ? inv : null; } catch (_) { return null; } };   // main.js (global lexical)
   function ping(c) { try { if (typeof updateTitle === "function") updateTitle(); } catch (_) {} }
-  document.addEventListener("keydown", e => { onCopyKey(e); onPasteKey(e); }, true);   // capture: before the board's own Ctrl+C / Ctrl+V (cv-history)
+  document.addEventListener("keydown", onPasteKey);
   // the paste lands where the engine puts it: the catcher when the focus move took, else the old focus (body / the
   // board wrapper) — a paste outside any editor while a board is up is the board's
   document.addEventListener("paste", e => {
@@ -484,10 +489,9 @@
     if (!c) return;
     if (!pasteFor) pasteFor = { c, back: null };
     onPaste(e);
-  }, true);
+  });
 
-  document.addEventListener("dragover", onDragOver, true);   // capture: the board decides an explorer drop here, once
-  document.addEventListener("drop", onDrop, true);
+  document.addEventListener("dragover", onDragOver);   // the drop itself: canvas-menus' wrapper onDrop hands it to drop() (coordinator grant)
   document.addEventListener("pointermove", e => {
     const w = e.target && e.target.closest ? e.target.closest(".canvas-wrapper") : null;
     if (w) ptr = { x: e.clientX, y: e.clientY, w };
@@ -504,6 +508,6 @@
     return t;
   }
 
-  const api = { claim, attach, census, CAP };
+  const api = { claim, attach, census, CAP, drop, pasteKey, mirror };
   Object.defineProperty(window, "CanvasDrop", { configurable: true, enumerable: false, writable: false, value: Object.freeze(api) });
 })();
