@@ -490,8 +490,10 @@ fn media_rename_in(root: &Path, from: &str, to: &str) -> Result<(), String> {
 
 #[tauri::command]
 fn media_rename(v: State<Vault>, from: String, to: String) -> Result<(), String> {
-    let root = cur_vault(&v).ok_or("no vault open")?;
-    media_rename_in(&root, &from, &to)
+    span_timed!("media_rename", (|| {
+        let root = cur_vault(&v).ok_or("no vault open")?;
+        media_rename_in(&root, &from, &to)
+    })())
 }
 
 /// cvf-mediasrv (ruling 2): one bounded slice of a canvas audio/video file.
@@ -524,12 +526,14 @@ fn media_read_in(root: &Path, path: &str, offset: u64) -> Result<(u64, Vec<u8>),
 /// raw IPC body: 8-byte big-endian file size, then the slice (an ArrayBuffer in JS)
 #[tauri::command]
 fn media_read(v: State<Vault>, path: String, offset: u64) -> Result<tauri::ipc::Response, String> {
-    let root = cur_vault(&v).ok_or("no vault open")?;
-    let (size, body) = media_read_in(&root, &path, offset)?;
-    let mut out = Vec::with_capacity(8 + body.len());
-    out.extend_from_slice(&size.to_be_bytes());
-    out.extend_from_slice(&body);
-    Ok(tauri::ipc::Response::new(out))
+    span_timed!("media_read", (|| {
+        let root = cur_vault(&v).ok_or("no vault open")?;
+        let (size, body) = media_read_in(&root, &path, offset)?;
+        let mut out = Vec::with_capacity(8 + body.len());
+        out.extend_from_slice(&size.to_be_bytes());
+        out.extend_from_slice(&body);
+        Ok(tauri::ipc::Response::new(out))
+    })(), serde_json::json!({"offset": offset}))
 }
 
 /// R29.1/R29.2: the html for ONE image embed, from the index's image list.
@@ -972,19 +976,21 @@ async fn paste_image(
     data: String,
     tm: datefmt::Tm,
 ) -> Result<pasteimg::Pasted, String> {
-    let root = cur_vault(&v).ok_or("no vault open")?;
-    if data.len() as u64 > pasteimg::MAX_PASTE_BYTES / 3 * 4 + 8 {
-        return Err(pasteimg::PasteErr::TooBig(data.len() as u64 / 4 * 3).say());
-    }
-    let bytes = vaultfs::b64_decode(&data).ok_or("the clipboard image is not valid base64")?;
-    let st = pasteimg::stamp(&tm).map_err(|e| e.say())?;
-    let (cfg, md) = pasteimg::app_cfg(&root);
-    let imgs: Vec<String> = v.index.lock().unwrap().images().to_vec();
-    let taken = |n: &str| imgs.iter().any(|p| p.rsplit('/').next() == Some(n));
-    let p = pasteimg::paste_into(&root, &note, &mime, &bytes, &st, &cfg, md, &taken).map_err(|e| e.say())?;
-    eprintln!("[paste] {} bytes -> {}", bytes.len(), p.path);
-    v.index.lock().unwrap().add_image(&p.path);
-    Ok(p)
+    span_timed!("paste_image", (|| {
+        let root = cur_vault(&v).ok_or("no vault open")?;
+        if data.len() as u64 > pasteimg::MAX_PASTE_BYTES / 3 * 4 + 8 {
+            return Err(pasteimg::PasteErr::TooBig(data.len() as u64 / 4 * 3).say());
+        }
+        let bytes = vaultfs::b64_decode(&data).ok_or("the clipboard image is not valid base64")?;
+        let st = pasteimg::stamp(&tm).map_err(|e| e.say())?;
+        let (cfg, md) = pasteimg::app_cfg(&root);
+        let imgs: Vec<String> = v.index.lock().unwrap().images().to_vec();
+        let taken = |n: &str| imgs.iter().any(|p| p.rsplit('/').next() == Some(n));
+        let p = pasteimg::paste_into(&root, &note, &mime, &bytes, &st, &cfg, md, &taken).map_err(|e| e.say())?;
+        eprintln!("[paste] {} bytes -> {}", bytes.len(), p.path);
+        v.index.lock().unwrap().add_image(&p.path);
+        Ok(p)
+    })(), serde_json::json!({"b64": data.len()}))
 }
 
 /// S5: read a note off disk, "" when it is oversized (never part of the vault)
