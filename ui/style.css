@@ -395,8 +395,11 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
         overflow: hidden; background: var(--bg-sidebar);
         display: flex; flex-direction: column }
 /* R9.2 sidebar tab strip: Files / Search / Bookmarks */
-#stabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 6px 6px 2px; overflow: hidden }   /* R22: wrap, then clip — never push the sidebar wider */
-.stab { flex: 1; min-width: 0; overflow: hidden; background: none; color: var(--text-chrome-muted);
+#stabs { display: flex; flex-wrap: wrap; gap: 3px; padding: 6px 6px 2px 8px; overflow: hidden }   /* R22: wrap, then clip — never push the sidebar wider */
+/* gh-icons #21: stock 1.13.7 keeps sidebar tab-header buttons COMPACT — 34px wide, 3px apart, from the
+   strip's left edge, at every sidebar width (docs/gh-icons/README.md §2). Nominal 34px, still
+   shrinkable (flex-shrink 1, min-width 0) so R22's narrow-window clip holds. */
+.stab { flex: 0 1 34px; width: 34px; min-width: 0; overflow: hidden; background: none; color: var(--text-chrome-muted);
         border: 0; padding: 4px; cursor: pointer; border-radius: 4px }   /* R22: min-width:0 = shrinkable icon button */
 .stab:hover { color: var(--text-chrome) }
 .stab.active { background: var(--bg-surface); color: var(--text-chrome) }
@@ -531,7 +534,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
          overflow: hidden; background: var(--bg-sidebar); display: flex;
          flex-direction: column }
 /* rsidebar: icon strip + panes (Backlinks / Outgoing / Outline / Local graph) */
-#rtabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 6px 6px 2px 6px; overflow: hidden }   /* R22: wrap+clip. NO right padding reserve: R20 put #rtoggle IN FLOW as a flex child (margin-left:auto), so the old 30px inboard reserve only opened a dead gap and shifted the toggle 30px left of where R20's rside phase clicks it */
+#rtabs { display: flex; flex-wrap: wrap; gap: 3px; padding: 6px 6px 2px 7px; overflow: hidden }   /* R22: wrap+clip. NO right padding reserve: R20 put #rtoggle IN FLOW as a flex child (margin-left:auto), so the old 30px inboard reserve only opened a dead gap and shifted the toggle 30px left of where R20's rside phase clicks it */
 #rpane-graph { display: flex; position: relative }
 #rpane-graph[hidden] { display: none }
 .rhead { padding: 6px 10px 4px; font-size: 12px; font-weight: 600; color: var(--text-chrome) }
