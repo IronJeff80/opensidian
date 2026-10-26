@@ -29,7 +29,9 @@
    is the contract shared with cv-nav (created only when absent).
 
    The selection toolbar floats above the selection's bounding box: remove, colour (a
-   palette of the six preset colours + clear), zoom to selection, edit (one editable card). */
+   palette of the six preset colours + clear), zoom to selection, create group and align
+   (a multi-selection: one group around it / a palette of six edge+centre aligns), edit
+   (one editable card). */
 (function () {
   "use strict";
   const GRID = 20;            // grid step, canvas units
@@ -39,6 +41,8 @@
   const COLORS = [["1", "Red", "var(--color-red, #e93147)"], ["2", "Orange", "var(--color-orange, #ec7500)"],
                   ["3", "Yellow", "var(--color-yellow, #e0ac00)"], ["4", "Green", "var(--color-green, #08b94e)"],
                   ["5", "Cyan", "var(--color-cyan, #00bfbc)"], ["6", "Purple", "var(--color-purple, #7852ee)"]];
+  const ALIGN = [["left", "Align left edges", "⇤"], ["center", "Align horizontal centres", "↔"], ["right", "Align right edges", "⇥"],
+                 ["top", "Align top edges", "⤒"], ["middle", "Align vertical centres", "↕"], ["bottom", "Align bottom edges", "⤓"]];
   let space = false, styled = false;
 
   const S = c => c._cvs;
@@ -89,13 +93,19 @@
     };
     s.btn = {
       remove: btn(s.tbEl, "remove", "Remove", "\u{1F5D1}", () => { s.palette = false; if (!ro(c)) c.deleteSelection(); refresh(c); notify(c); }),
-      color: btn(s.tbEl, "color", "Set color", "◐", () => { s.palette = !s.palette; refresh(c); notify(c); }),
+      color: btn(s.tbEl, "color", "Set color", "◐", () => { s.palette = !s.palette; s.align = false; refresh(c); notify(c); }),
       zoom: btn(s.tbEl, "zoom", "Zoom to selection", "⤢", () => { zoomToSelection(c); }),
+      group: btn(s.tbEl, "group", "Create group", "▣", () => { s.palette = false; s.align = false; if (!ro(c) && c.selection.size > 1 && window.CanvasMenus) window.CanvasMenus.groupAround(c, [...c.selection]); refresh(c); notify(c); }),
+      align: btn(s.tbEl, "align", "Align", "⫴", () => { s.align = !s.align; s.palette = false; refresh(c); notify(c); }),
       edit: btn(s.tbEl, "edit", "Edit", "✎", () => { const n = only(c); s.palette = false; if (n && n.isEditable() && !ro(c)) n.startEditing(); refresh(c); notify(c); }),
     };
     s.pal = {};
     for (const [k, name, css] of COLORS) { const b = btn(s.palEl, "color-" + k, name, "", () => setColor(c, k)); b.style.background = css; s.pal[k] = b; }
     s.pal.clear = btn(s.palEl, "color-clear", "No color", "✕", () => setColor(c, ""));
+    s.alEl = el("div", "canvas-selection-palette canvas-selection-align", c.wrapperEl); s.alEl.hidden = true;
+    for (const x of ["pointerdown", "dblclick", "wheel"]) s.alEl.addEventListener(x, stop);
+    s.al = {};
+    for (const [k, name, txt] of ALIGN) s.al[k] = btn(s.alEl, "align-" + k, name, txt, () => align(c, k));
     // the overlay follows the view (pan / zoom) and the document (remove, undo rebuild)
     const at = c.applyTransform, rs = c.requestSave;
     c.applyTransform = function () { const r = at.apply(this, arguments); refresh(c); return r; };
@@ -107,6 +117,22 @@
   function setColor(c, k) {
     const s = S(c); s.palette = false;
     if (!ro(c)) for (const n of c.selection) if ((n.data.color || "") !== k) n.setColor(k);
+    refresh(c); notify(c);
+  }
+  // align: every selected card to one edge / centre of the selection box. One write, one undo step; the
+  // moved cards go last in nodes[] (raise), like a drag. Fewer than two cards: nothing to align.
+  function align(c, k) {
+    const s = S(c); s.align = false;
+    const sel = [...c.selection], b = bboxOf(sel);
+    if (ro(c) || sel.length < 2 || !b) { refresh(c); notify(c); return; }
+    const moved = [];
+    for (const n of sel) {
+      const d = n.data; let x = d.x, y = d.y;
+      if (k === "left") x = b.x; else if (k === "right") x = b.x + b.w - d.width; else if (k === "center") x = Math.round(b.x + b.w / 2 - d.width / 2);
+      else if (k === "top") y = b.y; else if (k === "bottom") y = b.y + b.h - d.height; else if (k === "middle") y = Math.round(b.y + b.h / 2 - d.height / 2);
+      if (x !== d.x || y !== d.y) { n.moveTo({ x, y }); moved.push(n); }
+    }
+    if (moved.length) { c.renderEdges(); raise(c, moved); c.requestSave(); }
     refresh(c); notify(c);
   }
   function bboxOf(nodes) {
@@ -128,14 +154,16 @@
     const s = S(c); if (!s) return;
     for (const n of [...c.selection]) if (c.nodes.get(n.id) !== n) c.selection.delete(n);   // gone (removed / rebuilt)
     const b = bboxOf(c.selection);
-    if (!b) { s.boxEl.hidden = true; s.tbEl.hidden = true; s.palEl.hidden = true; s.palette = false; return; }
+    if (!b) { s.boxEl.hidden = true; s.tbEl.hidden = true; s.palEl.hidden = true; s.alEl.hidden = true; s.palette = false; s.align = false; return; }
     const P = 6;
     Object.assign(s.boxEl.style, { left: (b.x - P) + "px", top: (b.y - P) + "px", width: (b.w + 2 * P) + "px", height: (b.h + 2 * P) + "px" });
     s.boxEl.hidden = false;
     const one = only(c);
     s.btn.edit.hidden = !(one && one.isEditable());
+    const many = c.selection.size > 1;                       // group / align: a multi-selection only
+    s.btn.group.hidden = !many; s.btn.align.hidden = !many; if (!many) s.align = false;
     s.tbEl.hidden = !!ro(c);
-    if (s.tbEl.hidden) { s.palEl.hidden = true; return; }
+    if (s.tbEl.hidden) { s.palEl.hidden = true; s.alEl.hidden = true; return; }
     // client -> wrapper-local: the toolbar sits centred above the box, inside the board
     const z = c.zoom, lx = c.tx + (b.x - P) * z, ly = c.ty + (b.y - P) * z, lw = (b.w + 2 * P) * z;
     const W = c.wrapperEl.clientWidth || 0, tw = s.tbEl.offsetWidth || 140, th = s.tbEl.offsetHeight || 32;
@@ -144,10 +172,12 @@
     s.tbEl.style.left = left + "px"; s.tbEl.style.top = top + "px";
     s.palEl.hidden = !s.palette;
     if (s.palette) { s.palEl.style.left = left + "px"; s.palEl.style.top = (top - (s.palEl.offsetHeight || 32) - 4 < 4 ? top + th + 4 : top - (s.palEl.offsetHeight || 32) - 4) + "px"; }
+    s.alEl.hidden = !s.align;
+    if (s.align) { const ah = s.alEl.offsetHeight || 32; s.alEl.style.left = left + "px"; s.alEl.style.top = (top - ah - 4 < 4 ? top + th + 4 : top - ah - 4) + "px"; }
   }
 
   /* ---------------------------------------------- selection */
-  function selected(c) { const s = S(c); if (!s) return; s.palette = false; refresh(c); notify(c); }
+  function selected(c) { const s = S(c); if (!s) return; s.palette = false; s.align = false; refresh(c); notify(c); }
   // z-raise policy (goal cvf-keys, CVR-A-111/A-148/A-038). A click only PAINTS the card on top (last in
   // the card layer): no write, no undo step, nodes[] untouched. The file's paint order (nodes[]) follows
   // only a real mutation: raise() puts the touched cards last in nodes[] right before that edit's save,
@@ -401,6 +431,7 @@
       t += " [cvstbb:" + bs.map(k => k + "@" + ctr(s.btn[k])).join("|") + "]";
     }
     if (vis(s.palEl)) t += " [cvpal:" + Object.keys(s.pal).filter(k => vis(s.pal[k])).map(k => k + "@" + ctr(s.pal[k])).join("|") + "]";
+    if (vis(s.alEl)) t += " [cvalign:" + Object.keys(s.al).map(k => k + "@" + ctr(s.al[k])).join("|") + "]";
     return t;
   }
 
