@@ -29,7 +29,9 @@
     if (document.getElementById("canvas-perf-style")) return;
     const s = document.createElement("style");
     s.id = "canvas-perf-style";
-    s.textContent = ".canvas-node.cvp-culled, .canvas-edges .cvp-culled { display: none !important }";
+    s.textContent = ".canvas-node.cvp-culled, .canvas-edges .cvp-culled { display: none !important }\n" +
+      // goal cvf-zoom CVR-C-078: zoomed out, a group's label keeps its screen size (16 px at any zoom below 100 %)
+      ".canvas-wrapper .canvas-node-group > .canvas-node-label { font-size: calc(16px / min(var(--cvn-z, 1), 1)); padding-bottom: calc(2px / min(var(--cvn-z, 1), 1)) }";
     (document.head || document.documentElement).appendChild(s);
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", style, { once: true }); else style();
@@ -52,7 +54,22 @@
     for (const id of s.eoff) { const g = s.gmap.get(id); if (g) g.classList.remove("cvp-culled"); }
     s.eoff.clear(); s.evis = s.gmap.size;
   }
+  /* goal cvf-zoom CVR-C-076: level of detail. At or below the zoom threshold (Settings > Canvas, percent of 25 %;
+     100 = 25 %) the wrapper gets .cvp-lod and plugins.css draws text and note cards as their bare box (a media card
+     keeps its picture): nothing to read at that size, and nothing to lay out on a big board. */
+  function lodOf(c) {
+    const g = window.__osCanvasCfg, th = g ? Number(g.get("zoomThreshold")) : 100;
+    return isFinite(th) && th > 0 && (c.zoom || 1) <= 0.25 * th / 100 + 1e-9;
+  }
+  function lod(c) {
+    const w = c.wrapperEl; if (!w) return;
+    // not on boards of BIG cards or more: the bare box would undo cvf-board's .cvn-hide-content there and paint
+    // every card of a fitted big board at open (cvperf CV-168, round 4 bisect VB/VC); nothing to read at that size anyway.
+    const on = c.nodes.size < BIG && lodOf(c);
+    if (on !== w.classList.contains("cvp-lod")) w.classList.toggle("cvp-lod", on);
+  }
   function cull(c) {
+    lod(c);
     const s = S(c), N = c.nodes.size;
     s.total = N;
     if (N < BIG || c.fitted === false) { if (s.culled.size || s.eoff.size) uncullAll(s); s.vis = N; s.evis = s.gmap.size; return; }
@@ -91,7 +108,7 @@
   function drag(c, d) {
     const s = S(c);
     s.drag = d || null;
-    if (d && d !== s.dobj) { s.dobj = d; s.moves = 0; s.emin = 0; s.emax = 0; s.eupd = 0; }
+    if (d && d !== s.dobj) { s.dobj = d; s.moves = 0; s.emin = 0; s.emax = 0; s.eupd = 0; const ids = dragIds(c, s); s.did = ids && ids.length ? ids[0] : null; }
   }
   const idOf = o => (o.m || o.s || o).id;
   function dragIds(c, s) {
@@ -147,7 +164,24 @@
     const s = S(c);
     if (s.nN < 0 && !s.total) cull(c);
     else later(c);
-    return " [cvperf:vis=" + s.vis + "|total=" + c.nodes.size + "|eupd=" + s.eupd + "|emin=" + s.emin + "|emax=" + s.emax + "|moves=" + s.moves + "|evis=" + s.evis + "]";
+    let t = " [cvperf:vis=" + s.vis + "|total=" + c.nodes.size + "|eupd=" + s.eupd + "|emin=" + s.emin + "|emax=" + s.emax + "|moves=" + s.moves + "|evis=" + s.evis + "]";
+    // goal cvf-zoom: [cvlod:<id>|lod=0|1(|lab=x,y,w,h for a group)] per painted card (at most 16), [cvpdrag:<id>@x,y,w,h]
+    // [cvlod:] only below BIG: its rect reads force a synchronous layout on every census, which on a
+    // big board lands inside the open/pan window (cvperf CV-168)
+    const R = e => { const r = e.getBoundingClientRect(); return [r.x, r.y, r.width, r.height].map(Math.round).join(","); };
+    const L = c.wrapperEl && c.wrapperEl.classList.contains("cvp-lod") ? 1 : 0;
+    let k = c.nodes.size >= BIG ? 16 : 0;
+    for (const n of c.nodes.values()) {
+      if (k >= 16) break;
+      const el = n.containerEl; if (!el || !el.isConnected || !el.getClientRects().length) continue;
+      k++;
+      t += " [cvlod:" + String(n.id).replace(/[[\]|@]/g, "_") + "|lod=" + (n.data && n.data.type === "group" || el.classList.contains("cc-media") ? 0 : L);
+      if (n.data && n.data.type === "group" && n.labelEl && n.labelEl.getClientRects().length) t += "|lab=" + R(n.labelEl);
+      t += "]";
+    }
+    const dn = s.did && c.nodes.get(s.did);
+    if (dn && dn.containerEl && dn.containerEl.getClientRects().length) t += " [cvpdrag:" + String(dn.id).replace(/[[\]|@]/g, "_") + "@" + R(dn.containerEl) + "]";
+    return t;
   }
 
   /* ------------------------------------------------ gesture signal (goal title-fresh)
