@@ -864,11 +864,13 @@
         await this.loadPath(p, true);
         this.markShown();
       }
-      // shown: the board is on screen once it has a size, whether or not a resize notice reported it
+      // shown: the board is on screen once it has a size, whether or not a resize notice reported it. Checked now and
+      // again on a timer, not on an animation frame: a frame may never come while a native menu holds the window
       markShown() {
-        requestAnimationFrame(() => { const c = this.canvas, w = c && c.wrapperEl; if (!w) return; const r = w.getBoundingClientRect();
-          window.__cvSL("v" + this._dv + ":raf:" + Math.round(r.width) + "x" + Math.round(r.height) + ":sh=" + (c._shown ? 1 : 0));   // DIAG-STOCKFLIP
-          if (r.width && r.height && !this.containerEl.hidden) c._shown = true; });
+        const chk = tag => { const c = this.canvas, w = c && c.wrapperEl; if (!w) return; const r = w.getBoundingClientRect();
+          window.__cvSL("v" + this._dv + ":" + tag + ":" + Math.round(r.width) + "x" + Math.round(r.height) + ":sh=" + (c._shown ? 1 : 0));   // DIAG-STOCKFLIP
+          if (r.width && r.height && !this.containerEl.hidden) c._shown = true; };
+        chk("now"); setTimeout(() => chk("tmo"), 50);
       }
       /* open file p on this board. The file is read and parsed BEFORE the board lets go of what it shows: a file
          that does not parse (malformed JSON, whitespace only) opened from a tab (refuse) does not mount at all —
