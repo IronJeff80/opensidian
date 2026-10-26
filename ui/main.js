@@ -7116,6 +7116,52 @@ async function qsCanvasList() {
 const qslSafe = s => String(s).replace(/[|\]\[]/g, "_");
 CENSUS.push(() => modalKind === "qs" ? " [qsl:" + mdItems.map(it => qslSafe(it.label)).join("|") + "]" : "");   // cvf-explorer CVR-A-067: the switcher's offered rows, in order
 CENSUS.push(() => " [tabt:" + groups().map(g => [...g.tabsEl.querySelectorAll(".tab .t")].map(e => e.textContent.replace(/[[\]|;]/g, "")).join(";")).join("|") + "]");   // cvf-explorer CVR-A-086: the painted tab titles, per pane (";" between tabs, "|" between panes)
+/* gh-icons census BEGIN — phase ghicons (#18 #20 #21). Read-only DOM probe, published every refresh.
+   [ghe:<n>[:<root>/<text>;...]] = text nodes carrying an emoji / pictograph code point
+   (U+1F300-1FAFF, U+2600-27BF, U+1F000-1F2FF) inside an ICON surface: ribbon, sidebar tab
+   headers + toolbars, tab bars (tab headers + view-header actions), status bar, open menus,
+   canvas controls/toolbars/menus, every button. <root> = the surface (id, or first class,
+   + data-menu for a tagged menu) so a phase can exclude an exact label, never a range.
+   [ghlk:<pane>.<tab>=<svg|emoji|->:<title>;...|...] = each tab's link mark: svg = a .lk marker
+   holding an <svg>, emoji = a pictograph in the painted title, - = neither.
+   [ghw:L=<left>,<right>:<x>+<w>,...|R=...] = the sidebar boxes and their tab-header buttons
+   (#21), [ghdv:l=<x>,<y>|r=<x>,<y>] = the resize dividers' centres (a driver drags them). */
+const GH_EMO = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F000}-\u{1F2FF}]/u;
+const GH_SURF = "#ribbon, #stabs, #rtabs, #bar, #bmbar, #sbar, #hkclear, .tabbar, .ctxmenu, .canvas-controls, " +
+  ".canvas-selection-toolbar, .canvas-selection-palette, .canvas-card-menu, .canvas-settings-menu, " +
+  ".canvas-edge-toolbar, .canvas-edge-menu, button, [role=button], [role=menuitem]";
+const ghClean = s => Array.from(s.replace(/[[\]|;]/g, " ").replace(/\s+/g, " ").trim()).slice(0, 40).join("");
+const ghRoot = r => (r.id || (r.classList && r.classList[0]) || r.tagName.toLowerCase()) + (r.dataset && r.dataset.menu ? "." + r.dataset.menu : "");
+CENSUS.push(() => {
+  const seen = new Set(), bad = [];
+  for (const r of document.querySelectorAll(GH_SURF)) {
+    const w = document.createTreeWalker(r, NodeFilter.SHOW_TEXT);
+    for (let n = w.nextNode(); n; n = w.nextNode()) {
+      if (seen.has(n)) continue;
+      seen.add(n);
+      if (GH_EMO.test(n.nodeValue)) bad.push(ghRoot(r) + "/" + ghClean(n.nodeValue));
+    }
+  }
+  const lk = groups().map((g, i) => [...g.tabsEl.querySelectorAll(".tab")].map((d, j) => {
+    const t = d.querySelector(".t"), txt = t ? t.textContent : "";
+    const st = d.querySelector(".lk svg") ? "svg" : GH_EMO.test(txt) ? "emoji" : "-";
+    return (i + 1) + "." + (j + 1) + "=" + st + ":" + ghClean(txt);
+  }).join(";")).join("|");
+  const side = (k, s, h) => {
+    const e = document.getElementById(s), b = e && e.getBoundingClientRect();
+    if (!e || e.hidden || !b.width) return "";
+    return k + "=" + Math.round(b.left) + "," + Math.round(b.right) + ":" + [...document.querySelectorAll("#" + h + " .stab")]
+      .map(x => { const r = x.getBoundingClientRect(); return Math.round(r.left) + "+" + Math.round(r.width); }).join(",");
+  };
+  const dv = (k, id) => {
+    const e = document.getElementById(id), b = e && e.getBoundingClientRect();
+    return e && !e.hidden && b.width ? k + "=" + Math.round(b.left + b.width / 2) + "," + Math.round(b.top + b.height / 2) : "";
+  };
+  return " [ghe:" + bad.length + (bad.length ? ":" + bad.join(";") : "") + "] [ghlk:" + lk + "]" +
+    " [ghw:" + [side("L", "side", "stabs"), side("R", "rside", "rtabs")].filter(Boolean).join("|") + "]" +
+    " [ghdv:" + [dv("l", "ldiv"), dv("r", "rdiv")].filter(Boolean).join("|") + "]";
+});
+/* gh-icons census END */
 /* listtoggle A3 (found by the gate phase, not by reading): the palette input
    TAKES the DOM selection, so a palette command that reads the editor
    selection (Ed.sel) found none and was a silent no-op — "Toggle bullet list"
@@ -12017,7 +12063,7 @@ function renderThemeCtl() {
 function openThemeMenu(anchor) {
   closeMenu();
   const m = document.createElement("div");
-  m.className = "ctxmenu";
+  m.className = "ctxmenu"; m.dataset.menu = "themes";   // gh-icons ruling 1: its check/cross prefixes are label glyphs (ghicons excludes exactly this menu)
   const mk = (txt, on) => {
     const it = document.createElement("div");
     it.textContent = txt;
@@ -12041,7 +12087,7 @@ function openThemeMenu(anchor) {
 function openSnipMenu(anchor) {
   closeMenu();
   const m = document.createElement("div");
-  m.className = "ctxmenu";
+  m.className = "ctxmenu"; m.dataset.menu = "snippets";   // gh-icons ruling 1: its check prefix is a label glyph (ghicons excludes exactly this menu)
   if (!vaultSnips.length) {
     // absent snippets/ is Obsidian's silent normal (T0): an empty menu entry,
     // deliberately not a notice and not a directory-creating button (yet)
