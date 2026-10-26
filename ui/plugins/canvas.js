@@ -388,7 +388,7 @@
         this.requestSave = () => { if (this.readonly) return; if (this.view) this.view.dirty = true; this._saveSoon(); changed(); };
         this.wire();
         this.applyTransform();
-        if (window.CanvasNav) window.CanvasNav.attach(this, X, changed);   // goal cv-nav: pan/zoom keys, controls, grid, settings (canvas-nav.js)
+        if (window.CanvasNav) window.CanvasNav.attach(this, X, changed, NODE_CLASS);   // goal cv-nav: pan/zoom keys, controls, grid, settings (canvas-nav.js)
         // a view opens hidden (0x0): fit the board the first time it has a size
         this.fitted = false;
         if (typeof ResizeObserver === "function") {

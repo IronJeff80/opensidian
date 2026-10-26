@@ -66,7 +66,16 @@
       ".canvas-settings-item:hover { background: var(--background-modifier-hover) }\n" +
       ".canvas-settings-item .canvas-settings-check { min-width: 1.2em; text-align: center }\n" +
       ".canvas-help-row { display: flex; justify-content: space-between; gap: 24px; padding: 3px 0; border-bottom: 1px solid var(--background-modifier-border) }\n" +
-      ".canvas-help-keys { font-family: var(--font-monospace); color: var(--text-muted); white-space: nowrap }\n";
+      ".canvas-help-keys { font-family: var(--font-monospace); color: var(--text-muted); white-space: nowrap }\n" +
+      // goal cvf-board: a file card's name keeps its screen size at any zoom; Show card names (CVR-A-015)
+      ".canvas-wrapper .canvas-node-file > .canvas-node-label { font-size: calc(13px / var(--cvn-z, 1)); padding-bottom: calc(3px / var(--cvn-z, 1)) }\n" +
+      ".canvas-wrapper.cvn-names-never .canvas-node-file > .canvas-node-label { display: none }\n" +
+      ".canvas-wrapper.cvn-names-hover .canvas-node-file:not(:hover) > .canvas-node-label { visibility: hidden }\n" +
+      // below the zoom threshold a card's content is not drawn (CVR-A-016)
+      ".canvas-wrapper.cvn-hide-content .canvas-node:not(.canvas-node-group):not(.is-editing) > .canvas-node-container { visibility: hidden }\n" +
+      // the Ctrl+drag rectangle (CVR-A-014)
+      ".cvn-cdrag-box { position: fixed; z-index: 5; pointer-events: none; box-sizing: border-box; border: 1px dashed var(--interactive-accent, #7f6df2);\n" +
+      "  background: color-mix(in srgb, var(--interactive-accent, #7f6df2) 10%, transparent) }\n";
     document.head.appendChild(s);
   }
 
@@ -149,7 +158,10 @@
   let cfgHooked = false;
   function hookCfg() {
     if (cfgHooked) return; const g = cfg(); if (!g) return; cfgHooked = true;
-    g.on(keys => { if (!keys.some(k => CFGK.includes(k))) return; for (const c of boards) { cfgSnap(c); ping(c); } });
+    g.on(keys => {
+      if (keys.some(k => CFGK.includes(k))) for (const c of boards) { cfgSnap(c); ping(c); }
+      if (keys.some(k => VIEWK.includes(k))) for (const c of boards) { viewCls(c); ping(c); }
+    });
   }
   function setOption(c, k, v) {
     c.options[k] = !!v;
@@ -284,9 +296,10 @@
   }
 
   /* ------------------------------------------------ attach (Canvas constructor) */
-  function attach(c, x, changed) {
+  function attach(c, x, changed, nc) {
     if (!c || c._cvnav) return;
     if (x) X = x;
+    if (nc && !NC) NC = nc;
     style();
     const s = c._cvnav = { changed: typeof changed === "function" ? changed : null, btn: {}, menu: null, pan: null, raf: 0 };
     boards.add(c);
@@ -301,12 +314,13 @@
     const orig = c.applyTransform;
     c.applyTransform = function () {
       const r = orig.apply(this, arguments);
-      paintGrid(this);
+      paintGrid(this); viewCls(this);
       if (!s.raf) s.raf = requestAnimationFrame(() => { s.raf = 0; ping(this); });
       return r;
     };
-    paintGrid(c);
+    paintGrid(c); viewCls(c);
     const w = c.wrapperEl;
+    modDrag(c);
     w.addEventListener("keydown", e => onKeyDown(c, e));
     w.addEventListener("keyup", e => { if (e.key === " " || e.code === "Space") { if (!inEditor(e.target)) e.preventDefault(); spaceUp(); } });
     w.addEventListener("blur", spaceUp);
@@ -429,6 +443,132 @@
   window.addEventListener("keyup", e => { if (e.key === " " || e.code === "Space") spaceUp(); }, true);
   window.addEventListener("blur", spaceUp);
 
+  /* ------------------------------------------------ card names, zoom threshold, Ctrl+drag (goal cvf-board)
+     Show card names (always | hover | never) and the zoom threshold (percent; a card's content is not drawn
+     while zoom < 0.25 x threshold / 100, so 100 hides it below 25 %) are wrapper classes kept in step with
+     the zoom and the vault config. Ctrl+drag on the empty board draws a rectangle; on release the
+     "Default Ctrl + Drag behavior" decides: menu (the five add actions) | text | note | media | web | group,
+     each made the size of the rectangle. */
+  const VIEWK = ["showCardNames", "zoomThreshold"];
+  let NC = null;                           // canvas.js NODE_CLASS (attach's 4th argument)
+  let cdm = null;                          // the open Ctrl+drag menu: {c, m, items: [[action, MenuItem]]}
+  function viewCls(c) {
+    const w = c.wrapperEl, g = cfg();
+    w.style.setProperty("--cvn-z", String(c.zoom || 1));
+    const nm = g ? String(g.get("showCardNames") || "always") : "always";
+    for (const k of ["hover", "never"]) w.classList.toggle("cvn-names-" + k, nm === k);
+    const th = g ? Number(g.get("zoomThreshold")) : 100;
+    w.classList.toggle("cvn-hide-content", isFinite(th) && th > 0 && (c.zoom || 1) < 0.25 * th / 100);
+  }
+  const CDM = [["card", "Add card"], ["note", "Add note from vault"], ["media", "Add media from vault"], ["web", "Add web page"], ["group", "Create group"]];
+  const MEDIA = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif", "mp3", "wav", "m4a", "ogg", "3gp", "flac", "mp4", "webm", "ogv", "mov", "mkv", "pdf"]);
+  function freshId(c) {
+    const taken = typeof c.ids === "function" ? c.ids() : new Set(c.nodes.keys());
+    for (;;) { let s = ""; for (let i = 0; i < 16; i++) s += "0123456789abcdef"[Math.floor(Math.random() * 16)]; if (!taken.has(s)) return s; }
+  }
+  function addRaw(c, d, front) {
+    const N = NC && NC[d.type]; if (!N || !live(c) || c.readonly) return null;
+    const n = c.addNode(new N(c, d));
+    if (front) {                           // a group goes first in nodes[] (JSON Canvas: lower index = below)
+      const rest = [...c.nodes].filter(([k]) => k !== n.id);
+      c.nodes.clear(); c.nodes.set(n.id, n); for (const [k, v] of rest) c.nodes.set(k, v);
+    }
+    c.renderEdges(); c.requestSave(); ping(c);
+    return n;
+  }
+  function pickFile(c, title, pred, then) {
+    if (!X || !X.FuzzySuggestModal) return;
+    const fs = (c.app && c.app.vault && c.app.vault.getFiles ? c.app.vault.getFiles() : []).filter(pred);
+    const m = new X.FuzzySuggestModal(c.app);
+    m.setPlaceholder(title);
+    m.emptyStateText = "No matching files.";
+    m.getItems = () => fs;
+    m.getItemText = f => f.path;
+    m.onChooseItem = f => { if (live(c)) then(f.path); };
+    m.open();
+  }
+  function askUrl(c, then) {
+    if (!X || !X.Modal) return;
+    const m = new X.Modal(c.app);
+    m.setTitle("Add web page");
+    const inp = document.createElement("input");
+    inp.type = "text"; inp.value = "https://"; inp.style.width = "100%";
+    m.contentEl.appendChild(inp);
+    inp.addEventListener("keydown", e => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      const u = inp.value.trim(); m.close();
+      if (/^https?:\/\/[^\s/]+/i.test(u) && live(c)) then(u);
+    });
+    m.open();
+    setTimeout(() => { try { inp.focus(); inp.select(); } catch (_) {} }, 0);
+  }
+  // r = the rectangle in canvas units {x, y, width, height}
+  function modAct(c, a, r) {
+    if (!live(c) || c.readonly) return;
+    const R = { x: Math.round(r.x), y: Math.round(r.y), width: Math.max(1, Math.round(r.width)), height: Math.max(1, Math.round(r.height)) };
+    const ext = p => String(p).split(".").pop().toLowerCase();
+    if (a === "card" || a === "text") { c.createTextNode({ pos: R, size: R, focus: true }); ping(c); }
+    else if (a === "note") pickFile(c, "Add a note from the vault…", f => ext(f.path) === "md",
+      p => { c.createFileNode({ file: p, pos: R, size: R }); c.renderEdges(); ping(c); });
+    else if (a === "media") pickFile(c, "Add media from the vault…", f => MEDIA.has(ext(f.path)),
+      p => { c.createFileNode({ file: p, pos: R, size: R }); c.renderEdges(); ping(c); });
+    else if (a === "web") askUrl(c, u => addRaw(c, Object.assign({ id: freshId(c), type: "link", url: u }, R)));
+    else if (a === "group") { c.deselectAll(); const g = addRaw(c, Object.assign({ id: freshId(c), type: "group" }, R), true); if (g) c.select(g, false); }
+  }
+  function modMenu(c, r, e) {
+    if (cdm) try { cdm.m.hide(); } catch (_) {}
+    if (!X || !X.Menu) return;
+    const m = new X.Menu(), items = [];
+    for (const [a, label] of CDM) m.addItem(it => { it.setTitle(label).onClick(() => modAct(c, a, r)); items.push([a, it]); });
+    const me = { c, m, items }; cdm = me;
+    m.onHide(() => { if (cdm === me) cdm = null; ping(c); });
+    m.showAtPosition({ x: e.clientX, y: e.clientY });
+    ping(c);
+  }
+  function modDrag(c) {
+    const w = c.wrapperEl;
+    let d = null;
+    const box = () => {
+      const x = Math.min(d.x0, d.x1), y = Math.min(d.y0, d.y1);
+      Object.assign(d.el.style, { left: x + "px", top: y + "px", width: Math.abs(d.x1 - d.x0) + "px", height: Math.abs(d.y1 - d.y0) + "px" });
+    };
+    // capture phase: canvas.js / canvas-select.js never start a marquee for it
+    w.addEventListener("pointerdown", e => {
+      if (space || e.button !== 0 || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+      if (e.pointerType && e.pointerType !== "mouse") return;
+      if (c.readonly || inEditor(e.target)) return;
+      if (e.target.closest && e.target.closest(".canvas-node, .canvas-controls, .canvas-settings-menu, .canvas-card-menu, .canvas-selection-toolbar, .canvas-selection-palette, .canvas-node-label")) return;
+      e.preventDefault(); e.stopPropagation();
+      w.focus({ preventScroll: true });
+      d = { id: e.pointerId, x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY, moved: false, el: null };
+      try { w.setPointerCapture(e.pointerId); } catch (_) {}
+    }, true);
+    w.addEventListener("pointermove", e => {
+      if (!d || e.pointerId !== d.id) return;
+      e.stopPropagation();
+      d.x1 = e.clientX; d.y1 = e.clientY;
+      if (!d.moved && Math.abs(d.x1 - d.x0) + Math.abs(d.y1 - d.y0) < 4) return;
+      if (!d.el) { d.el = document.createElement("div"); d.el.className = "cvn-cdrag-box"; document.body.appendChild(d.el); }
+      d.moved = true; box();
+    }, true);
+    const end = (e, cancel) => {
+      if (!d || e.pointerId !== d.id) return;
+      e.stopPropagation();
+      const g = d; d = null;
+      try { w.releasePointerCapture(g.id); } catch (_) {}
+      if (g.el) g.el.remove();
+      if (cancel || !g.moved) return;
+      g.x1 = e.clientX; g.y1 = e.clientY;
+      const p0 = c.toCanvas(Math.min(g.x0, g.x1), Math.min(g.y0, g.y1)), p1 = c.toCanvas(Math.max(g.x0, g.x1), Math.max(g.y0, g.y1));
+      const r = { x: p0.x, y: p0.y, width: p1.x - p0.x, height: p1.y - p0.y };
+      const how = cfg() ? String(cfg().get("defaultModDragBehavior") || "menu") : "menu";
+      if (how === "menu") modMenu(c, r, e); else modAct(c, how, r);
+    };
+    w.addEventListener("pointerup", e => end(e, false), true);
+    w.addEventListener("pointercancel", e => end(e, true), true);
+  }
+
   /* ------------------------------------------------ census (main.js canvasTok) */
   const vis = e => !!e && e.getClientRects().length > 0;
   const ctr = e => { const r = e.getBoundingClientRect(); return Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2); };
@@ -463,6 +603,8 @@
       t += " [cvhelpk:" + rows.map(r => r.children[0].textContent + "=" + r.children[1].textContent).join("|") + "]";
     }
     if (jump) t += " [cvjump:n=" + jump.n + "]";
+    if (cdm && cdm.c === c && cdm.m.dom && cdm.m.dom.isConnected)
+      t += " [cvcdm:" + cdm.items.filter(([, it]) => vis(it.dom)).map(([a, it]) => a + "@" + ctr(it.dom)).join("|") + "]";
     return t;
   }
 
