@@ -862,9 +862,11 @@
         this.markShown();
       }
       // shown: the board is on screen once it has a size, whether or not a resize notice reported it. Checked now and
-      // again on a timer, not on an animation frame: a frame may never come while a native menu holds the window
+      // again on a timer, not on an animation frame: a frame may never come while a native menu holds the window.
+      // A board already marked shown is not measured again: the rect read forces a synchronous layout, which right
+      // after a big board is imported costs ~100 ms inside the open (cvperf CV-168)
       markShown() {
-        const chk = tag => { const c = this.canvas, w = c && c.wrapperEl; if (!w) return; const r = w.getBoundingClientRect();
+        const chk = tag => { const c = this.canvas, w = c && c.wrapperEl; if (!w || c._shown) return; const r = w.getBoundingClientRect();
           if (r.width && r.height && !this.containerEl.hidden) c._shown = true; };
         chk("now"); setTimeout(() => chk("tmo"), 50);
       }
