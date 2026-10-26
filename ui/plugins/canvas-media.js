@@ -6,7 +6,7 @@
 
      label            a non-note card is labelled with the file name INCLUDING its extension; a note keeps its bare name
      other file       a file icon above the full file name, centred (no separate extension badge)
-     missing file     the label carries a warning icon and the stored path; the body says the file could not be found
+     missing file     the label carries a warning icon and the stored path; the body says the file is missing (stock wording behind CV_MISSING_STOCK)
                       and offers Create new note (notes only) / Swap file... / Remove. Create makes the empty file at
                       the stored path and opens the card's editor; Swap picks another vault file (the board saves, so
                       Ctrl+Z restores the old path); Remove deletes the card (Ctrl+Z restores it)
@@ -26,6 +26,10 @@
    [cvmpick:swap|n=<rows>|<first row>] while the Swap file picker is open. */
 (function () {
   "use strict";
+  // the missing card says "<path> could not be found." only with this flag on; off (default) it keeps develop's
+  // "<path> — empty or not found", which phases cvplain CV-MISS and apicanvas detached.fileNode[neg] still assert
+  // (coordinator ruling 2, 2026-10-26: no old-phase edits without operator go)
+  const CV_MISSING_STOCK = false;
   const IMG = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"]);
   const AUD = new Set(["mp3", "wav", "m4a", "ogg", "3gp", "flac"]);
   const VID = new Set(["mp4", "webm", "ogv", "mov", "mkv"]);
@@ -136,7 +140,7 @@
     node._cc = { kind: "missing" };
     const box = mk("div", "cvm-missing", host);
     const msg = mk("div", "cvm-missing-msg", box);
-    msg.textContent = p + " could not be found.";
+    msg.textContent = CV_MISSING_STOCK ? p + " could not be found." : p + " — empty or not found";
     const bs = mk("div", "cvm-missing-btns", box);
     const btn = (kind, text, act) => {
       const b = mk("button", "mod-cta cvm-" + kind, bs);
