@@ -312,6 +312,8 @@
     node.containerEl.addEventListener("wheel", e => {
       const m = node._cvm;
       if (!m || m.k !== "pdf" || !m.s || e.ctrlKey || e.metaKey) return;
+      // Shift+wheel (or a sideways wheel) is a horizontal pan: the board keeps it (cvjourney pans with Shift+wheel)
+      if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
       if (!node.canvas.selection.has(node) || node.canvas.selection.size !== 1) return;
       const b = m.s.querySelector(".pdf-container");
       if (!b) return;
