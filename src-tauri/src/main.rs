@@ -9561,7 +9561,8 @@ mod tests {
         for d in csp.split("; ") {
             for tok in d.split_whitespace() {
                 assert_ne!(tok, "'unsafe-eval'", "JS eval re-enabled in {d}");
-                assert!(!tok.starts_with("blob:"), "blob: source in {d}");
+                // cvf-mediasrv: blob: only for media-src (pinned above); never scripts/workers
+                assert!(d.starts_with("media-src ") || !tok.starts_with("blob:"), "blob: source in {d}");
             }
         }
         assert!(!script.contains("unsafe-inline") && !script.contains("data:") && !script.contains('*'), "{script}");
