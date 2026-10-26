@@ -189,7 +189,8 @@
     let done;
     if (k === "z" && !e.shiftKey) done = (undo(c), true);
     else if ((k === "z" && e.shiftKey) || (k === "y" && !e.shiftKey)) done = (redo(c), true);
-    else if (k === "c" && !e.shiftKey && c.selection.size) done = copy(c);
+    else if (k === "c" && !e.shiftKey && c.selection.size) { done = copy(c); if (done && window.CanvasDrop) window.CanvasDrop.mirror(c); }   // goal cvf-drop: the copy also goes to the OS clipboard
+    else if (k === "v" && !e.shiftKey && window.CanvasDrop && window.CanvasDrop.pasteKey(c)) { e.stopPropagation(); return true; }   // goal cvf-drop: the OS clipboard wins; no preventDefault, the paste must still land in canvas-drop.js's catcher
     else if (k === "v" && !e.shiftKey && clip) done = (paste(c), true);
     if (!done) return false;
     e.preventDefault(); e.stopPropagation();
