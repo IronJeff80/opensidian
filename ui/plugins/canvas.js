@@ -661,7 +661,7 @@
       }
       zoomAt(cx, cy, f) {
         const r = this.wrapperEl.getBoundingClientRect(), px = cx - r.left, py = cy - r.top;
-        const z = Math.min(4, Math.max(0.1, this.zoom * f));
+        const z = Math.min(2, Math.max(0.05, this.zoom * f));   // goal cvf-zoom CVR-C-074: 5 % .. 200 %
         this.tx = px - (px - this.tx) * (z / this.zoom); this.ty = py - (py - this.ty) * (z / this.zoom);
         this.zoom = z; this.applyTransform();
       }
@@ -672,7 +672,7 @@
         let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
         for (const n of this.nodes.values()) { const d = n.data; x0 = Math.min(x0, d.x); y0 = Math.min(y0, d.y); x1 = Math.max(x1, d.x + d.width); y1 = Math.max(y1, d.y + d.height); }
         const pad = 40, w = Math.max(1, x1 - x0), h = Math.max(1, y1 - y0);
-        this.zoom = Math.max(0.1, Math.min(1, (r.width - 2 * pad) / w, (r.height - 2 * pad) / h));
+        this.zoom = Math.max(0.05, Math.min(1, (r.width - 2 * pad) / w, (r.height - 2 * pad) / h));
         this.tx = (r.width - w * this.zoom) / 2 - x0 * this.zoom; this.ty = (r.height - h * this.zoom) / 2 - y0 * this.zoom;
         this.applyTransform();
       }
