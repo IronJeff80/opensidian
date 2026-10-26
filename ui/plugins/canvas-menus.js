@@ -296,6 +296,19 @@
       later(c);
     }, 0);
   }
+  // a note card's in-place editor, focused with the caret at the end (a double click focuses it by landing in it)
+  function editNote(c, n) {
+    if (ro(c) || c.nodes.get(n.id) !== n) return;
+    n.startEditing();
+    setTimeout(() => {
+      const em = n.child && n.child.editMode, cm = em && em.cm;
+      try {
+        if (cm) { cm.focus(); cm.dispatch({ selection: { anchor: cm.state.doc.length } }); }
+        else { const t = n.containerEl.querySelector(".cm-content, textarea"); if (t) t.focus(); }
+      } catch (_) {}
+      later(c);
+    }, 30);
+  }
   function makeGroup(c, nodes) { const g = groupAround(c, nodes); if (g) editLabel(c, g); return g; }
   function copyText(t) {
     const back = document.activeElement, ta = el("textarea", "", document.body);
@@ -335,11 +348,23 @@
     for (const x of c.nodes.values()) if (x.data && x.data.type === "file" && x.data.file === old) { x.setFilePath(now, x.data.subpath || ""); x.renderContent(); hit = true; }
     if (hit) { c.requestSave(); later(c); }
   }
-  async function renameFile(c, n) {
+  // Rename: the file's name without its extension, selected; Enter renames in place (same folder, same extension)
+  function renameFile(c, n) {
     const { app } = C(c).ctx, old = n.data.file, f = app.vault.getAbstractFileByPath(old);
-    if (!f || !app.fileManager || typeof app.fileManager.promptForFileRename !== "function") return;
-    await app.fileManager.promptForFileRename(f);
-    relink(c, old, f.path);
+    if (!f) { notify(c, "Canvas: " + old + " is not in the vault"); return; }
+    const name = old.split("/").pop(), ext = extOf(old), stem = ext ? name.slice(0, name.length - ext.length - 1) : name;
+    prompt(c, "rename", "Rename file", stem, "", async v => {
+      const nm = String(v || "").trim();
+      if (!nm || nm === stem) return;
+      if (/[\\/:]/.test(nm) || nm.startsWith(".")) { notify(c, "Canvas: a file name cannot contain \\ / : or start with a dot"); return; }
+      const dir = dirOf(old), to = (dir ? dir + "/" : "") + nm + (ext ? "." + ext : "");
+      if (app.vault.getAbstractFileByPath(to)) { notify(c, "Canvas: " + to + " already exists"); return; }
+      try {
+        if (app.fileManager && typeof app.fileManager.renameFile === "function") await app.fileManager.renameFile(f, to);
+        else await app.vault.rename(f, to);
+      } catch (e) { notify(c, "Canvas: " + old + " was not renamed — " + String((e && e.message) || e)); return; }
+      relink(c, old, to);
+    });
   }
   function moveFile(c, n) {
     const { app } = C(c).ctx, old = n.data.file, f = app.vault.getAbstractFileByPath(old);
@@ -437,7 +462,7 @@
           item("Swap file", () => picker(c, "swap", "Swap for another " + (k === "file" ? "file" : k) + "…",
             files(c, f => f.path !== d.file && kindOf(f.path) === k), f => f.path, f => swapFile(c, n, f.path)));
           if (note) {
-            item("Edit", () => n.startEditing(), { off: !n.isEditable(), why: "the note is not loaded" });
+            item("Edit", () => editNote(c, n), { off: !n.isEditable(), why: "the note is not loaded" });
             item("Narrow to heading", () => sections(c, n).then(list => picker(c, "narrow", "Show only a heading…", list.filter(s => !s.sub.startsWith("#^")), s => s.label, s => narrow(c, n, s.sub))));
             item("Narrow to block", () => sections(c, n).then(list => picker(c, "block", "Show only a block…", list.filter(s => s.sub.startsWith("#^")), s => s.label, s => narrow(c, n, s.sub))));
           }
@@ -511,6 +536,14 @@
     m.showAtMouseEvent(e);
     if (m.dom) m.dom.classList.add("canvas-card-menu-ctx");
     shown = m;
+    // Escape closes the menu and nothing else: the board's own Escape (deselect) must not see it
+    const esc = ev => {
+      if (ev.key !== "Escape" || !m.dom || !m.dom.isConnected) return;
+      ev.preventDefault(); ev.stopImmediatePropagation();
+      m.hide(); later(c);
+    };
+    window.addEventListener("keydown", esc, true);
+    m.onHide(() => { window.removeEventListener("keydown", esc, true); later(c); });
     later(c);
   }
 
