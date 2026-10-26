@@ -40,7 +40,8 @@
   const GRID = 20;            // grid step, canvas units
   const EDGE = 7;             // border hit zone, client px (inside the card)
   const SNAP = 8;             // snap distance, client px
-  const MINW = 40, MINH = 30; // as canvas.js resize()
+  const SNAPR = 10;           // resize: an edge within this many client px (inclusive) of another card's edge lands on it (CVR-B-106)
+  const MINW = 50, MINH = 50; // a resize never makes a card smaller than this (CVR-B-109)
   const PANZ = 40;            // auto-pan zone at the pane edge, client px
   const PANV = 800;           // auto-pan speed at (or past) the edge, client px per second
   const COLORS = [["1", "Red", "var(--color-red, #e93147)"], ["2", "Orange", "var(--color-orange, #ec7500)"],
@@ -70,7 +71,9 @@
       ".canvas-selection-toolbar > button { min-width: 28px; height: 26px; padding: 0 6px; cursor: pointer }",
       ".canvas-selection-palette { position: absolute; z-index: 3; display: flex; gap: 4px; padding: 4px; border-radius: 6px; background: var(--background-secondary, #262626); border: 1px solid var(--background-modifier-border, #444) }",
       ".canvas-selection-palette > button { width: 22px; height: 22px; padding: 0; border-radius: 50%; cursor: pointer; border: 1px solid var(--background-modifier-border, #555) }",
-      ".canvas-node.is-selected .canvas-node-resizer { background: var(--interactive-accent, #7f6df2); border-radius: 2px }",
+      // selected look (CVR-B-032): the card's own 2px border turns the accent colour; no extra ring, no painted
+      // corner handle (the corner and every border band stay resize zones)
+      ".canvas-node.canvas-node.is-selected > .canvas-node-container { border-color: var(--interactive-accent, #7f6df2); box-shadow: none }",
     ].join("\n");
     document.head.appendChild(s);
     window.addEventListener("keydown", e => { if (e.key === " " || e.code === "Space") space = true; }, true);
@@ -174,7 +177,9 @@
     const z = c.zoom, lx = c.tx + (b.x - P) * z, ly = c.ty + (b.y - P) * z, lw = (b.w + 2 * P) * z;
     const W = c.wrapperEl.clientWidth || 0, tw = s.tbEl.offsetWidth || 140, th = s.tbEl.offsetHeight || 32;
     const left = Math.max(4, Math.min(Math.max(4, W - tw - 4), lx + lw / 2 - tw / 2));
-    const top = Math.max(4, ly - th - 8);
+    // no room above the box: below it instead, so the toolbar never covers the selected card's top border (CVR-B-108)
+    const lh = (b.h + 2 * P) * z, H = c.wrapperEl.clientHeight || 0;
+    const top = ly - th - 8 >= 4 || ly + lh + 8 + th > H - 4 ? Math.max(4, ly - th - 8) : ly + lh + 8;
     s.tbEl.style.left = left + "px"; s.tbEl.style.top = top + "px";
     s.palEl.hidden = !s.palette;
     if (s.palette) { s.palEl.style.left = left + "px"; s.palEl.style.top = (top - (s.palEl.offsetHeight || 32) - 4 < 4 ? top + th + 4 : top - (s.palEl.offsetHeight || 32) - 4) + "px"; }
@@ -289,19 +294,21 @@
       for (const L of lines) for (const off of [0, len / 2, len]) { const dd = L - (lo + off); if (Math.abs(dd) <= T && (!best || Math.abs(dd) < Math.abs(best))) best = dd; }
       if (best !== null) return lo + best;
     }
-    if (o.snapToGrid !== false) return Math.round(lo / GRID) * GRID;
+    if (o.snapToGrid !== false) return gridOf(lo);
     return lo;
   }
   const xLines = bs => bs.flatMap(b => [b.x, b.x + b.w / 2, b.x + b.w]);
   const yLines = bs => bs.flatMap(b => [b.y, b.y + b.h / 2, b.y + b.h]);
+  // the nearest grid line; a half step rounds away from zero (-30 -> -40, 310 -> 320), the same both ways
+  const gridOf = v => Math.sign(v) * Math.round(Math.abs(v) / GRID) * GRID;
   function snapEdge(c, v, lines) {     // one edge (resize): to a nearby card edge, else to the grid
     const o = c.options || {};
     if (o.snapToObjects !== false) {
-      const T = SNAP / (c.zoom || 1); let best = null;
+      const T = SNAPR / (c.zoom || 1) + 1e-6; let best = null;
       for (const L of lines) { const dd = L - v; if (Math.abs(dd) <= T && (best === null || Math.abs(dd) < Math.abs(best))) best = dd; }
       if (best !== null) return v + best;
     }
-    return o.snapToGrid !== false ? Math.round(v / GRID) * GRID : v;
+    return o.snapToGrid !== false ? gridOf(v) : v;
   }
 
   function move(c, d, e) {
@@ -332,6 +339,8 @@
       let dx = dxp / z, dy = dyp / z;
       let lockX = false, lockY = false;
       if (e.shiftKey) { if (Math.abs(dxp) >= Math.abs(dyp)) { dy = 0; lockY = true; } else { dx = 0; lockX = true; } }
+      // an axis the pointer has not travelled along stays put: a purely horizontal drag never shifts y (CVR-B-115)
+      if (dxp === 0) { dx = 0; lockX = true; } if (dyp === 0) { dy = 0; lockY = true; }
       if (snapOn && d.pb) {
         const p = d.pb;
         if (!lockX) dx = snapAxis(c, p.x + dx, p.w, xLines(d.others)) - p.x;
@@ -492,7 +501,26 @@
     }
     if (vis(s.palEl)) t += " [cvpal:" + Object.keys(s.pal).filter(k => vis(s.pal[k])).map(k => k + "@" + ctr(s.pal[k])).join("|") + "]";
     if (vis(s.alEl)) t += " [cvalign:" + Object.keys(s.al).map(k => k + "@" + ctr(s.al[k])).join("|") + "]";
+    t += look(c);
     return t;
+  }
+  // [cvklook:<id>|bw=<px>|hdl=<n>|acc=r,g,b] (goal cvf-keys, CVR-B-032): the first selected card's painted border
+  // width, how many handle elements are visible on it (painted corner resizer + connection handles) and the
+  // resolved accent colour, so a check can compare it with the screen pixels
+  function look(c) {
+    const n = [...c.selection][0]; if (!n || !n.containerEl || !n.containerEl.isConnected) return "";
+    const box = n.containerEl.querySelector(":scope > .canvas-node-container") || n.containerEl;
+    const cs = getComputedStyle(box);
+    const rgb = v => (String(v).match(/[\d.]+/g) || []).slice(0, 3).map(x => Math.round(+x)).join(",");
+    const s = S(c); if (!s || !s.boxEl) return "";
+    const acc = rgb(getComputedStyle(s.boxEl).borderTopColor);   // the selection box's border is drawn in the accent colour
+    const painted = x => { const st = getComputedStyle(x), a = String(st.backgroundColor).match(/[\d.]+/g) || [];
+      return st.display !== "none" && st.visibility !== "hidden" && x.getClientRects().length > 0 && !(a.length > 3 && +a[3] === 0) && a.length >= 3; };
+    let hdl = 0;
+    for (const r of n.containerEl.querySelectorAll(".canvas-node-resizer")) if (painted(r)) hdl++;
+    for (const h of c.wrapperEl.querySelectorAll(".canvas-edge-handle")) if (h.dataset.node === n.id && h.getClientRects().length) hdl++;
+    const bw = Math.round(parseFloat(cs.borderTopWidth) || 0), solid = cs.borderTopStyle === "solid" && rgb(cs.borderTopColor) === acc;
+    return " [cvklook:" + String(n.id).replace(/[[\]|@,]/g, "_") + "|bw=" + (solid ? bw : 0) + "|hdl=" + hdl + "|acc=" + acc + "]";
   }
 
   const api = { install, down, move, up, onKey, selected, selectAll, zoomToSelection, refresh, census, GRID };
