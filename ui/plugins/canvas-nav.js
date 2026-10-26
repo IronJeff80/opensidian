@@ -31,7 +31,7 @@
      pointer, the + / - controls x CTL_STEP about the board centre; a trackpad's small pixel deltas zoom smoothly
      at the same rate per NOTCH_PX. Far out the dot grid doubles its spacing until the dots are at least GRID_MIN
      px apart (CVR-C-077), so it never turns into a dense dot field. */
-  const WHEEL_STEP = 1.32, CTL_STEP = Math.SQRT2, NOTCH_PX = 50, GRID_MIN = 0;
+  const WHEEL_STEP = 1.32, CTL_STEP = Math.SQRT2, NOTCH_PX = 50, GRID_MIN = 10;
   let hover = null;                       // the board under the pointer: Space + wheel works without focusing it
   const boards = new Set();
   let space = false;                      // Space is held (one keyboard: module-wide)
