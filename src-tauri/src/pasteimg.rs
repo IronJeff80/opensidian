@@ -150,7 +150,9 @@ pub fn paste_into(
         return Err(PasteErr::BadStamp);
     }
     let nrel = note_rel(note).ok_or(PasteErr::NoNote)?;
-    if note.is_empty() || note_path_in(root, note, false).is_none() {
+    // the note must EXIST (a regular file; note_path_in already refused a symlinked leaf):
+    // "./" forms resolve against its folder, and a paste into no note is refused
+    if note.is_empty() || !note_path_in(root, note, false).is_some_and(|p| p.is_file()) {
         return Err(PasteErr::NoNote);
     }
     let dir = rel_dir(attach_cfg, &nrel).ok_or(PasteErr::BadAttachDir)?;
