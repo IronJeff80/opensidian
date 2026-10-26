@@ -7370,7 +7370,7 @@ var cvRibbonBtn = (() => {   // var: canvasTok may run before this line
   b.setAttribute("aria-label", "Create new canvas");
   b.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="6" rx="1"/><rect x="14" y="13" width="7" height="8" rx="1"/><path d="M10 6h4a3 3 0 0 1 3 3v4"/></svg>';
   b.hidden = true;
-  b.addEventListener("click", () => cmdNewCanvas(cvActiveFolder()));
+  b.addEventListener("click", () => cmdNewCanvas(cvNewCanvasFolder()));
   rb.appendChild(b);
   return b;
 })();
@@ -7393,6 +7393,14 @@ function cvActiveFolder() {
     if (v && v.path) return dir(v.path);
   } catch (_) {}
   return "";
+}
+/* goal cvf-board CVR-C-103: Create new canvas lands where Settings > Canvas > Default location says
+   (<vault>/.obsidian/canvas.json via settings.js __osCanvasCfg): vault root, a named folder, else the active folder */
+function cvNewCanvasFolder() {
+  const cf = window.__osCanvasCfg, loc = cf ? cf.get("newFileLocation") : "";
+  if (loc === "root") return "";
+  if (loc === "folder") return String(cf.get("newFileFolderPath") || "").replace(/^\/+|\/+$/g, "");
+  return cvActiveFolder();
 }
 // open a .canvas file in a canvas tab of the focused group (the view type must be registered: core plugin on)
 async function openCanvas(path, how) {     // how: "split" -> a new pane to the right (CVR-A-083 Open to the right)
@@ -8787,7 +8795,7 @@ const CMDS = [
   ["file-explorer:new-file",   "Create new note",                     ["ctrl+n"],               cmdNewNote],
   ["file-explorer:new-file-in-new-pane", "Create note to the right",  ["ctrl+shift+n"],         async () => { await splitWith(fg(), "row", null); await cmdNewNote(); }],
   ["file-explorer:new-folder", "Create new folder",                   [],                       () => { $("fnew").hidden = false; $("fname").value = ""; $("fname").focus(); }],
-  ["canvas:new-file",          "Create new canvas",                   [],                       () => cmdNewCanvas(cvActiveFolder())],
+  ["canvas:new-file",          "Create new canvas",                   [],                       () => cmdNewCanvas(cvNewCanvasFolder()), () => !!(CANVAS && CANVAS.isRegistered())],
   // goal cv-files CV-149 (REDUCED): there is no empty-tab surface (zero tabs = a blank pane), so the
   // "New canvas" action of an empty workspace is a palette row offered only while no tab is open
   ["canvas:new-file-no-tab",   "New canvas",                          [],                       () => cmdNewCanvas(""),

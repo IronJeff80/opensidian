@@ -318,34 +318,11 @@
     try { const v = await vinv("core-plugins", { canvas: !!on }); if (v && typeof v === "object") cvc.core = v; }
     catch (e) { say_("Core plugins: " + String(e && e.message || e)); }
   }
-  /* main.js hooks that follow the Canvas config (bare global names, resolved at call time):
-     - cvActiveFolder(): "Create new canvas" (palette + ribbon) lands where Default location says
-     - the palette's Create new canvas row is offered only while the canvas view type is registered */
-  function hookMain() {
-    try {
-      const orig = window.cvActiveFolder;
-      if (typeof orig === "function" && !orig.__cvsp) {
-        const f = function () {
-          const loc = cvGet("newFileLocation");
-          if (loc === "root") return "";
-          if (loc === "folder") return String(cvGet("newFileFolderPath") || "").replace(/^\/+|\/+$/g, "");
-          return orig.apply(this, arguments);
-        };
-        f.__cvsp = true;
-        window.cvActiveFolder = f;
-      }
-    } catch (e) { console.error("[canvas] location hook:", e); }
-    try {
-      const c = typeof CMDS !== "undefined" ? CMDS.find(x => x && x.id === "canvas:new-file") : null;
-      if (c && !c.when) c.when = () => { const p = canvasPlugin(); return !!(p && p.enabled); };
-    } catch (e) { console.error("[canvas] palette hook:", e); }
-  }
   /* boot: once main.js knows the vault (vaultPath, a bare global), read both files; a core-plugins.json
      that names canvas decides on/off for THIS vault (stock: per vault), else the app-wide choice stays */
   (function waitVault() {
     const vp = typeof vaultPath !== "undefined" ? vaultPath : null;
     if (!vp) { setTimeout(waitVault, 150); return; }
-    hookMain();
     Promise.all([vinv("canvas").catch(() => ({})), vinv("core-plugins").catch(() => ({}))]).then(async ([cv, core]) => {
       cvc.canvas = cv && typeof cv === "object" ? cv : {};
       cvc.core = core && typeof core === "object" ? core : {};

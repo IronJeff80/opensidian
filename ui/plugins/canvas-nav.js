@@ -23,6 +23,9 @@
    its wheel listener; main.js canvasTok() appends census(view). */
 (function () {
   "use strict";
+  /* CVR-A-073 DEFERRED (coordinator ruling 2026-10-26, pending operator go): "+ Text" and zoom to selection stay,
+     at the foot of the stack, until the canvasui / cvnav CV-127 / cvjourney J4 / cvworks oracles change. false = stock */
+  const DEFER_073 = true;
   const GRID = 20;                        // plugins.css .canvas-wrapper background-size at zoom 1
   const boards = new Set();
   let space = false;                      // Space is held (one keyboard: module-wide)
@@ -51,7 +54,7 @@
       "  border: 0; border-radius: 4px; background: transparent; color: var(--text-muted) }\n" +
       ".canvas-controls.cvn-stack .canvas-control:hover { background: var(--background-modifier-hover); color: var(--text-normal) }\n" +
       ".canvas-controls.cvn-stack .canvas-control svg { width: 16px; height: 16px; pointer-events: none }\n" +
-      ".canvas-controls.cvn-stack .canvas-control.mod-add-text, .canvas-controls.cvn-stack .canvas-control.mod-zoom-selection { display: none }\n" +
+      (DEFER_073 ? "" : ".canvas-controls.cvn-stack .canvas-control.mod-add-text, .canvas-controls.cvn-stack .canvas-control.mod-zoom-selection { display: none }\n") +
       // a disabled button swallows pointer events in WebKit: let them reach the column (hover tooltips hit-test by geometry)
       ".canvas-controls.cvn-stack .canvas-control:disabled { pointer-events: none; opacity: .45 }\n" +
       ".canvas-controls.cvn-stack .cvn-sep { width: 20px; height: 1px; margin: 2px 0; background: var(--background-modifier-border) }\n" +
@@ -243,6 +246,8 @@
     undo: SVG('<path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>'),
     redo: SVG('<path d="M15 14l5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h3"/>'),
     help: SVG('<circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 4.9.8c0 1.7-2.4 2.2-2.4 3.7M12 17h.01"/>'),
+    add: SVG('<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M9 9h6M12 9v6"/>'),
+    sel: SVG('<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/>'),
   };
   function openHelp(c) {
     if (help || !X || !X.Modal) return;
@@ -382,9 +387,9 @@
      keeps the order. The tooltip is our own element LEFT of the hovered button; the column
      hit-tests by geometry, so sliding from button to button (a disabled one included) re-targets it. */
   const ORDER = [["set", ".mod-settings"], "|", ["in", ".mod-zoom-in"], ["reset", ".mod-zoom-reset"], ["fit", ".mod-zoom-fit"],
-                 ["out", ".mod-zoom-out"], "|", ["undo", ".mod-undo"], ["redo", ".mod-redo"], "|", ["help", ".mod-help"]];
+                 ["out", ".mod-zoom-out"], "|", ["undo", ".mod-undo"], ["redo", ".mod-redo"], "|", ["help", ".mod-help"]].concat(DEFER_073 ? ["|", ["add", ".mod-add-text"], ["sel", ".mod-zoom-selection"]] : []);
   const TIP = { set: "Canvas settings", in: "Zoom in", reset: "Reset zoom", fit: "Zoom to fit (Shift + 1)", out: "Zoom out",
-                undo: "Undo", redo: "Redo", help: "Canvas help" };
+                undo: "Undo", redo: "Redo", help: "Canvas help", add: "Add text node", sel: "Zoom to selection" };
   let tip = null;                          // {el, b: the button, c}
   function hideTip() { if (!tip) return; const c = tip.c; tip.el.remove(); tip = null; ping(c); }
   function showTip(c, b) {
