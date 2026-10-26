@@ -3399,11 +3399,13 @@ fn set_snippet_enabled(v: State<Vault>, label: String, on: bool) -> Result<(), S
    follows the vault's trust state, per window. One vault per process, so the
    window's pages are this process's vault's pages.
      restricted (default, or no vault yet): the config CSP, byte for byte — no
-       'unsafe-eval', no blob: (the negative control; pinned by
-       csp_is_exactly_this_string_and_no_remote_image_origin).
+       'unsafe-eval', no blob: anywhere, media = default-src 'self' (the negative
+       control; pinned by csp_is_exactly_this_string_and_no_remote_image_origin).
      trusted: script-src gains 'unsafe-eval' blob:, and worker-src 'self' blob:
        is added — community plugins eval, new Function and spawn blob workers,
        as in stock. Never set in the config: a global unsafe-eval is refused.
+       af-fix 1a: media-src 'self' blob: is added too (canvas media cards play
+       from a media_read blob); a restricted canvas media card cannot play.
    Tauri builds the header per page response; page_csp rewrites it after, from
    the trust flag in ~/.opensidian.json (outside the vault). A page already
    loaded keeps its header, so PAGE_EVAL says which one it got and the loader
@@ -3415,12 +3417,17 @@ fn csp_by_trust(header: &str, trusted: bool) -> String {
         return header.to_string();
     }
     let mut out: Vec<String> = Vec::new();
-    let mut worker = false;
+    let (mut worker, mut media) = (false, false);
     for d in header.split(';').map(str::trim).filter(|d| !d.is_empty()) {
         match d.split_whitespace().next().unwrap_or("") {
             "script-src" => out.push(format!("{d} 'unsafe-eval' blob:")),
             "worker-src" => {
                 worker = true;
+                out.push(format!("{d} blob:"));
+            }
+            // af-fix 1a: canvas media cards play from a blob: (media_read) on a trusted page only
+            "media-src" => {
+                media = true;
                 out.push(format!("{d} blob:"));
             }
             // the synchronous fs route (vfs_sync) is same-origin
@@ -3430,6 +3437,11 @@ fn csp_by_trust(header: &str, trusted: bool) -> String {
     }
     if !worker {
         out.push("worker-src 'self' blob:".into());
+    }
+    // af-fix 1a (operator ruling 2026-10-26): the config CSP has no media-src (media = default-src
+    // 'self', no blob:), so only the trusted branch names blob: for media
+    if !media {
+        out.push("media-src 'self' blob:".into());
     }
     out.join("; ")
 }
@@ -9403,15 +9415,14 @@ mod tests {
         assert_eq!(
             csp,
             "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
-             img-src 'self' data: opensidian-img:; media-src 'self' blob:; font-src 'self'; \
+             img-src 'self' data: opensidian-img:; font-src 'self'; \
              connect-src ipc: http://ipc.localhost",
             "the CSP changed — if that was deliberate, say why in the commit message"
         );
-        // cvf-mediasrv (option A): audio/video play from a Blob the card builds —
-        // media-src: self + blob: only (the card Blob) — no wildcard, no remote origin, no data:, no scheme
-        let media = csp.split("; ").find(|d| d.starts_with("media-src ")).unwrap();
-        assert_eq!(media, "media-src 'self' blob:");
-        assert!(!media.contains('*') && !media.contains("http") && !media.contains("data:") && !media.contains(IMG_SCHEME), "media-src widened: {media}");
+        // af-fix 1a: the config (= a restricted page) names no media-src: media is default-src 'self',
+        // and blob: appears nowhere (a trusted page gains media-src 'self' blob:, csp_by_trust)
+        assert!(!csp.contains("media-src"), "media-src in the config CSP: {csp}");
+        assert!(!csp.contains("blob:"), "blob: in the config (restricted) CSP: {csp}");
         // R29: the image widening is ONE scheme token, and it is ours
         let img = csp.split("; ").find(|d| d.starts_with("img-src ")).unwrap();
         assert_eq!(img, format!("img-src 'self' data: {IMG_SCHEME}:"));
@@ -9428,8 +9439,7 @@ mod tests {
         for d in csp.split("; ") {
             for tok in d.split_whitespace() {
                 assert_ne!(tok, "'unsafe-eval'", "JS eval re-enabled in {d}");
-                // cvf-mediasrv: blob: only for media-src (pinned above); never scripts/workers
-                assert!(d.starts_with("media-src ") || !tok.starts_with("blob:"), "blob: source in {d}");
+                assert!(!tok.starts_with("blob:"), "blob: source in {d}");
             }
         }
         assert!(!script.contains("unsafe-inline") && !script.contains("data:") && !script.contains('*'), "{script}");
@@ -9445,26 +9455,27 @@ mod tests {
             .unwrap()
             .to_string();
         assert_eq!(csp_by_trust(&base, false), base);
-        // restricted: no eval, no blob: in script-src / worker-src (media-src 'self' blob: is the media card Blob, cvf-mediasrv)
-        let sw = |c: &str| c.split("; ").filter(|d| d.starts_with("script-src") || d.starts_with("worker-src")).collect::<Vec<_>>().join(" ");
+        // restricted (af-fix 1a): no eval, no blob: anywhere — media-src included
         assert!(!csp_by_trust(&base, false).split_whitespace().any(|t| t == "'unsafe-eval'"));
-        assert!(!sw(&csp_by_trust(&base, false)).split_whitespace().any(|t| t.starts_with("blob:")));
-        // trusted widening adds nothing to media-src
+        assert!(!csp_by_trust(&base, false).split_whitespace().any(|t| t.starts_with("blob:")));
+        // trusted: media-src 'self' blob: (the canvas media card Blob, cvf-mediasrv) — self + blob: only,
+        // no wildcard, no remote origin, no data:, no scheme
         let ms = |c: &str| c.split("; ").find(|d| d.starts_with("media-src")).map(str::to_owned);
-        assert_eq!(ms(&csp_by_trust(&base, true)), ms(&base));
+        assert_eq!(ms(&csp_by_trust(&base, false)), None);
+        assert_eq!(ms(&csp_by_trust(&base, true)).as_deref(), Some("media-src 'self' blob:"));
         let t = csp_by_trust(&base, true);
         assert_eq!(
             t,
             "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval' 'unsafe-eval' blob:; \
-             style-src 'self' 'unsafe-inline'; img-src 'self' data: opensidian-img:; media-src 'self' blob:; font-src 'self'; \
-             connect-src ipc: http://ipc.localhost 'self'; worker-src 'self' blob:"
+             style-src 'self' 'unsafe-inline'; img-src 'self' data: opensidian-img:; font-src 'self'; \
+             connect-src ipc: http://ipc.localhost 'self'; worker-src 'self' blob:; media-src 'self' blob:"
         );
-        // every directive other than script-src / worker-src / connect-src is byte-identical
-        let other = |c: &str| c.split("; ").filter(|d| !d.starts_with("script-src") && !d.starts_with("worker-src") && !d.starts_with("connect-src")).map(str::to_owned).collect::<Vec<_>>();
+        // every directive other than script-src / worker-src / connect-src / media-src is byte-identical
+        let other = |c: &str| c.split("; ").filter(|d| !d.starts_with("script-src") && !d.starts_with("worker-src") && !d.starts_with("connect-src") && !d.starts_with("media-src")).map(str::to_owned).collect::<Vec<_>>();
         assert_eq!(other(&t), other(&base));
-        // an existing worker-src is extended, not duplicated; Tauri's own hash tokens survive
-        let w = csp_by_trust("script-src 'self' 'sha256-abc'; worker-src 'self'", true);
-        assert_eq!(w, "script-src 'self' 'sha256-abc' 'unsafe-eval' blob:; worker-src 'self' blob:");
+        // an existing worker-src / media-src is extended, not duplicated; Tauri's own hash tokens survive
+        let w = csp_by_trust("script-src 'self' 'sha256-abc'; worker-src 'self'; media-src 'self'", true);
+        assert_eq!(w, "script-src 'self' 'sha256-abc' 'unsafe-eval' blob:; worker-src 'self' blob:; media-src 'self' blob:");
     }
 
     /// S4: picker commands refuse system trees and dot-components, keep the

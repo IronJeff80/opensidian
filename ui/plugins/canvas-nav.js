@@ -222,7 +222,7 @@
     const m = document.createElement("div");
     m.className = "canvas-settings-menu"; m.setAttribute("role", "menu");
     for (const ev of ["pointerdown", "dblclick", "wheel"]) m.addEventListener(ev, e => e.stopPropagation());
-    s.items = {};
+    s.items = {}; s.more = null;
     for (const [tk, k, label] of SETTINGS) {
       const it = document.createElement("div");
       it.className = "canvas-settings-item"; it.setAttribute("role", "menuitemcheckbox");
@@ -231,6 +231,17 @@
       const ck = document.createElement("span"); ck.className = "canvas-settings-check"; ck.innerHTML = c.options[k] ? GI.check : ""; it.appendChild(ck);
       it.addEventListener("click", e => { e.stopPropagation(); setOption(c, k, !c.options[k]); closeSettings(c); });
       m.appendChild(it); s.items[tk] = it;
+    }
+    /* af-fix 2b: the Canvas settings pane (default location, wheel, Ctrl+drag, card names, snap, zoom threshold ->
+       .obsidian/canvas.json) has no Settings nav entry any more; this item is its door. Not a toggle: [cvset:n=] counts
+       the three toggles only, the item reports itself as [cvsetmore=x,y]. */
+    if (window.__osPluginSettings && typeof __osPluginSettings.openCanvasSettings === "function") {
+      const mo = document.createElement("div");
+      mo.className = "canvas-settings-item canvas-settings-more"; mo.setAttribute("role", "menuitem");
+      mo.style.cssText = "border-top:1px solid var(--background-modifier-border);margin-top:2px;padding-top:6px";
+      const t = document.createElement("span"); t.textContent = "More canvas settings"; mo.appendChild(t);
+      mo.addEventListener("click", e => { e.stopPropagation(); closeSettings(c); __osPluginSettings.openCanvasSettings(); });
+      m.appendChild(mo); s.more = mo;
     }
     s.menuKey = e => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeSettings(c); } };
     s.menuAway = e => { if (s.menu && !s.menu.contains(e.target) && !(s.btn.set && s.btn.set.contains(e.target))) closeSettings(c); };
@@ -637,6 +648,7 @@
     if (s.menu && s.menu.isConnected) {
       const its = SETTINGS.filter(([k]) => vis(s.items[k]));
       t += " [cvset:n=" + its.length + its.map(([k]) => "|" + k + "=" + ctr(s.items[k])).join("") + "]";
+      if (s.more && vis(s.more)) t += " [cvsetmore=" + ctr(s.more) + "]";   // af-fix 2b
     }
     if (help) {
       const rows = [...help.contentEl.querySelectorAll(".canvas-help-row")];

@@ -56,7 +56,9 @@
   // closed tab whose view lingers in the DOM holds no blob).
   const MIME = { mp3: "audio/mpeg", m4a: "audio/mp4", ogg: "audio/ogg", wav: "audio/wav", flac: "audio/flac", webm: "video/webm", mp4: "video/mp4", ogv: "video/ogg", mov: "video/quicktime" };
   const MEDIA_MAX = 256 * 1024 * 1024, MEDIA_DWELL = 150;
-  const MEDIA = { live: new Map(), reads: 0, timer: 0 };
+  const MEDIA = { live: new Map(), reads: 0, timer: 0, csp: 0 };
+  // af-fix 1a: every CSP refusal on the page is counted ([cvmcsp:n]): a restricted media card must cause none
+  window.addEventListener("securitypolicyviolation", () => { MEDIA.csp++; }, true);
   function mediaSweep() {
     for (const [u, r] of MEDIA.live) {
       if (r.m.isConnected && r.m.getClientRects().length) continue;
@@ -72,6 +74,13 @@
     if (cc && cc.io) { cc.io.disconnect(); cc.io = null; }
     if (cc && cc.blob) { URL.revokeObjectURL(cc.blob); MEDIA.live.delete(cc.blob); cc.blob = ""; }
   }
+  // af-fix 1a: the blob: media-src is in a trusted page's CSP only (main.rs csp_by_trust); plugins_state
+  // pageEval says which header THIS page got (fixed at load), so a restricted page builds no blob
+  let pageTrust = null;
+  const mediaTrusted = () => pageTrust || (pageTrust = Promise.resolve().then(() => {
+    const T = window.__TAURI__, inv = T && T.core && T.core.invoke;
+    return inv ? inv("plugins_state") : null;
+  }).then(s => !!(s && s.pageEval), () => false));
   async function mediaBlob(p) {
     const T = window.__TAURI__, inv = T && T.core && T.core.invoke;
     if (!inv) throw new Error("no ipc");
@@ -94,19 +103,19 @@
       cc.state = "loading";
       if (cc.io) { cc.io.disconnect(); cc.io = null; }
       clearTimeout(cc.t);
-      mediaBlob(p).then(u => {
+      mediaTrusted().then(ok => ok ? mediaBlob(p) : Promise.reject(new Error("restricted"))).then(u => {
         if (node._cc !== cc || !m.isConnected) { URL.revokeObjectURL(u); return; }
         cc.blob = u; cc.state = "ready"; MEDIA.live.set(u, { m, cc, arm });
         if (!MEDIA.timer) MEDIA.timer = setInterval(mediaSweep, 2000);
         m.src = u; ping(ctx);
       }, e => {
         if (node._cc !== cc) return;
-        const big = /too large/.test(String(e && e.message || e));
-        cc.state = big ? "big" : "error";
-        if (big) {
+        const why = String(e && e.message || e), big = /too large/.test(why), rst = why === "restricted";
+        cc.state = big ? "big" : rst ? "restricted" : "error";
+        if (big || rst) {
           m.style.display = "none";
           const w = mk("div", "canvas-file-media-error", node.contentEl);
-          w.textContent = "Cannot play " + nameOf(p) + ": the file is larger than 256 MB.";
+          w.textContent = "Cannot play " + nameOf(p) + (big ? ": the file is larger than 256 MB." : ": media cards play in a trusted vault only (restricted mode).");
           cc.err = w;
         } else console.error("[canvas] media card " + p + ":", e);
         ping(ctx);
@@ -740,6 +749,7 @@
       }
     }
     // goal cvf-mediasrv: [cvmblob:<live object URLs>|vis=<media cards on screen>|rd=<media_read calls>] [cvmbig:<id>@x,y]
+    // af-fix 1a: [cvmrst:<id>@x,y] a restricted page's media card (cannot play), [cvmcsp:<CSP refusals on the page>]
     mediaSweep();
     const wr = v.canvas.wrapperEl ? v.canvas.wrapperEl.getBoundingClientRect() : null;
     let mv = 0;
@@ -749,8 +759,10 @@
       const r = n.containerEl.getBoundingClientRect();
       if (wr && r.width && r.height && r.right > wr.left && r.left < wr.right && r.bottom > wr.top && r.top < wr.bottom) mv++;
       if (s.state === "big" && vis(s.err)) t += " [cvmbig:" + esc(n.id) + "@" + ctr(s.err) + "]";
+      if (s.state === "restricted" && vis(s.err)) t += " [cvmrst:" + esc(n.id) + "@" + ctr(s.err) + "]";   // af-fix 1a
     }
     t += " [cvmblob:" + MEDIA.live.size + "|vis=" + mv + "|rd=" + MEDIA.reads + "]";
+    t += " [cvmcsp:" + MEDIA.csp + "]";   // af-fix 1a
     t += " [cvcard:@pan|" + Math.round(v.canvas.tx) + "," + Math.round(v.canvas.ty) + "]";
     // goal cvf-groups: [cvgtb:arrange@x,y|label@x,y|background@x,y] [cvgpal:custom@x,y] [cvgpick:hex@x,y|ok@x,y]
     const g = v.canvas._ccG, gv = e => !!e && !e.hidden && vis(e);
