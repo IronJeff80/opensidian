@@ -595,7 +595,6 @@
       const g = c.edgeEl.querySelector('g.canvas-edge[data-edge-id="' + CSS.escape(S.hover) + '"]');
       const n = [...S.endsEl.querySelectorAll(".canvas-edge-end")].filter(h => h.dataset.edge === S.hover && vis(h)).length;
       t += " [cvehov:" + esc(S.hover) + "|cls=" + (g && g.classList.contains("is-hovered") ? 1 : 0) + "|h=" + n + "]";
-      try { const hp = g && g.querySelector(".canvas-edge-hit"), cs = hp && getComputedStyle(hp), r = hp && hp.getBoundingClientRect(); t += " [cvehalo:" + (g ? g.querySelectorAll(".canvas-edge-hit").length : -1) + "|" + (hp ? esc(cs.stroke) + "|" + esc(cs.strokeWidth) + "|" + esc(cs.visibility) + "|" + esc(cs.opacity) + "|" + Math.round(r.x) + "," + Math.round(r.y) + "," + Math.round(r.width) + "," + Math.round(r.height) + "|idx=" + [...g.children].indexOf(hp) + "|n=" + c.edgeEl.querySelectorAll('g.canvas-edge[data-edge-id="' + CSS.escape(S.hover) + '"]').length : "nohit") + "]"; } catch (e) { t += " [cvehalo:err " + esc(String(e)) + "]"; }   // DIAG-STOCKFLIP
     }
     if (S.sel) t += " [cvesel:" + esc(S.sel) + "]";
     const list = (tok, sel) => { const b = [...S.pin.querySelectorAll(sel)].filter(vis); if (b.length) t += " [" + tok + ":" + b.map(x => x.dataset.act + "@" + ctr(x)).join("|") + "]"; };
