@@ -10,7 +10,7 @@
    window.CanvasSelect; canvas.js calls in:
      install(canvas, changed)   once per board, from wire(): canvas.options, overlay
      down/move/up(canvas, ...)  the pointer branches of wire()
-     onKey(canvas, e)           Ctrl/Cmd+A, arrow nudge
+     onKey(canvas, e)           Ctrl/Cmd+A, arrow nudge (Ctrl/Cmd+X / V: a capture listener from install)
      selected(canvas)           after every select() / deselectAll()
 
    What a pointer press does:
@@ -84,6 +84,7 @@
     s.tbEl = el("div", "canvas-selection-toolbar", c.wrapperEl); s.tbEl.hidden = true;
     s.palEl = el("div", "canvas-selection-palette", c.wrapperEl); s.palEl.hidden = true;
     const stop = e => e.stopPropagation();
+    c.wrapperEl.addEventListener("keydown", e => clipKey(c, e), true);   // Ctrl+X / Ctrl+V, ahead of the history's keys
     for (const x of [s.tbEl, s.palEl]) { x.addEventListener("pointerdown", stop); x.addEventListener("dblclick", stop); x.addEventListener("wheel", stop); }
     const btn = (parent, name, label, txt, fn) => {
       const b = el("button", "canvas-selection-btn mod-" + name, parent);
@@ -381,6 +382,31 @@
   }
 
   /* ---------------------------------------------- keys */
+  // cut / paste (goal cvf-keys, CVR-A-119/C-055/C-056), a capture listener on the board so it runs before the
+  // history's own Ctrl+V. Ctrl+X = copy (the history clipboard) + remove the cards and their edges: one write,
+  // one undo step. Ctrl+V = the history's paste (new ids, inner edges re-pointed), then the copies are moved,
+  // in the same task, so their box is centred on the centre of the view wherever the pointer is: the step the
+  // history commits (a microtask later) and the debounced write both see the final place.
+  function clipKey(c, e) {
+    if (e.defaultPrevented || inEditor(e.target) || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || ro(c)) return;
+    const H = window.CanvasHistory, k = String(e.key).toLowerCase();
+    if (!H || (k !== "x" && k !== "v")) return;
+    if (k === "x") {
+      if (!c.selection.size || !H.copy(c)) return;
+      c.deleteSelection();
+    } else {
+      const before = new Set(c.nodes.keys());
+      if (!H.paste(c)) return;
+      const fresh = [...c.nodes.values()].filter(n => !before.has(n.id)), b = bboxOf(fresh), r = c.wrapperEl.getBoundingClientRect();
+      if (b && r.width && r.height) {
+        const m = c.toCanvas(r.left + r.width / 2, r.top + r.height / 2);
+        const dx = Math.round(m.x - (b.x + b.w / 2)), dy = Math.round(m.y - (b.y + b.h / 2));
+        if (dx || dy) { for (const n of fresh) n.moveTo({ x: n.data.x + dx, y: n.data.y + dy }); c.renderEdges(); c.requestSave(); }
+      }
+    }
+    e.preventDefault(); e.stopImmediatePropagation();
+    refresh(c); notify(c);
+  }
   const inEditor = t => !!(t && t.closest && t.closest("textarea, input, .markdown-source-view, [contenteditable=true]"));
   function onKey(c, e) {
     if (inEditor(e.target)) return false;
