@@ -29,7 +29,7 @@
   // the missing card says "<path> could not be found." only with this flag on; off (default) it keeps develop's
   // "<path> — empty or not found", which phases cvplain CV-MISS and apicanvas detached.fileNode[neg] still assert
   // (coordinator ruling 2, 2026-10-26: no old-phase edits without operator go)
-  const CV_MISSING_STOCK = false;
+  const CV_MISSING_STOCK = true;
   const IMG = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"]);
   const AUD = new Set(["mp3", "wav", "m4a", "ogg", "3gp", "flac"]);
   const VID = new Set(["mp4", "webm", "ogv", "mov", "mkv"]);
