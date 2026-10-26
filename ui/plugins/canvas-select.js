@@ -23,6 +23,9 @@
        a moved group carries every card that lies wholly inside it
      on the empty board       -> a selection rectangle (cards wholly inside it); Shift adds
      middle button, or Space held at the press -> pan
+   A card dragged to within PANZ px of the board pane's edge (or past it) pans the view
+   that way while it is held there, faster the closer it is, and the card keeps riding
+   under the pointer (goal cvf-keys, CVR-A-151 / C-032).
    Moves and resizes snap to the grid (canvas.options.snapToGrid, step 20) and to the
    edges / centres of nearby cards (snapToObjects; wins over the grid); holding Space
    while dragging suspends snapping. canvas.options = {snapToGrid, snapToObjects, readOnly}
@@ -38,6 +41,8 @@
   const EDGE = 7;             // border hit zone, client px (inside the card)
   const SNAP = 8;             // snap distance, client px
   const MINW = 40, MINH = 30; // as canvas.js resize()
+  const PANZ = 40;            // auto-pan zone at the pane edge, client px
+  const PANV = 800;           // auto-pan speed at (or past) the edge, client px per second
   const COLORS = [["1", "Red", "var(--color-red, #e93147)"], ["2", "Orange", "var(--color-orange, #ec7500)"],
                   ["3", "Yellow", "var(--color-yellow, #e0ac00)"], ["4", "Green", "var(--color-green, #08b94e)"],
                   ["5", "Cyan", "var(--color-cyan, #00bfbc)"], ["6", "Purple", "var(--color-purple, #7852ee)"]];
@@ -334,6 +339,7 @@
       }
       dx = Math.round(dx); dy = Math.round(dy);
       for (const o of d.start) o.m.moveTo({ x: o.x + dx, y: o.y + dy });
+      edgePan(c, d, e);
     } else if (d.mode === "resize") {
       const n = d.node, st = d.start, sd = d.sides;
       const dx = dxp / z, dy = dyp / z;
@@ -365,8 +371,36 @@
     c.renderEdges();
     refresh(c);
   }
+  // auto-pan (CVR-A-151 / C-032): the pan velocity for a pointer at p, client px/s, or null outside the zone
+  function panVel(c, p) {
+    const w = c.wrapperEl; if (!w || !w.isConnected) return null;
+    const r = w.getBoundingClientRect();
+    const sp = dist => dist >= PANZ ? 0 : PANV * Math.min(1, (PANZ - dist) / PANZ);
+    const vx = sp(p.clientX - r.left) - sp(r.right - p.clientX), vy = sp(p.clientY - r.top) - sp(r.bottom - p.clientY);
+    return vx || vy ? { x: vx, y: vy } : null;
+  }
+  // while the held card sits in the zone the view pans (tx/ty) and the press anchor shifts with it, so move()
+  // re-places the card under the pointer: the card rides along onto the newly shown board
+  function edgePan(c, d, e) {
+    d.last = { clientX: e.clientX, clientY: e.clientY, shiftKey: e.shiftKey, altKey: e.altKey };
+    if (d.pan || d.done || ro(c) || !panVel(c, d.last)) return;
+    d.pan = { t: performance.now() };
+    const tick = () => {
+      const v = !d.done && panVel(c, d.last);
+      if (!v) { d.pan = null; return; }
+      const now = performance.now(), dt = Math.min(0.1, (now - d.pan.t) / 1000); d.pan.t = now;
+      const sx = v.x * dt, sy = v.y * dt;
+      c.tx += sx; c.ty += sy; d.x += sx; d.y += sy;
+      c.applyTransform();
+      move(c, d, d.last);
+      d.pan.timer = setTimeout(tick, 16);
+    };
+    d.pan.timer = setTimeout(tick, 16);
+  }
   function up(c, d) {
     const s = S(c);
+    d.done = true;
+    if (d.pan) { clearTimeout(d.pan.timer); d.pan = null; }
     if (d.mode === "marquee") { s.marqEl.hidden = true; refresh(c); notify(c); return; }
     if (d.mode === "pan") return;
     if (d.mode === "move" && !d.moved && d.toggleOff && d.node) {   // shift-click on a selected card: out of the selection
