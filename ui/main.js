@@ -1039,7 +1039,7 @@ async function runSearch() {
     otel.paint(searchSp, { hits: 0 }); searchSp = null; return;
   }
   const st0 = searchT0 >= 0 ? searchT0 : perf.now(); searchT0 = -1;
-  const [hits, cvh] = await Promise.all([inv("search", { query: q }), Promise.resolve([])]);   // cvf-links CVR-A-101: + canvas text cards
+  const [hits, cvh] = await Promise.all([inv("search", { query: q }), cvSearch(q).catch(() => [])]);   // cvf-links CVR-A-101: + canvas text cards
   if (seq !== searchSeq) { otel.cancel(searchSp); return; }
   searchCount = hits.length + cvh.length;
   box.textContent = "";
