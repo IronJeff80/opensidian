@@ -348,8 +348,8 @@ function rEmpty(box, msg) {
 const CHEV = '<svg viewBox="0 0 10 10" fill="currentColor"><path d="M3 1l4 4-4 4z"/></svg>';
 async function rPanesRefresh() {
   if (!rightOpen) return;
-  const n = rNote();
-  rpNote = n || "-";                       // census [rpnote:] — the note the panes render
+  const n = rNote() || (rTab === "bl" ? cvTabPath(rTrack()) : null);   // cvf-links CVR-A-097: a canvas tab's backlinks
+  rpNote = n || "-";                      // census [rpnote:] — the note the panes render
   await pspan("rpane_refresh", { tab: rTab }, async () => {   // perfhunt: right pane re-render -> paint
     if (rTab === "bl") await rBacklinks(n);
     else if (rTab === "out") await rOutgoing(n);
@@ -365,7 +365,9 @@ async function rBacklinks(n) {
   const box = $("bllist"), head = $("blhead");
   box.textContent = ""; head.textContent = "";
   // cv-vault CV-141: + the canvases whose file cards point at this note (fetched alongside, one await)
-  const [bl, cvb] = n ? await Promise.all([inv("backlinks_ctx", { name: n }), cvBacklinks(n)]) : [[], []];
+  // cvf-links CVR-A-097: a CANVAS (n = its .canvas path) is backlinked by the notes linking / embedding it
+  const isCv = !!n && /\.canvas$/i.test(n);
+  const [bl, cvb] = !n ? [[], []] : isCv ? [await cvCanvasBacklinks(n), []] : await Promise.all([inv("backlinks_ctx", { name: n }), cvBacklinks(n)]);
   head.textContent = "Linked mentions"; rpInfo = "bl:" + (bl.length + cvb.length);
   const c = document.createElement("span");
   c.className = "scount"; c.textContent = bl.length + cvb.length; head.appendChild(c);
@@ -398,6 +400,7 @@ async function rBacklinks(n) {
     box.appendChild(row); box.appendChild(kids);
   }
   const UL_SHOW = 200;
+  if (isCv) { rpInfo = "bl:" + bl.length + "|ul:0"; return; }   // a canvas: linked mentions only
   // R10.5 Unlinked mentions: plain-text hits of this note's name in other
   // notes (collapsed like Obsidian); each row = the line with the hit marked +
   // a Link button that wraps it in [[ ]] on disk (the hit then migrates up
@@ -1036,11 +1039,11 @@ async function runSearch() {
     otel.paint(searchSp, { hits: 0 }); searchSp = null; return;
   }
   const st0 = searchT0 >= 0 ? searchT0 : perf.now(); searchT0 = -1;
-  const hits = await inv("search", { query: q });
+  const [hits, cvh] = await Promise.all([inv("search", { query: q }), cvSearch(q).catch(() => [])]);   // cvf-links CVR-A-101: + canvas text cards
   if (seq !== searchSeq) { otel.cancel(searchSp); return; }
-  searchCount = hits.length;
+  searchCount = hits.length + cvh.length;
   box.textContent = "";
-  if (!hits.length) {
+  if (!hits.length && !cvh.length) {
     const d = document.createElement("div");
     d.className = "sempty"; d.textContent = "No results.";
     box.appendChild(d);
@@ -1084,6 +1087,30 @@ async function runSearch() {
     row.onmousedown = ev => { if (ev.button === 1) ev.preventDefault(); };
     row.onauxclick = ev => { if (ev.button === 1) { ev.preventDefault(); scClick(ev, note, [one], one); } };
     box.appendChild(row);
+  }
+  // cvf-links CVR-A-101: canvases whose text cards match, after the notes; a row opens the canvas
+  for (const c of [...new Set(cvh.map(h => h.canvas))]) {
+    const mine = cvh.filter(h => h.canvas === c), grp = document.createElement("div");
+    grp.className = "sgroup"; grp.textContent = c;
+    const k = document.createElement("span");
+    k.className = "scount"; k.textContent = "(" + mine.length + ")";
+    grp.appendChild(k);
+    grp.onclick = () => openCanvas(c);
+    box.appendChild(grp);
+    for (const h of mine) {
+      const row = document.createElement("div");
+      row.className = "shit"; row.title = h.snippet;
+      const w = q.toLowerCase().split(/\s+/)[0], at = h.snippet.toLowerCase().indexOf(w);
+      if (at >= 0) {
+        row.append(h.snippet.slice(0, at));
+        const m = document.createElement("mark");
+        m.textContent = h.snippet.slice(at, at + w.length);
+        row.appendChild(m);
+        row.append(h.snippet.slice(at + w.length));
+      } else row.textContent = h.snippet;
+      row.onclick = () => openCanvas(c);
+      box.appendChild(row);
+    }
   }
   updateTitle();
   perf.mark("search", st0, { q_len: q.length, hits: hits.length });
@@ -5565,6 +5592,7 @@ async function loadActive(g) {
     if (PVHOST && PVHOST.mount(g, t)) {   // plugin-views: its type is registered -> the plugin's view is the tab
       if (g.unkEl) g.unkEl.hidden = true;
       renderTabs(g); treeHighlight(); rgFollow();
+      if (t.utype === "canvas") { updateStatus(g); setTimeout(() => { if (g.tabs[g.active] === t) { updateStatus(g); rgFollow(); } }, 400); }   // cvf-links CVR-A-097: a canvas shows its backlink count (async; again once its view has a path)
       return;
     }
     if (!g.unkEl) {
@@ -6598,6 +6626,7 @@ async function refreshTree() {
   // goal canvas-core: .canvas files are listed only while the Canvas core plugin has the extension
   // registered (off = no view opens them, as a file type nothing handles is not listed)
   let canvases = [];
+  cvLinkDirty();                                        // cvf-links: the canvas link model re-reads after a tree change
   if (CANVAS && CANVAS.isRegistered()) { try { canvases = await inv("canvas_io", { op: "list", path: "" }); } catch (_) { canvases = []; } }
   // goal cv-journeys: images + PDFs (list_images) and audio / video (canvas_io media) are listed too, as stock does
   const media = await mediaP;
@@ -6648,6 +6677,7 @@ async function wikiClick(e, a) {
   const g = gOf(a);
   if (!g) return;
   const n = a.dataset.note || curOf(g), an = a.dataset.anchor;   // R10: [[#H]] = this note
+  if (await cvLinkOpen(n, an)) return;      // cvf-links CVR-A-096: [[X.canvas]] opens the canvas, never makes X.canvas.md
   if (a.classList.contains("wiki-unresolved")) await createNote(n);
   if (e.ctrlKey) {                            // R6.4: new tab, same group
     await flushSave(g);
@@ -6744,6 +6774,7 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
       e.preventDefault();
       const g = gOf(a);                              // R20: event-time group (retained views move)
       const n = a.dataset.note || curOf(g), an = a.dataset.anchor;  // R10: [[#H]] = this note
+      if (await cvLinkOpen(n, an)) return;          // cvf-links CVR-A-096: [[X.canvas]] opens the canvas
       if (a.classList.contains("wiki-unresolved"))   // R3.5: click creates the note
         await createNote(n);
       if (e.ctrlKey) {                               // R6.4: open in NEW TAB, same group
@@ -6805,14 +6836,27 @@ function scheduleSave(g) {
 
 /* ---------- status bar (R2.7, per group) ---------- */
 async function updateStatus(g) {
+  const t0 = g.active >= 0 ? g.tabs[g.active] : null, cvp = cvTabPath(t0);
+  if (t0 && t0.kind === "unk" && !g.graphOn) {   // cvf-links CVR-A-097: a canvas tab's status bar = its backlink count
+    if (!cvp) { g.status.hidden = true; return; }    // another plugin view (or a canvas not opened yet): no status
+    g.stWc.style.display = g.stCc.style.display = "none";
+    const k = (await cvCanvasBacklinks(cvp)).reduce((s, b) => s + b.n, 0);
+    if (g.tabs[g.active] !== t0) return;
+    g.stBl.textContent = k + (k === 1 ? " backlink" : " backlinks");
+    g.status.hidden = false;
+    return;
+  }
+  g.stWc.style.display = g.stCc.style.display = "";
   const n = curOf(g);
   if (!n || g.graphOn) { g.status.hidden = true; return; }
   const v = g.editor.value;
   const w = (v.match(/\S+/g) || []).length;
   g.stWc.textContent = w + (w === 1 ? " word" : " words");
   g.stCc.textContent = v.length + (v.length === 1 ? " char" : " chars");
-  const bl = await inv("backlinks", { name: n });
-  g.stBl.textContent = bl.length + (bl.length === 1 ? " backlink" : " backlinks");
+  // cvf-links CVR-A-099/100: the count is the linked MENTIONS (a source's link lines) + the canvases' links
+  const [bl, cvb] = await Promise.all([inv("backlinks_ctx", { name: n }), cvBacklinks(n)]);
+  const k = bl.reduce((s, b) => s + Math.max(1, b.lines.length), 0) + cvb.reduce((s, c) => s + c.cards, 0);
+  g.stBl.textContent = k + (k === 1 ? " backlink" : " backlinks");
   g.status.hidden = false;
 }
 
@@ -7347,7 +7391,7 @@ let CANVAS = null;
         readNote: p => inv("read_note", { name: String(p).replace(/\.md$/i, "") }),
         model: PLGVM,
         notify: m => say(m, "canvas"),
-        changed: () => updateTitle(),
+        changed: () => { cvLinkDirty(); updateTitle(); },   // cvf-links: the canvas link model re-reads
         pref: {
           get() { try { const v = localStorage.getItem(KEY); return v == null ? null : v === "1"; } catch (_) { return null; } },
           set(on) { try { localStorage.setItem(KEY, on ? "1" : "0"); } catch (_) {} },
@@ -7548,15 +7592,161 @@ function cvDelete(p) {
   openDelete(p, 0, 0);
   delPending.canvas = true;
 }
-/* goal cv-vault CV-141: a file card is a link of its canvas, so the backlinks of a note list every canvas with a
-   file card on it (canvas_io links: {canvas: [targets]}). Never throws: off / failed -> no canvas rows. */
+/* goal cvf-links: a canvas in the link graph. The vault's canvases are read through canvas_io (list + read) into
+   ONE model: per canvas its file cards (a link to that file) and the [[wikilinks]] of its text cards (a link each,
+   the card text is the snippet). Backlinks, the status-bar count, search and the global graph all read it. Cached
+   briefly and dropped on a tree refresh / canvas change, so a burst of panes reads the vault's canvases once. */
+var cvLM = null, cvLMt = 0;   // var: a pane may ask before this line runs
+var CV_LM_MAX = 500, CV_LM_TTL = 3000;
+function cvLinkDirty() { cvLM = null; }
+function cvLinkModel() {
+  if (!CANVAS || !CANVAS.isRegistered()) return Promise.resolve([]);
+  const now = Date.now();
+  if (cvLM && now - cvLMt < CV_LM_TTL) return cvLM;
+  cvLMt = now;
+  const p = (async () => {
+    let all = [];
+    try { all = (await inv("canvas_io", { op: "list", path: "" })) || []; } catch (_) { return []; }
+    const docs = await Promise.all(all.slice(0, CV_LM_MAX).map(c => inv("canvas_io", { op: "read", path: c }).then(s => JSON.parse(s), () => null).catch(() => null)));
+    return all.slice(0, CV_LM_MAX).map((c, i) => {
+      const d = docs[i], ns = d && Array.isArray(d.nodes) ? d.nodes.filter(n => n && typeof n === "object") : [];
+      const refs = [], texts = [];
+      for (const n of ns) {
+        if (n.type === "file" && typeof n.file === "string") refs.push({ to: n.file, file: true, text: n.file });
+        else if (n.type === "text" && typeof n.text === "string") {
+          texts.push(n.text);
+          for (const m of n.text.matchAll(/\[\[([^\]\n]+?)\]\]/g)) refs.push({ to: m[1], file: false, text: n.text });
+        }
+      }
+      return { canvas: c, refs, texts };
+    });
+  })();
+  cvLM = p;
+  p.catch(() => { if (cvLM === p) cvLM = null; });
+  return p;
+}
+/* a canvas ref -> the note it names (notesCache name, no .md), or null. A file card names a vault path exactly;
+   a text-card [[link]] resolves like a note link: exact name, else the shortest note whose basename matches. */
+function cvRefNote(to, file) {
+  let t = String(to || "");
+  if (file) { if (!/\.md$/i.test(t)) return null; }
+  else t = t.split("|")[0].split("#")[0].trim();
+  t = t.replace(/\.md$/i, "");
+  if (!t) return null;
+  if (notesCache.includes(t)) return t;
+  if (file) return null;
+  const lc = t.toLowerCase();
+  const c = notesCache.filter(x => x.toLowerCase() === lc || (!lc.includes("/") && x.toLowerCase().endsWith("/" + lc)));
+  c.sort((a, b) => a.length - b.length || a.localeCompare(b));
+  return c[0] || null;
+}
+/* a [[link]] target -> the canvas path it names among `list`, or null: the vault path, else (no folder given)
+   the shortest canvas with that file name. Case-insensitive, anchors and aliases dropped. */
+function cvRefCanvas(to, list) {
+  const t = String(to || "").split("|")[0].split("#")[0].trim().toLowerCase();
+  if (!/\.canvas$/.test(t)) return null;
+  const ex = list.find(c => c.toLowerCase() === t);
+  if (ex) return ex;
+  if (t.includes("/")) return null;
+  const c = list.filter(x => x.toLowerCase().split("/").pop() === t).sort((a, b) => a.length - b.length || a.localeCompare(b));
+  return c[0] || null;
+}
+async function cvFindCanvas(n) { return cvRefCanvas(n, (await cvLinkModel()).map(c => c.canvas)); }
+/* notes linking a canvas: [{note, canvas, ln, text}] one per link. Only notes that mention "canvas" at all can
+   (search narrows them), each read once. */
+async function cvNoteCanvasLinks() {
+  const list = (await cvLinkModel()).map(c => c.canvas);
+  if (!list.length) return [];
+  let hits = [];
+  try { hits = (await inv("search", { query: "canvas" })) || []; } catch (_) { return []; }
+  const notes = [...new Set(hits.map(h => h.note))].slice(0, 300);
+  const bodies = await Promise.all(notes.map(n => inv("read_note", { name: n }).catch(() => "")));
+  const out = [];
+  notes.forEach((n, i) => String(bodies[i] || "").split("\n").forEach((l, ln) => {
+    for (const m of l.matchAll(/!?\[\[([^\]\n]+?)\]\]/g)) { const c = cvRefCanvas(m[1], list); if (c) out.push({ note: n, canvas: c, ln, text: l.trim().slice(0, 200) }); }
+  }));
+  return out;
+}
+/* the backlinks of a CANVAS: the notes linking it, one entry per note with its link lines (backlinks_ctx shape) */
+async function cvCanvasBacklinks(p) {
+  const by = new Map();
+  for (const l of await cvNoteCanvasLinks()) {
+    if (l.canvas !== p) continue;
+    const b = by.get(l.note) || { note: l.note, lines: [], n: 0 };
+    if (!b.lines.length || b.lines[b.lines.length - 1][0] !== l.ln) b.lines.push([l.ln, l.text]);
+    b.n++; by.set(l.note, b);
+  }
+  return [...by.values()].sort((a, b) => a.note.localeCompare(b.note));
+}
+/* the canvas a tab shows (a canvas plugin-view tab), or null */
+function cvTabPath(t) {
+  if (!t || t.kind !== "unk" || t.utype !== "canvas" || !PLG) return null;
+  try {
+    const v = PLG.app.workspace.getLeavesOfType("canvas").find(l => l && l._t === t);
+    if (v && v.view && v.view.path) return v.view.path;
+  } catch (_) {}
+  try { const f = t.raw && t.raw.state && t.raw.state.state && t.raw.state.state.file; if (f) return String(f); } catch (_) {}
+  return null;
+}
+/* a [[X.canvas]] link / embed click: open the canvas (never create X.canvas.md). true if handled. */
+async function cvLinkOpen(n, an) {
+  if (an || !/\.canvas$/i.test(String(n || "")) || !CANVAS || !CANVAS.isRegistered()) return false;
+  const p = await cvFindCanvas(n);
+  if (!p) return false;
+  await openCanvas(p);
+  return true;
+}
+/* goal cvf-links CVR-A-101: canvas text cards in global search. Plain terms only (all must occur in one card,
+   case-insensitive); a query with operators / quotes is the note grammar's alone. [{canvas, snippet}] */
+async function cvSearch(q) {
+  q = String(q || "").trim();
+  if (!q || /[:"()\[\]]|(^|\s)-|\bOR\b/.test(q)) return [];
+  const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
+  const out = [];
+  for (const c of await cvLinkModel())
+    for (const t of c.texts) {
+      const lc = t.toLowerCase();
+      if (!terms.every(w => lc.includes(w))) continue;
+      const line = t.split("\n").find(l => l.toLowerCase().includes(terms[0])) || t;
+      out.push({ canvas: c.canvas, snippet: line.trim().slice(0, 200) });
+    }
+  return out;
+}
+/* goal cvf-links CVR-A-102: the global graph's feed + the canvases: one node per canvas (named with its
+   extension), a link per file card / text-card [[link]] to a note, and one per note link to a canvas */
+async function cvGraphFeed(p) {
+  const [gr, m, nl] = await Promise.all([p, cvLinkModel(), cvNoteCanvasLinks()]);
+  if (!m.length || !gr || !Array.isArray(gr.nodes) || !Array.isArray(gr.edges)) return gr;
+  const nodes = gr.nodes.slice(), edges = gr.edges.slice(), col = Array.isArray(gr.col) ? gr.col.slice() : gr.col;
+  const ix = new Map(nodes.map((nd, i) => [nd.name, i]));
+  const add = name => {
+    if (!ix.has(name)) { ix.set(name, nodes.length); nodes.push({ name, resolved: true }); if (Array.isArray(col)) col.push(-1); }
+    else { const i = ix.get(name); if (!nodes[i].resolved) nodes[i] = { name, resolved: true }; }
+    return ix.get(name);
+  };
+  const seen = new Set(edges.map(([a, b]) => a + ">" + b));
+  const link = (a, b) => { if (a !== b && !seen.has(a + ">" + b)) { seen.add(a + ">" + b); edges.push([a, b]); } };
+  for (const c of m) {
+    const a = add(c.canvas);
+    for (const r of c.refs) { const t = cvRefNote(r.to, r.file); if (t && ix.has(t)) link(a, ix.get(t)); }
+  }
+  for (const l of nl) if (ix.has(l.note) && ix.has(l.canvas)) link(ix.get(l.note), ix.get(l.canvas));
+  return Object.assign({}, gr, { nodes, edges, col });
+}
+/* goal cv-vault CV-141 + cvf-links CVR-A-099/100: the canvases with a file card on this note or a text card
+   linking it. [{canvas, cards: <links>, lines: [<snippet>]}] — a file card's snippet is its path, a text
+   card's its text. Never throws: off / failed -> no canvas rows. */
 async function cvBacklinks(n) {
   if (!CANVAS || !CANVAS.isRegistered() || !n) return [];
-  let m = {};
-  try { m = await inv("canvas_io", { op: "links", path: "" }) || {}; } catch (_) { return []; }
   const want = String(n).replace(/\.md$/i, "");
-  return Object.keys(m).filter(cv => (m[cv] || []).some(f => String(f).replace(/\.md$/i, "") === want && /\.md$/i.test(String(f))))
-    .map(cv => ({ canvas: cv, cards: m[cv].filter(f => String(f).replace(/\.md$/i, "") === want).length })).sort((a, b) => a.canvas.localeCompare(b.canvas));
+  let m = [];
+  try { m = await cvLinkModel(); } catch (_) { return []; }
+  const out = [];
+  for (const c of m) {
+    const hits = c.refs.filter(r => cvRefNote(r.to, r.file) === want);
+    if (hits.length) out.push({ canvas: c.canvas, cards: hits.length, lines: hits.map(r => String(r.text).replace(/\s+/g, " ").trim().slice(0, 200)) });
+  }
+  return out.sort((a, b) => a.canvas.localeCompare(b.canvas));
 }
 /* goal cv-vault CV-139/140: a canvas embedded in a note. The renderer leaves `![[X.canvas]]` as "!" + a wiki
    link; the reading view swaps that pair for span.cv-embed[data-canvas] and paints the canvas as SHAPES ONLY —
@@ -7634,16 +7824,32 @@ function cvEmbTok() {
   return " [cvemb:" + e.dataset.path.replace(/[[\]|@]/g, "_") + "@" + Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2) +
          "|r=" + e.querySelectorAll("rect").length + "|p=" + e.querySelectorAll("path").length + "|txt=" + e.textContent.length + "]";
 }
-function cvBacklinkRows(box, cvb) {
+function cvBacklinkRows(box, cvb) {   // one row per canvas + one line per link (a file card / a text card's [[link]])
   for (const b of cvb) {
     const row = document.createElement("div");
-    row.className = "blnote"; row.dataset.ol = "bt:" + b.canvas;
-    row.innerHTML = '<span class="tc"></span><span class="bln"></span><span class="scount"></span>';
+    row.className = "blnote open"; row.dataset.ol = "bt:" + b.canvas;
+    row.innerHTML = '<span class="tc">' + CHEV + '</span><span class="bln"></span><span class="scount"></span>';
     row.querySelector(".bln").textContent = b.canvas;
     row.querySelector(".scount").textContent = b.cards;
-    row.title = "file card in " + b.canvas;
+    row.title = b.canvas;
+    const kids = document.createElement("div");
+    for (const text of b.lines || []) {
+      const d = document.createElement("div");
+      d.className = "blline"; d.dataset.ol = "bl:" + b.canvas;
+      String(text).split(/(\[\[[^\]]*\]\])/).forEach((part, i) => {
+        const el = i % 2 ? document.createElement("mark") : document.createTextNode(part);
+        if (i % 2) el.textContent = part;
+        d.appendChild(el);
+      });
+      d.onclick = () => openCanvas(b.canvas);
+      kids.appendChild(d);
+    }
+    row.querySelector(".tc").onclick = e => {
+      e.stopPropagation();
+      row.classList.toggle("open"); kids.hidden = !row.classList.contains("open");
+    };
     row.onclick = () => openCanvas(b.canvas);
-    box.appendChild(row);
+    box.appendChild(row); box.appendChild(kids);
   }
 }
 async function cvTrash(p) {
@@ -9677,6 +9883,14 @@ async function startGraph(g, cfg) {
   g.graphOn = true; g.graphSettled = false;
   if (!g.perfT0 && lgT0) g.perfT0 = lgT0;   // perfhunt: a local graph is opened from its SOURCE group; the split hands the click time over
   lgT0 = 0;
+  // cvf-links CVR-A-102: the GLOBAL graph's node feed carries the canvases (cvGraphFeed); a canvas node opens the canvas
+  if (cfg.fetch === gcFetchGg && CANVAS && CANVAS.isRegistered()) {
+    const f0 = cfg.fetch, c0 = cfg.onClick;
+    cfg = Object.assign({}, cfg, {
+      fetch: () => cvGraphFeed(f0()),
+      onClick: (n, e) => (/\.canvas$/i.test(String(n)) && !notesCache.includes(n) ? openCanvas(n) : c0(n, e)),
+    });
+  }
   const openT0 = g.perfT0 || perf.now();   // perf: graph_open_settle = open -> kinetic energy below eps
   const sgMs = perf.now() - openT0;     // graphperf: click -> startGraph (0 unless a click time was handed over); v0.6.1 started the lg settle clock HERE, so [sg] lets the A/B compare like with like
   hideAc();
