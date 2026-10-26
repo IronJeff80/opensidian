@@ -23,6 +23,14 @@
    its wheel listener; main.js canvasTok() appends census(view). */
 (function () {
   "use strict";
+  /* gh-icons #20: monochrome inline svg icons (drawn for this app, currentColor) in place of
+     text pictographs / emoji; class "gi" sizes them (style.css / plugins.css) */
+  const I = d => '<svg class="gi" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' + d + "</svg>";
+  const GI = {
+    frame: I('<path d="M2.5 5.5v-3h3M10.5 2.5h3v3M13.5 10.5v3h-3M5.5 13.5h-3v-3"/><circle cx="8" cy="8" r="2"/>'),
+    gear: I('<circle cx="8" cy="8" r="2"/><circle cx="8" cy="8" r="4.4"/><path d="M8 1.6v2M8 12.4v2M1.6 8h2M12.4 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4"/>'),
+    check: I('<path d="M3.5 8.5l3 3 6-7"/>'),
+  };
   /* CVR-A-073 DEFERRED (coordinator ruling 2026-10-26, pending operator go): "+ Text" and zoom to selection stay,
      at the foot of the stack, until the canvasui / cvnav CV-127 / cvjourney J4 / cvworks oracles change. false = stock */
   const DEFER_073 = true;
@@ -220,7 +228,7 @@
       it.className = "canvas-settings-item"; it.setAttribute("role", "menuitemcheckbox");
       it.setAttribute("aria-checked", c.options[k] ? "true" : "false");
       const t = document.createElement("span"); t.textContent = label; it.appendChild(t);
-      const ck = document.createElement("span"); ck.className = "canvas-settings-check"; ck.textContent = c.options[k] ? "✓" : ""; it.appendChild(ck);
+      const ck = document.createElement("span"); ck.className = "canvas-settings-check"; ck.innerHTML = c.options[k] ? GI.check : ""; it.appendChild(ck);
       it.addEventListener("click", e => { e.stopPropagation(); setOption(c, k, !c.options[k]); closeSettings(c); });
       m.appendChild(it); s.items[tk] = it;
     }
@@ -384,17 +392,17 @@
     if (c.controlsEl) {
       const btn = (cls, label, txt, fn) => {
         const b = document.createElement("button");
-        b.className = "canvas-control " + cls; b.type = "button"; b.textContent = txt; b.title = label; b.setAttribute("aria-label", label);
+        b.className = "canvas-control " + cls; b.type = "button"; if (txt.startsWith("<svg")) b.innerHTML = txt; else b.textContent = txt; b.title = label; b.setAttribute("aria-label", label);
         b.addEventListener("pointerdown", e => e.stopPropagation());
         b.addEventListener("dblclick", e => e.stopPropagation());
         b.addEventListener("click", e => { e.stopPropagation(); fn(); });
         c.controlsEl.appendChild(b);
         return b;
       };
-      s.btn.sel = btn("mod-zoom-selection", "Zoom to selection", "◎", () => zoomToSelection(c));
+      s.btn.sel = btn("mod-zoom-selection", "Zoom to selection", GI.frame, () => zoomToSelection(c));
       s.btn.reset = btn("mod-zoom-reset", "Reset zoom", "1:1", () => resetZoom(c));
       s.btn.help = btn("mod-help", "Canvas help", "?", () => openHelp(c));
-      s.btn.set = btn("mod-settings", "Canvas settings", "⚙", () => openSettings(c));
+      s.btn.set = btn("mod-settings", "Canvas settings", GI.gear, () => openSettings(c));
       stack(c);
     }
     // read-only also follows the file error (canvas.readonly setter): keep the padlock in step
