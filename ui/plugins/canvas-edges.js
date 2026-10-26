@@ -16,13 +16,15 @@
    phase, so a press on an edge, a handle or the edge toolbar never reaches the
    board's own pan/select/dblclick listeners.
 
-   - hovering a card (or the band just outside it) paints a connection handle on
-     the middle of each side; dragging one onto a card makes an edge with both
-     sides set, onto empty board makes a text card at the drop point and connects it
+   - hovering near a card's side (inside it, or the band just outside) paints ONE
+     connection handle, centred on that side's border; none near the card's centre.
+     Dragging it onto a card makes an edge with both sides set, onto empty board
+     makes a text card at the drop point and connects it
    - an edge is hit within HIT px of its curve; a press selects it, Delete or
      Backspace removes it, a double press edits its label
    - a hovered or selected edge paints a handle on each end: dragging an end onto
-     a card reconnects it (same edge, same id), onto empty board removes the edge
+     a card reconnects it (same edge, same id, side re-picked), onto empty board
+     removes the edge; on the selected edge, its line just before a card grabs that end too
    - the selected edge has a toolbar: delete, colour (palette), direction
      (none / one way / both ways), label, remove label
    - right-click an edge: Follow connection pans to the card at the far end
@@ -33,7 +35,9 @@
   const HIT = 16;          // screen px: width of an edge's invisible hit stroke
   const HANDLE = 14;       // screen px: connection / end handle diameter
   const NEAR = 20;         // screen px: a card's handles stay painted this far outside it
-  const OUT = 5;           // screen px: a connection handle sits this far outside its side, so the border band inside stays resize
+  const BAND = 24;         // screen px: inside a card, the pointer this close to a side shows that side's handle (never at the centre)
+  const GRAB = 30;         // screen px: a press on the selected edge's line this close to an end grabs that end
+  const LINE = 2;          // screen px: a press this far inside a side still counts as on its border line (connect, not resize)
   const SNAP = 24;         // screen px: a drop this close to a side attaches to that side
   const SIDES = ["top", "right", "bottom", "left"];
   const NORMAL = { top: [0, -1], right: [1, 0], bottom: [0, 1], left: [-1, 0] };
@@ -70,7 +74,7 @@
       ".canvas-edge-overlay { position: absolute; left: 0; top: 0; width: 0; height: 0; pointer-events: none; z-index: 2 }",
       ".canvas-edge-handle, .canvas-edge-end { position: absolute; box-sizing: border-box; border-radius: 50%; pointer-events: auto; cursor: crosshair;" +
         " background: var(--background-primary, #1e1e1e); border: 2px solid var(--interactive-accent, #7f6df2) }",
-      ".canvas-edge-handle { z-index: 1; pointer-events: none }",   // hit-tested in onDown (handleAt), so a press inside the card stays a resize
+      ".canvas-edge-handle { z-index: 1; pointer-events: none }",   // hit-tested in onDown (handleAt): a press on the handle connects, the rest of the border band resizes
       ".canvas-edge-end { z-index: 2; background: var(--interactive-accent, #7f6df2); cursor: move }",
       ".canvas-edge-preview { position: absolute; overflow: visible; pointer-events: none }",
       ".canvas-edge-preview path { fill: none; stroke: var(--interactive-accent, #7f6df2); stroke-width: 2px; stroke-dasharray: 6 4 }",
@@ -115,7 +119,7 @@
   /* ------------------------------------------------------------ state */
   function install(c) {
     style();
-    const S = c._cve = { ctx: {}, geo: new Map(), hover: null, sel: null, hnode: null, drag: null, press: null,
+    const S = c._cve = { ctx: {}, geo: new Map(), hover: null, sel: null, hnode: null, hside: null, drag: null, press: null,
                          pop: null, menu: null, label: null, zoom: c.zoom };
     S.overlay = el("div", "canvas-edge-overlay", c.canvasEl);
     S.handlesEl = el("div", "canvas-edge-handles", S.overlay);
@@ -127,7 +131,7 @@
     const w = c.wrapperEl;
     w.addEventListener("pointerdown", ev => onDown(c, ev), true);
     w.addEventListener("pointermove", ev => onHover(c, ev), true);
-    w.addEventListener("pointerleave", () => { if (!S.drag && (S.hover || S.hnode)) { S.hover = null; S.hnode = null; refresh(c); ping(c); } });
+    w.addEventListener("pointerleave", () => { if (!S.drag && (S.hover || S.hnode)) { S.hover = null; S.hnode = null; S.hside = null; refresh(c); ping(c); } });
     w.addEventListener("dblclick", ev => onDbl(c, ev), true);
     w.addEventListener("contextmenu", ev => onMenu(c, ev), true);
     w.addEventListener("keydown", ev => onKey(c, ev), true);
@@ -158,18 +162,49 @@
     if (edgeDist <= SNAP / (c.zoom || 1) && best <= Math.max(d.width, d.height) / 2 + SNAP / (c.zoom || 1)) return s;
     return other ? facing(d, other) : s;
   }
-  // a connection handle's centre: the side's midpoint pushed OUT screen px outward
-  const handlePos = (c, d, side) => { const a = anchor(d, side), o = OUT / (c.zoom || 1); return [a[0] + NORMAL[side][0] * o, a[1] + NORMAL[side][1] * o]; };
-  // the painted handle under a press, or null. Handles take no pointer events (CSS) and a press
-  // INSIDE the card is never a handle press: the card's border band is canvas-select's resize zone
-  // (resize from any edge), the part of the handle outside the card is the connect grab.
+  // a reconnected end's side, re-picked on every drop: a drop on (or near) a side takes that side; a drop
+  // inside the card takes the side the pointer came in through (the side nearest the drag's last point
+  // outside the card, or its start)
+  function endSide(c, d, p, trail) {
+    const z = c.zoom || 1;
+    const edgeDist = Math.min(Math.abs(p[0] - d.x), Math.abs(p[0] - d.x - d.width), Math.abs(p[1] - d.y), Math.abs(p[1] - d.y - d.height));
+    let q = p;
+    if (edgeDist > SNAP / z) {
+      q = trail && trail[0] || p;
+      for (let i = (trail || []).length - 1; i >= 0; i--) {
+        const r = trail[i];
+        if (r[0] < d.x || r[0] > d.x + d.width || r[1] < d.y || r[1] > d.y + d.height) { q = r; break; }
+      }
+    }
+    let s = null, best = Infinity;
+    for (const k of SIDES) { const a = anchor(d, k), dist = Math.hypot(a[0] - q[0], a[1] - q[1]); if (dist < best) { best = dist; s = k; } }
+    return s;
+  }
+  // a connection handle's centre: the side's midpoint, on the border line
+  const handlePos = (c, d, side) => anchor(d, side);
+  // the one side whose handle a pointer at canvas point p shows on card d, or null: the side nearest the
+  // pointer; outside the card (within NEAR) always, inside only within BAND of that side (and never as far
+  // in as the card's centre), so the middle of a card shows no handle
+  function hoverSide(c, d, p) {
+    const z = c.zoom || 1;
+    const dist = { top: Math.abs(p[1] - d.y), right: Math.abs(p[0] - d.x - d.width), bottom: Math.abs(p[1] - d.y - d.height), left: Math.abs(p[0] - d.x) };
+    let s = null;
+    for (const k of SIDES) if (s === null || dist[k] < dist[s]) s = k;
+    const inside = p[0] >= d.x && p[0] <= d.x + d.width && p[1] >= d.y && p[1] <= d.y + d.height;
+    if (!inside) return s;
+    return dist[s] * z <= Math.min(BAND, 0.35 * Math.min(d.width, d.height) * z) ? s : null;
+  }
+  // the painted handle under a press, or null. Handles take no pointer events (CSS): a press within the
+  // painted handle (it straddles the border) is a connect grab and wins over canvas-select's border resize;
+  // the rest of the border band and the corners stay resize.
   function handleAt(c, ev) {
-    const S = c._cve, d = !c.readonly && S.hnode && nodeData(c, S.hnode);
+    const S = c._cve, d = !c.readonly && S.hnode && S.hside && nodeData(c, S.hnode);
     if (!d || !S.handlesEl.firstChild) return null;
-    const p = pt(c, ev), z = c.zoom || 1;
-    if (p[0] >= d.x && p[0] <= d.x + d.width && p[1] >= d.y && p[1] <= d.y + d.height) return null;
-    for (const s of SIDES) { const h = handlePos(c, d, s); if (Math.hypot(h[0] - p[0], h[1] - p[1]) * z <= HANDLE / 2 + 1) return { node: d.id, side: s }; }
-    return null;
+    const p = pt(c, ev), z = c.zoom || 1, s = S.hside, h = handlePos(c, d, s);
+    if (Math.hypot(h[0] - p[0], h[1] - p[1]) * z > HANDLE / 2 + 2) return null;
+    // the border line itself and the handle's outer half connect; deeper inside is canvas-select's resize band
+    const depth = s === "top" ? p[1] - d.y : s === "bottom" ? d.y + d.height - p[1] : s === "left" ? p[0] - d.x : d.x + d.width - p[0];
+    return depth * z <= LINE ? { node: d.id, side: s } : null;
   }
   const pt = (c, ev) => { const q = c.toCanvas(ev.clientX, ev.clientY); return [q.x, q.y]; };
 
@@ -178,7 +213,7 @@
     const S = c._cve, z = c.zoom || 1;
     if (S.sel && !c.edges.has(S.sel)) { S.sel = null; S.pop = null; }
     if (S.hover && !c.edges.has(S.hover)) S.hover = null;
-    if (S.hnode && !c.nodes.has(S.hnode)) S.hnode = null;
+    if (S.hnode && !c.nodes.has(S.hnode)) { S.hnode = null; S.hside = null; }
     if (S.zoom !== z) {   // the hit stroke and the handles keep their screen size across a zoom
       S.zoom = z;
       for (const h of c.edgeEl.querySelectorAll(".canvas-edge-hit")) h.style.strokeWidth = (HIT / z) + "px";
@@ -198,7 +233,7 @@
     };
     S.handlesEl.textContent = "";
     const hn = S.hnode && nodeData(c, S.hnode);
-    if (hn && !c.readonly && !(S.drag && S.drag.kind)) for (const s of SIDES) dot("canvas-edge-handle", S.handlesEl, handlePos(c, hn, s), { node: hn.id, side: s });
+    if (hn && S.hside && !c.readonly && !(S.drag && S.drag.kind)) dot("canvas-edge-handle", S.handlesEl, handlePos(c, hn, S.hside), { node: hn.id, side: S.hside });
     S.endsEl.textContent = "";
     if (!c.readonly && !(S.drag && S.drag.moved)) for (const id of new Set([S.hover, S.sel])) {
       const g = id && S.geo.get(id); if (!g) continue;
@@ -366,22 +401,24 @@
     const S = c._cve;
     if (S.drag || ev.buttons) return;
     const t = ev.target;
-    let hover = S.hover, hnode = S.hnode;
+    let hover = S.hover, hnode = S.hnode, hside = S.hside;
     if (t && t.classList && t.classList.contains("canvas-edge-end")) hover = t.dataset.edge;
     else if (t && t.classList && t.classList.contains("canvas-edge-handle")) hnode = t.dataset.node;
     else {
       hover = edgeOf(c, t);
-      if (t && t.closest && t.closest(".canvas-edge-pin, .canvas-controls, .canvas-edge-menu")) hnode = null;
+      if (t && t.closest && t.closest(".canvas-edge-pin, .canvas-controls, .canvas-edge-menu")) { hnode = null; hside = null; }
       else {
+        const p = pt(c, ev);
         const nEl = t && t.closest ? t.closest(".canvas-node") : null;
         const over = nEl && c.nodes.get(nEl.dataset.nodeId);
-        const n = over && over.data.type !== "group" ? over : nodeAt(c, pt(c, ev), NEAR / (c.zoom || 1));
+        const n = over && over.data.type !== "group" ? over : nodeAt(c, p, NEAR / (c.zoom || 1));
         hnode = n && !n.isEditing ? n.id : null;
+        hside = hnode ? hoverSide(c, n.data, p) : null;
       }
     }
     if (S.zoom !== c.zoom) refresh(c);
-    if (hover === S.hover && hnode === S.hnode) return;
-    S.hover = hover; S.hnode = hnode;
+    if (hover === S.hover && hnode === S.hnode && hside === S.hside) return;
+    S.hover = hover; S.hnode = hnode; S.hside = hside;
     refresh(c); ping(c);
   }
   function onDown(c, ev) {
@@ -399,6 +436,12 @@
     if (c.readonly) { if (id) select(c, id); return; }
     if (isH) return startDrag(c, ev, { kind: "new", node: hh.node, side: hh.side });
     if (isE) { select(c, id); return startDrag(c, ev, { kind: "end", id, end: t.dataset.end }); }
+    // a press on the SELECTED edge's line just before a card grabs that end (reconnect)
+    if (id === S.sel && S.geo.get(id)) {
+      const g = S.geo.get(id), p = pt(c, ev), z = c.zoom || 1;
+      const d1 = Math.hypot(g.p1[0] - p[0], g.p1[1] - p[1]) * z, d2 = Math.hypot(g.p2[0] - p[0], g.p2[1] - p[1]) * z;
+      if (Math.min(d1, d2) <= GRAB) { S.press = null; return startDrag(c, ev, { kind: "end", id, end: d2 <= d1 ? "to" : "from" }); }
+    }
     // a press on the edge: select; a second press on it within 450ms opens the label editor
     const now = Date.now(), pr = S.press;
     S.press = { id, t: now, x: ev.clientX, y: ev.clientY }; S.edgePress = now;
@@ -407,12 +450,12 @@
   }
   function startDrag(c, ev, d) {
     const S = c._cve;
-    d.x = ev.clientX; d.y = ev.clientY; d.moved = false;
+    d.x = ev.clientX; d.y = ev.clientY; d.moved = false; d.trail = [pt(c, ev)];
     S.drag = d;
     const move = e => {
       if (!d.moved && Math.abs(e.clientX - d.x) + Math.abs(e.clientY - d.y) < 4) return;
       if (!d.moved) { d.moved = true; refresh(c); }
-      const p = pt(c, e);
+      const p = pt(c, e); d.trail.push(p); if (d.trail.length > 64) d.trail.shift();
       if (d.kind === "new") { const n = nodeData(c, d.node); if (n) preview(c, anchor(n, d.side), p, d.side); }
       else {
         const g = S.geo.get(d.id); if (!g) return;
@@ -455,12 +498,11 @@
       return;
     }
     const e = c.edges.get(d.id); if (!e) return;
-    const fixed = nodeData(c, d.end === "to" ? e.fromNode : e.toNode);
     const tgt = nodeAt(c, p, 0);
     if (!tgt) { removeEdge(c, d.id); return; }   // dropped off every card: the connection is gone
     const k = d.end === "to" ? "to" : "from";
     e[k + "Node"] = tgt.data.id;
-    e[k + "Side"] = sideNear(c, tgt.data, p, fixed && fixed.id !== tgt.data.id ? fixed : null);
+    e[k + "Side"] = endSide(c, tgt.data, p, d.trail);
     save(c);
   }
   function onDbl(c, ev) {
