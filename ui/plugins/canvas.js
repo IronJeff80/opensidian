@@ -937,6 +937,7 @@
         let text;
         try { text = serializeCanvas(this.canvas.diskData()); }
         catch (e) { console.error("[canvas] not saved:", e); if (deps.notify) deps.notify("Canvas not saved — " + errText(e)); return; }
+        if (text === this.lastText) return;
         const f = vaultFile(p);
         try { if (f) await app.vault.modify(f, text); else await io("write", p, text); }
         catch (e) { this.dirty = true; if (deps.notify) deps.notify("Canvas not saved — " + errText(e)); throw e; }
@@ -946,6 +947,8 @@
       }
       async flush(force) { this.canvas._saveSoon.cancel(); for (const n of this.canvas.nodes.values()) if (n.isEditing) try { n.stopEditing(); } catch (_) {} await this.save(force); }
       // the board is hidden by another tab: write it now (a card being edited stays in edit)
+      async leave() { this.canvas._saveSoon.cancel(); await this.save(true); }
+      async onClose() { if (this._mo) this._mo.disconnect(); try { await this.flush(true); } catch (e) { console.error(e); } this.canvas.destroy(); }
     }
 
     /* ---------------------------------------------------------- the core plugin
