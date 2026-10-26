@@ -279,8 +279,11 @@
        [cpcore=canvas:x,y,<on>,<gear x>,<gear y>,<plus x>,<plus y>]
        [cvsp=<ctl>:x,y,<value>]   loc locf wheel cdrag names grid obj zth zthreset
        [cvspopt=<value>:x,y]      the open dropdown's options */
+  /* goal cvf-create CVR-A-010/011 (ruling 03:00Z): stock leaves newFileLocation unset = vault root. Off while phase
+     cvvault CV-107 asserts same-folder (operator go list); flipping it is this one line. */
+  const CV_NEWLOC_STOCK = false;
   const CV_DEF = Object.freeze({
-    newFileLocation: "same", newFileFolderPath: "", defaultWheelBehavior: "pan", defaultModDragBehavior: "menu",
+    newFileLocation: CV_NEWLOC_STOCK ? "root" : "current", newFileFolderPath: "", defaultWheelBehavior: "pan", defaultModDragBehavior: "menu",
     showCardNames: "always", zoomThreshold: 100, snapToGrid: true, snapToObjects: true,
   });
   const cvc = { canvas: {}, core: {}, loaded: false, subs: [] };
@@ -289,7 +292,10 @@
     return inv("settings_model", { vcfg: patch === undefined ? { file } : { file, patch } });
   };
   const say_ = m => { try { if (typeof say === "function") say(m, "canvas"); } catch (_) {} };
-  const cvGet = k => (Object.prototype.hasOwnProperty.call(cvc.canvas, k) && cvc.canvas[k] != null ? cvc.canvas[k] : CV_DEF[k]);
+  // goal cvf-create (ruling 03:00Z): same-folder is "current" (stock's name); "same" (written today, see below) reads as "current"
+  const cvRaw = k => (Object.prototype.hasOwnProperty.call(cvc.canvas, k) && cvc.canvas[k] != null ? cvc.canvas[k] : CV_DEF[k]);
+  const cvNorm = (k, v) => (k === "newFileLocation" && v === "same" ? "current" : v);
+  const cvGet = k => cvNorm(k, cvRaw(k));
   const cvEmit = keys => { for (const f of cvc.subs) { try { f(keys); } catch (e) { console.error("[canvas] cfg listener:", e); } } };
   // writes go out in order, one at a time (a slider drag is many patches; the file holds the last)
   let cvQ = Promise.resolve();
@@ -371,7 +377,10 @@
   function spAway(ev) { if (spMenu && !spMenu.contains(ev.target)) closeSpMenu(); }
   function dropdown(ctl, key, opts) {
     const d = el("div", "sctl dropdown live");
-    const cur = String(cvGet(key));
+    // an option may carry a stored value apart from its id: [id, label, stored] (cvf-create: loc "same" is written "current")
+    const sv = o => (o.length > 2 ? o[2] : o[0]);
+    const curV = String(cvGet(key));
+    const cur = (opts.find(o => cvNorm(key, sv(o)) === curV) || [curV])[0];
     const lab = (opts.find(o => o[0] === cur) || opts[0])[1];
     d.textContent = lab; d.title = lab; d.style.width = "220px";
     d.dataset.cvsp = ctl; d.dataset.val = cur; d.tabIndex = 0;
@@ -384,14 +393,15 @@
       m.setAttribute("role", "listbox");
       m.style.cssText = "position:fixed;z-index:200;left:" + Math.round(b.left) + "px;top:" + Math.round(b.bottom + 2) + "px;min-width:" +
         Math.round(b.width) + "px;background:var(--bg-base);border:1px solid var(--border-strong);border-radius:6px;padding:4px;box-shadow:0 4px 14px var(--shadow-popover);font-size:13px;color:var(--text-chrome)";
-      for (const [v, t] of opts) {
+      for (const o of opts) {
+        const [v, t] = o;
         const it = el("div", "cvsp-opt", (v === cur ? "✓ " : "") + t);
         it.dataset.v = v; it.setAttribute("role", "option");
         it.style.cssText = "padding:4px 10px;border-radius:4px;cursor:pointer;white-space:nowrap";
         it.onmouseenter = () => { it.style.background = "var(--bg-surface)"; };
         it.onmouseleave = () => { it.style.background = ""; };
         it.onmousedown = e => e.stopPropagation();
-        it.onclick = e => { e.stopPropagation(); closeSpMenu(); cvSet({ [key]: v }); rebuildCanvasPage(); };
+        it.onclick = e => { e.stopPropagation(); closeSpMenu(); cvSet({ [key]: sv(o) }); rebuildCanvasPage(); };
         m.appendChild(it);
       }
       document.body.appendChild(m); spMenu = m;
@@ -414,7 +424,7 @@
     let n = 0;
     const r = (label, desc, ctls) => { n++; return row(c, label, desc, ctls); };
     r("Default location for new canvas files", "Where a new canvas goes when you create one from the palette or the ribbon.",
-      [dropdown("loc", "newFileLocation", [["same", "Same folder as current file"], ["root", "Vault folder"], ["folder", "In the folder specified below"]])]);
+      [dropdown("loc", "newFileLocation", [["same", "Same folder as current file", "current"], ["root", "Vault folder"], ["folder", "In the folder specified below"]])]);
     if (cvGet("newFileLocation") === "folder") {
       const f = el("input", "sctl text live");
       f.type = "text"; f.spellcheck = false; f.autocomplete = "off"; f.placeholder = "Example: folder/sub";

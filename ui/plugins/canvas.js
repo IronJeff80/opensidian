@@ -654,6 +654,70 @@
         this.canvas = new Canvas(this);
         this.contentEl.appendChild(this.canvas.wrapperEl);
         this.errorEl = null;
+        this.buildHeader();
+      }
+      /* goal cvf-create CVR-A-018: the view header above the board — the file's folders as a breadcrumb, then its
+         name as an editable title (Enter or leaving the field renames the file, Escape puts the name back).
+         CVR-A-005: editTitle() focuses + selects it (a new board opens that way). */
+      buildHeader() {
+        const h = this.headerEl, t = this.titleEl;
+        if (!h || !t) return;
+        h.hidden = false;
+        h.style.cssText = "display:flex;align-items:center;gap:4px;padding:4px 8px;min-height:32px;box-sizing:border-box;border-bottom:1px solid var(--background-modifier-border, rgba(127,127,127,.25))";
+        t.style.cssText = "flex:1 1 auto;min-width:0;display:flex;align-items:center;justify-content:center;font-size:13px;white-space:nowrap;overflow:hidden";
+        this.crumbEl = el("span", "view-header-breadcrumbs", t);
+        this.crumbEl.style.cssText = "opacity:.7;overflow:hidden;text-overflow:ellipsis";
+        const inp = this.nameEl = el("input", "view-header-title-input", t);
+        inp.type = "text"; inp.spellcheck = false; inp.setAttribute("aria-label", "File name");
+        inp.style.cssText = "font:inherit;color:inherit;background:transparent;border:1px solid transparent;border-radius:4px;padding:1px 4px;min-width:2ch;outline:none";
+        // the field is as wide as its text: a hidden twin span with the same font measures it (box-sizing is
+        // border-box app-wide, so padding + border are added on top)
+        const sz = el("span", "view-header-title-sizer", t);
+        sz.style.cssText = "position:absolute;visibility:hidden;white-space:pre;font:inherit;left:-9999px;top:0";
+        const fit = () => { sz.textContent = inp.value || " "; const w = sz.getBoundingClientRect().width;
+          inp.style.width = w > 0 ? Math.ceil(w + 14) + "px" : (inp.value.length + 3) + "ch"; };   // detached: no layout yet, a ch estimate
+        inp.addEventListener("input", fit);
+        inp.addEventListener("focus", () => { fit(); inp.style.borderColor = "var(--interactive-accent, #7f6df2)"; });
+        inp.addEventListener("keydown", e => {
+          // text keys stay in the field (the board's single-key tools must not fire); app chords such as
+          // ctrl+w / ctrl+p still reach the keymap, only the editing chords are kept here
+          const mod = e.ctrlKey || e.metaKey;
+          if (!mod || /^[acvxzy]$/i.test(e.key) || e.key === "Backspace" || e.key === "Delete" || e.key.startsWith("Arrow") || e.key === "Home" || e.key === "End") e.stopPropagation();
+          if (e.key === "Enter") { e.preventDefault(); this.commitTitle(); }
+          else if (e.key === "Escape") { e.preventDefault(); this.paintHeader(); inp.blur(); }
+        });
+        inp.addEventListener("blur", () => { inp.style.borderColor = "transparent"; this.commitTitle(); });
+        this._fitTitle = fit;
+        this.paintHeader();
+      }
+      paintHeader() {
+        if (!this.nameEl) return;
+        const p = this.path || "", parts = p ? p.split("/") : [];
+        parts.pop();
+        this.crumbEl.textContent = parts.length ? parts.join(" / ") + " / " : "";
+        this.nameEl.value = p ? baseName(p) : "";
+        this._fitTitle(); requestAnimationFrame(() => this._fitTitle());   // again once laid out
+      }
+      editTitle(n = 0) {   // the board may still be loading (no path yet) or take focus on its first paint: retry a few frames
+        const inp = this.nameEl; if (!inp) return;
+        if (!this.path) { if (n < 20) setTimeout(() => this.editTitle(n + 1), 50); return; }
+        if (document.activeElement !== inp) { this.paintHeader(); inp.focus(); inp.select(); }
+        if (n < 3) setTimeout(() => {
+          if (document.activeElement !== inp && !this._renaming && inp.value === baseName(this.path || "")) this.editTitle(n + 1);
+        }, 120);
+      }
+      async commitTitle() {
+        const inp = this.nameEl, old = this.path;
+        if (!inp || !old || this._renaming) return;
+        const nn = inp.value.trim().replace(/\.canvas$/i, "");
+        this._renaming = true;                         // the blur below re-enters commitTitle: it must see this one in flight
+        if (document.activeElement === inp) inp.blur();
+        if (!nn || /[\\/:]/.test(nn) || nn === baseName(old)) { this._renaming = false; this.paintHeader(); return; }
+        const dir = old.includes("/") ? old.slice(0, old.lastIndexOf("/") + 1) : "";
+        const rn = window.__osCvRetarget;
+        try { if (!rn || !(await rn(old, dir + nn + ".canvas"))) this.paintHeader(); }
+        catch (e) { console.error("[canvas] rename:", e); this.paintHeader(); }
+        finally { this._renaming = false; }
       }
       getViewType() { return "canvas"; }
       getDisplayText() { return this.path ? baseName(this.path) : "Canvas"; }
@@ -668,7 +732,7 @@
       }
       async loadPath(p) {
         this.path = p; this.file = vaultFile(p) || { path: p, name: p.split("/").pop(), basename: baseName(p), extension: "canvas" };
-        this.lastText = null; this.dirty = false;
+        this.lastText = null; this.dirty = false; this.paintHeader();   // cvf-create CVR-A-018
         this.canvas.clear(); this.setError(null);
         // goal cv-model: the vault FILE model comes up with the first board (deps.model = api-vault ensureFiles) — the
         // pickers list it and a card whose file is not in it shows as missing, with no community plugin enabled

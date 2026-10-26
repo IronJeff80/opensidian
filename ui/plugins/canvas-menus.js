@@ -82,8 +82,12 @@
     const taken = c.ids();
     for (;;) { const b = new Uint8Array(8); crypto.getRandomValues(b); const id = Array.from(b, x => x.toString(16).padStart(2, "0")).join(""); if (!taken.has(id)) return id; }
   }
+  // goal cvf-groups (CVR-B-080): the board's Create group is a 400x400 "Untitled group" at the point, selected,
+  // its label in edit — the same finish as makeGroup() for a selection
   function groupAt(c, p) {
-    return addData(c, { id: newId(c), type: "group", x: Math.round(p.x), y: Math.round(p.y), width: 400, height: 300 }, true);
+    const g = addData(c, { id: newId(c), type: "group", x: Math.round(p.x), y: Math.round(p.y), width: 400, height: 400, label: "Untitled group" }, true);
+    if (g) { c.select(g, false); editLabel(c, g); }
+    return g;
   }
   function groupAround(c, nodes) {
     if (!nodes.length) return null;

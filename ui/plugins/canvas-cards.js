@@ -56,6 +56,17 @@
     ".canvas-file-other { padding: 8px 12px; display: flex; flex-direction: column; gap: 4px }\n" +
     ".canvas-file-other-ext { color: var(--text-muted, #999); font-size: 12px; text-transform: uppercase }\n" +
     ".canvas-node-label > .canvas-group-label-input { font: inherit; color: var(--text-normal, #ddd); min-width: 160px }\n" +
+    // goal cvf-groups: the group label is a filled tab in the group colour, its toolbar buttons, the custom-colour picker
+    ".canvas-node-group > .canvas-node-label { bottom: calc(100% + 4px); padding: 3px 10px; border-radius: 6px; line-height: 1.25;" +
+    " background: var(--canvas-color); color: var(--text-on-accent, #fff) }\n" +
+    ".canvas-node-group > .canvas-node-label > .canvas-group-label-input { background: transparent; border: 0; outline: none; padding: 0; color: inherit }\n" +
+    ".canvas-selection-palette > button.mod-color-custom { background: conic-gradient(#e93147, #e0ac00, #08b94e, #00bfbc, #3366cc, #7852ee, #e93147) }\n" +
+    ".canvas-group-picker { position: absolute; z-index: 4; display: flex; align-items: center; gap: 6px; padding: 6px; border-radius: 6px;" +
+    " background: var(--background-secondary, #262626); border: 1px solid var(--background-modifier-border, #444); box-shadow: 0 2px 8px rgba(0,0,0,.3) }\n" +
+    ".canvas-group-picker-preview { width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--background-modifier-border, #555) }\n" +
+    ".canvas-group-picker-hex { width: 90px; font: 13px var(--font-monospace, monospace); color: var(--text-normal, #ddd);" +
+    " background: var(--background-primary, #1e1e1e); border: 1px solid var(--background-modifier-border, #555); border-radius: 4px; padding: 2px 6px }\n" +
+    ".canvas-group-picker-hex.is-invalid { border-color: var(--text-error, #e93147) }\n" +
     // goal cvf-textedit: the card editor in the text font, live-preview heading sizes, the link suggester
     ".canvas-node.cc-lp .cvf-text-editor .cm-scroller, .canvas-node.cc-lp .cvf-text-editor .cm-content { font-family: var(--font-text, system-ui, sans-serif) }\n" +
     ".canvas-node.cc-lp .cm-line.cc-lp-h { font-weight: 700; line-height: 1.3 }\n" +
@@ -406,6 +417,7 @@
       s.backgroundRepeat = how === "repeat" ? "repeat" : "no-repeat";
     } else { s.backgroundImage = ""; s.backgroundPosition = ""; s.backgroundSize = ""; s.backgroundRepeat = ""; }
     node._cc = { kind: "group", bg: bg ? how : "-", ren: node._cc && node._cc.ren ? 1 : 0 };
+    gboard(node.canvas, ctx);
     const lab = node.labelEl;
     if (lab._ccWired) return;
     lab._ccWired = true;
@@ -450,6 +462,162 @@
     ping(ctx);
   }
 
+  /* goal cvf-groups: a lone selected group adds arrange / edit label / background to the
+     selection toolbar (canvas-select.js owns the toolbar and its remove / colour / zoom), and
+     the colour palette gains a custom swatch whose small picker takes a #rrggbb value.
+     Installed once per board, from the first group render, once canvas-select has built
+     the toolbar. */
+  const GBTN = [["arrange", "Align and arrange", "⊞"], ["label", "Edit label", "✎"], ["background", "Set background", "\u{1F5BC}"]];
+  const groupOf = c => { const n = c.selection.size === 1 ? [...c.selection][0] : null; return n && n.data && n.data.type === "group" && c.nodes.get(n.id) === n ? n : null; };
+  const roOf = c => !!(c.readonly || (c.options && c.options.readOnly));
+  const gping = c => ping(c._ccGX);
+  const toBoard = c => { try { c.wrapperEl.focus({ preventScroll: true }); } catch (_) {} };
+
+  function gboard(c, ctx) {
+    if (!c) return;
+    c._ccGX = ctx;
+    const s = c._cvs;
+    if (!s || !s.tbEl || !s.palEl) {                 // canvas-select installs its overlay when the board is wired
+      if (!c._ccGT) c._ccGT = setTimeout(() => { c._ccGT = 0; gboard(c, c._ccGX); }, 60);
+      return;
+    }
+    if (c._ccG) return;
+    const g = c._ccG = { btn: {}, on: null, custom: null, pick: null, hex: null, ok: null };
+    const mkb = (parent, name, label, txt, fn) => {
+      const b = mk("button", "canvas-selection-btn mod-" + name, parent);
+      b.type = "button"; b.textContent = txt; b.title = label; b.setAttribute("aria-label", label); b.dataset.action = name;
+      b.addEventListener("click", e => { e.stopPropagation(); fn(e); });
+      return b;
+    };
+    g.btn.arrange = mkb(s.tbEl, "arrange", GBTN[0][1], GBTN[0][2], e => arrangeMenu(c, e.currentTarget));
+    g.btn.label = mkb(s.tbEl, "label", GBTN[1][1], GBTN[1][2], () => { const n = groupOf(c); if (n && !roOf(c)) rename(n); });
+    g.btn.background = mkb(s.tbEl, "background", GBTN[2][1], GBTN[2][2], () => { const n = groupOf(c); if (n && !roOf(c)) pickBackground(c, n); });
+    for (const b of Object.values(g.btn)) b.hidden = true;
+    g.custom = mkb(s.palEl, "color-custom", "Custom color", "", () => openPick(c));
+    const sync = () => gsync(c);
+    const sel = c.select;                            // the selection changes through select() (deselectAll included)
+    c.select = function () { const r = sel.apply(this, arguments); sync(); return r; };
+    new MutationObserver(sync).observe(s.tbEl, { attributes: true, attributeFilter: ["hidden", "style"] });
+    new MutationObserver(sync).observe(s.palEl, { attributes: true, attributeFilter: ["hidden"] });
+    sync();
+  }
+
+  function gsync(c) {
+    const g = c._ccG, s = c._cvs; if (!g || !s) return;
+    const on = !!groupOf(c) && !roOf(c);
+    if (on !== g.on) {
+      g.on = on;
+      for (const b of Object.values(g.btn)) b.hidden = !on;
+      if (window.CanvasSelect) try { window.CanvasSelect.refresh(c); } catch (_) {}   // re-centre: the toolbar changed width
+      gping(c);
+    }
+    if (g.pick && s.palEl.hidden) closePick(c);
+  }
+
+  // the arrange operations (canvas-arrange.js) applied to the cards inside the group
+  function arrangeMenu(c, at) {
+    const n = groupOf(c), X = c._ccGX && c._ccGX.X, A = window.CanvasArrange;
+    if (!n || !X || !X.Menu || !A || roOf(c)) return;
+    const d = n.data;
+    const kids = [...c.nodes.values()].filter(k => k !== n && k.data.type !== "group" &&
+      k.data.x >= d.x && k.data.y >= d.y && k.data.x + k.data.width <= d.x + d.width && k.data.y + k.data.height <= d.y + d.height);
+    const NAMES = { "align-left": "Align left", "align-centre": "Align centre", "align-right": "Align right", "align-top": "Align top",
+      "align-middle": "Align middle", "align-bottom": "Align bottom", "distribute-horizontal": "Distribute horizontally",
+      "distribute-vertical": "Distribute vertically", "arrange-row": "Arrange in a row", "arrange-column": "Arrange in a column",
+      "arrange-grid": "Arrange in a grid" };
+    const m = new X.Menu();
+    for (const key of A.ops()) {
+      if (!NAMES[key]) continue;
+      const need = key.startsWith("distribute") ? 3 : 2;
+      m.addItem(i => {
+        i.setTitle(NAMES[key]);
+        if (kids.length < need) i.setDisabled(true);
+        i.onClick(() => {
+          if (kids.length < need) return;
+          toBoard(c);
+          c.deselectAll(); for (const k of kids) c.select(k, true);
+          try { A.run(c, key); } finally { c.deselectAll(); if (c.nodes.get(n.id) === n) c.select(n); }
+          gping(c);
+        });
+      });
+    }
+    const r = at.getBoundingClientRect();
+    m.showAtPosition({ x: Math.round(r.left), y: Math.round(r.bottom + 4) });
+  }
+
+  // a vault image as the group background (JSON Canvas "background"), or none
+  function pickBackground(c, n) {
+    const ctx = c._ccGX, X = ctx && ctx.X, app = ctx && ctx.app;
+    if (!X || !X.FuzzySuggestModal || !app || !app.vault) return;
+    const NONE = { none: true, path: "No background" };
+    let files = [];
+    try { files = app.vault.getFiles().filter(f => IMG.has(String(f.extension || extOf(f.path)).toLowerCase())).map(f => ({ path: f.path })); } catch (_) {}
+    if (typeof n.data.background === "string" && n.data.background) files.unshift(NONE);
+    class Pick extends X.FuzzySuggestModal {
+      getItems() { return files; }
+      getItemText(f) { return f.path; }
+      onChooseItem(f) {
+        if (c.nodes.get(n.id) !== n || roOf(c)) return;
+        const d = n.data, was = d.background || "";
+        if (f.none) delete d.background; else d.background = f.path;
+        if ((d.background || "") === was) return;
+        n.render(); c.requestSave(); toBoard(c); gping(c);
+      }
+    }
+    const p = new Pick(app);
+    if (typeof p.setPlaceholder === "function") p.setPlaceholder("Choose a background image");
+    p.open();
+  }
+
+  function closePick(c) {
+    const g = c._ccG; if (!g || !g.pick) return;
+    g.pick.remove(); g.pick = g.hex = g.ok = null;
+    gping(c);
+  }
+  const normHex = v => {
+    v = String(v || "").trim().toLowerCase();
+    if (v && v[0] !== "#") v = "#" + v;
+    if (/^#[0-9a-f]{3}$/.test(v)) v = "#" + v[1] + v[1] + v[2] + v[2] + v[3] + v[3];
+    return /^#[0-9a-f]{6}$/.test(v) ? v : "";
+  };
+  function openPick(c) {
+    const g = c._ccG, s = c._cvs; if (!g || !s || roOf(c)) return;
+    closePick(c);
+    const p = g.pick = mk("div", "canvas-group-picker", c.wrapperEl);
+    for (const ev of ["pointerdown", "dblclick", "wheel", "keyup", "contextmenu"]) p.addEventListener(ev, e => e.stopPropagation());
+    const pre = mk("div", "canvas-group-picker-preview", p);
+    const inp = g.hex = mk("input", "canvas-group-picker-hex", p);
+    inp.type = "text"; inp.spellcheck = false; inp.maxLength = 7; inp.placeholder = "#rrggbb"; inp.setAttribute("aria-label", "Hex color");
+    const ok = g.ok = mk("button", "canvas-group-picker-ok", p);
+    ok.type = "button"; ok.textContent = "OK";
+    const first = [...c.selection][0], cur = first && first.data ? normHex(first.data.color) : "";
+    inp.value = cur;
+    const show = () => { const v = normHex(inp.value); pre.style.background = v || "transparent"; inp.classList.toggle("is-invalid", !!inp.value.trim() && !v); };
+    show();
+    const apply = () => {
+      const v = normHex(inp.value);
+      if (!v) { inp.classList.add("is-invalid"); return; }
+      if (!roOf(c)) for (const n of [...c.selection]) if ((n.data.color || "") !== v) n.setColor(v);
+      s.palette = false;
+      closePick(c);
+      if (window.CanvasSelect) try { window.CanvasSelect.refresh(c); } catch (_) {}
+      toBoard(c); gping(c);
+    };
+    inp.addEventListener("input", show);
+    inp.addEventListener("keydown", e => {
+      e.stopPropagation();
+      if (e.key === "Enter") { e.preventDefault(); apply(); }
+      else if (e.key === "Escape") { e.preventDefault(); closePick(c); toBoard(c); }
+    });
+    ok.addEventListener("click", e => { e.stopPropagation(); apply(); });
+    // under the palette, or above it when the board has no room below
+    const pl = s.palEl.offsetLeft, pt = s.palEl.offsetTop, ph = s.palEl.offsetHeight || 32, H = c.wrapperEl.clientHeight || 0;
+    p.style.left = pl + "px";
+    p.style.top = (pt + ph + 4 + 40 > H && pt > 44 ? pt - 40 : pt + ph + 4) + "px";
+    setTimeout(() => { try { inp.focus(); inp.select(); } catch (_) {} }, 0);
+    gping(c);
+  }
+
   /* census: one token per painted card of the visible canvas view, the board's pan,
      the last external open. Read off the DOM, not off node state, where it can be. */
   function census(v) {
@@ -481,6 +649,14 @@
       }
     }
     t += " [cvcard:@pan|" + Math.round(v.canvas.tx) + "," + Math.round(v.canvas.ty) + "]";
+    // goal cvf-groups: [cvgtb:arrange@x,y|label@x,y|background@x,y] [cvgpal:custom@x,y] [cvgpick:hex@x,y|ok@x,y]
+    const g = v.canvas._ccG, gv = e => !!e && !e.hidden && vis(e);
+    if (g) {
+      const bs = Object.keys(g.btn).filter(k => gv(g.btn[k]));
+      if (bs.length) t += " [cvgtb:" + bs.map(k => k + "@" + ctr(g.btn[k])).join("|") + "]";
+      if (gv(g.custom)) t += " [cvgpal:custom@" + ctr(g.custom) + "]";
+      if (g.pick && gv(g.hex)) t += " [cvgpick:hex@" + ctr(g.hex) + "|ok@" + ctr(g.ok) + "]";
+    }
     if (ST.ext) t += " [cvext:" + esc(ST.ext) + "]";
     return t;
   }
