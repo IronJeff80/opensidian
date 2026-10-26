@@ -8012,6 +8012,8 @@ function canvasTok() {
            "|foot=" + (vis(sg.querySelector(".canvas-link-suggest-foot")) ? 1 : 0) + "@" + c(sg) + "]";
     }
   } catch (_) {}
+  // goal cvf-media: [cvm:<id>|k=|lbl=|...] [cvmb:] [cvmpdf:] [cvmpick:swap|...] file cards (ui/plugins/canvas-media.js)
+  if (window.CanvasMedia) try { t += window.CanvasMedia.census(v); } catch (_) {}
   // goal cvf-filecards: [cvfact:tree=<the explorer's active row: note path .md | board path | ->|bl=<status-bar backlinks text | ->]
   try {
     const ar = document.querySelector("#tree .trow.active");
