@@ -44,7 +44,23 @@
       ".canvas-wrapper.is-space-held { cursor: grab }\n" +
       ".canvas-wrapper.is-space-panning { cursor: grabbing }\n" +
       ".canvas-wrapper.is-readonly .canvas-control.mod-add-text { opacity: .4; pointer-events: none }\n" +
-      ".canvas-settings-menu { position: absolute; right: 8px; top: 40px; z-index: 3; display: flex; flex-direction: column; min-width: 200px;\n" +
+      // goal cvf-board: the controls are one icon-only column at the right edge (CVR-A-073)
+      ".canvas-wrapper .canvas-controls.cvn-stack { flex-direction: column; align-items: center; top: 8px; right: 8px; gap: 2px; padding: 3px;\n" +
+      "  border: 1px solid var(--background-modifier-border); border-radius: 6px; background: var(--background-primary) }\n" +
+      ".canvas-controls.cvn-stack .canvas-control { width: 28px; height: 28px; padding: 0; display: flex; align-items: center; justify-content: center;\n" +
+      "  border: 0; border-radius: 4px; background: transparent; color: var(--text-muted) }\n" +
+      ".canvas-controls.cvn-stack .canvas-control:hover { background: var(--background-modifier-hover); color: var(--text-normal) }\n" +
+      ".canvas-controls.cvn-stack .canvas-control svg { width: 16px; height: 16px; pointer-events: none }\n" +
+      ".canvas-controls.cvn-stack .canvas-control.mod-add-text, .canvas-controls.cvn-stack .canvas-control.mod-zoom-selection { display: none }\n" +
+      // a disabled button swallows pointer events in WebKit: let them reach the column (hover tooltips hit-test by geometry)
+      ".canvas-controls.cvn-stack .canvas-control:disabled { pointer-events: none; opacity: .45 }\n" +
+      ".canvas-controls.cvn-stack .cvn-sep { width: 20px; height: 1px; margin: 2px 0; background: var(--background-modifier-border) }\n" +
+      ".canvas-control-tip { position: fixed; z-index: 60; pointer-events: none; white-space: nowrap; padding: 4px 8px; border-radius: 4px;\n" +
+      "  font-size: 13px; line-height: 1.3; color: var(--text-normal); background: var(--background-secondary); border: 1px solid var(--background-modifier-border);\n" +
+      "  box-shadow: 0 2px 8px rgba(0, 0, 0, .25) }\n" +
+      // read-only: a drag across cards never paints a text selection (CVR-C-099)
+      ".canvas-wrapper.is-readonly, .canvas-wrapper.is-readonly * { -webkit-user-select: none; user-select: none }\n" +
+      ".canvas-settings-menu { position: absolute; right: 52px; top: 8px; z-index: 3; display: flex; flex-direction: column; min-width: 200px;\n" +
       "  padding: 4px; border: 1px solid var(--background-modifier-border); border-radius: 6px; background: var(--background-secondary) }\n" +
       ".canvas-settings-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 8px; cursor: pointer; border-radius: 4px }\n" +
       ".canvas-settings-item:hover { background: var(--background-modifier-hover) }\n" +
@@ -124,10 +140,17 @@
   function setOption(c, k, v) {
     c.options[k] = !!v;
     if (k === "readOnly") {
-      c.wrapperEl.classList.toggle("is-readonly", c.readonly);
+      syncRO(c);
       if (c.readonly) { for (const n of c.nodes.values()) if (n.isEditing) try { n.stopEditing(); } catch (_) {} }
     }
     ping(c);
+  }
+  // read-only shows on the settings control: a padlock instead of the gear (CVR-A-078)
+  function syncRO(c) {
+    const s = c._cvnav; if (!s) return;
+    c.wrapperEl.classList.toggle("is-readonly", !!c.readonly);
+    const b = s.btn.set, want = c.readonly ? "lock" : "gear";
+    if (b && b.dataset.icon !== want) { b.dataset.icon = want; b.innerHTML = ICON[want]; }
   }
   const SETTINGS = [["g", "snapToGrid", "Snap to grid"], ["o", "snapToObjects", "Snap to objects"], ["ro", "readOnly", "Read-only"]];
   function closeSettings(c) {
@@ -162,24 +185,37 @@
   }
 
   /* ------------------------------------------------ help + jump */
+  // goal cvf-board (CVR-A-082): the board shortcuts, written from the public help page
   const HELP = [
-    ["Pan the board", "Drag empty space"],
-    ["Pan the board", "Space + drag"],
-    ["Pan vertically", "Wheel"],
-    ["Pan horizontally", "Shift + wheel"],
-    ["Zoom", "Space + wheel"],
-    ["Zoom", "Ctrl + wheel"],
-    ["Zoom to fit", "Shift + 1"],
-    ["Zoom to selection", "Shift + 2"],
-    ["Select a card", "Click"],
-    ["Add to the selection", "Shift + click"],
-    ["Move the selection", "Drag a selected card"],
-    ["Deselect", "Escape"],
-    ["Delete the selection", "Delete / Backspace"],
-    ["Edit a card", "Double-click the card"],
-    ["Add a text card", "Double-click empty space"],
-    ["Undo / redo", "Ctrl + Z / Ctrl + Shift + Z"],
+    ["Pan the board", "Space+drag or drag empty space"],
+    ["Pan sideways", "Shift+wheel"],
+    ["Zoom", "Ctrl+wheel or Space+wheel"],
+    ["Zoom to fit", "Shift+1"],
+    ["Zoom to selection", "Shift+2"],
+    ["Select all", "Ctrl+A"],
+    ["Add to the selection", "Shift+click"],
+    ["Create a card with specific size", "Ctrl+drag"],
+    ["Clone card", "Ctrl+drag"],
+    ["Constrain movement to axis", "Shift+drag"],
+    ["Disable snapping", "Alt"],
+    ["Edit a card", "Double-click"],
+    ["Remove card", "Backspace or Delete"],
+    ["Undo", "Ctrl+Z"],
+    ["Redo", "Ctrl+Y or Ctrl+Shift+Z"],
   ];
+  // the control icons (24x24 strokes, drawn here)
+  const SVG = d => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + d + "</svg>";
+  const ICON = {
+    gear: SVG('<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>'),
+    lock: SVG('<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>'),
+    in: SVG('<path d="M12 5v14M5 12h14"/>'),
+    out: SVG('<path d="M5 12h14"/>'),
+    reset: SVG('<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/>'),
+    fit: SVG('<path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/>'),
+    undo: SVG('<path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>'),
+    redo: SVG('<path d="M15 14l5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h3"/>'),
+    help: SVG('<circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 4.9.8c0 1.7-2.4 2.2-2.4 3.7M12 17h.01"/>'),
+  };
   function openHelp(c) {
     if (help || !X || !X.Modal) return;
     const m = new X.Modal(c.app);
@@ -297,8 +333,81 @@
       s.btn.reset = btn("mod-zoom-reset", "Reset zoom", "1:1", () => resetZoom(c));
       s.btn.help = btn("mod-help", "Canvas help", "?", () => openHelp(c));
       s.btn.set = btn("mod-settings", "Canvas settings", "⚙", () => openSettings(c));
+      stack(c);
     }
+    // read-only also follows the file error (canvas.readonly setter): keep the padlock in step
+    const d = Object.getOwnPropertyDescriptor(c, "readonly");
+    Object.defineProperty(c, "readonly", { configurable: true, enumerable: true,
+      get: d.get, set(v) { d.set.call(this, v); syncRO(this); } });
+    // read-only: a drag across cards selects no text (CVR-C-099)
+    w.addEventListener("selectstart", e => { if (c.readonly && !inEditor(e.target)) e.preventDefault(); }, true);
+    syncRO(c);
     registerCommands(c.app);
+  }
+
+  /* ------------------------------------------------ the controls column + tooltips (goal cvf-board)
+     top to bottom: settings | zoom in, reset zoom, zoom to fit, zoom out | undo, redo | help.
+     undo / redo are canvas-history.js's buttons (it may add them after attach): a MutationObserver
+     keeps the order. The tooltip is our own element LEFT of the hovered button; the column
+     hit-tests by geometry, so sliding from button to button (a disabled one included) re-targets it. */
+  const ORDER = [["set", ".mod-settings"], "|", ["in", ".mod-zoom-in"], ["reset", ".mod-zoom-reset"], ["fit", ".mod-zoom-fit"],
+                 ["out", ".mod-zoom-out"], "|", ["undo", ".mod-undo"], ["redo", ".mod-redo"], "|", ["help", ".mod-help"]];
+  const TIP = { set: "Canvas settings", in: "Zoom in", reset: "Reset zoom", fit: "Zoom to fit (Shift + 1)", out: "Zoom out",
+                undo: "Undo", redo: "Redo", help: "Canvas help" };
+  let tip = null;                          // {el, b: the button, c}
+  function hideTip() { if (!tip) return; const c = tip.c; tip.el.remove(); tip = null; ping(c); }
+  function showTip(c, b) {
+    if (tip && tip.b === b) return;
+    hideTip();
+    const t = document.createElement("div");
+    t.className = "canvas-control-tip"; t.textContent = b.dataset.tip;
+    document.body.appendChild(t);
+    const r = b.getBoundingClientRect(), tr = t.getBoundingClientRect();
+    t.style.left = Math.round(r.left - 8 - tr.width) + "px";
+    t.style.top = Math.round(r.top + r.height / 2 - tr.height / 2) + "px";
+    tip = { el: t, b, c }; ping(c);
+  }
+  function stack(c) {
+    const s = c._cvnav, el = c.controlsEl;
+    el.classList.add("cvn-stack");
+    const seps = [];
+    const arrange = () => {
+      const want = [];
+      let k = 0;
+      for (const it of ORDER) {
+        if (it === "|") { want.push(seps[k] || (seps[k] = Object.assign(document.createElement("div"), { className: "cvn-sep" }))); k++; continue; }
+        const b = el.querySelector(it[1]); if (!b) continue;
+        if (b.dataset.cvn !== it[0]) {
+          b.dataset.cvn = it[0]; b.dataset.tip = TIP[it[0]];
+          b.removeAttribute("title"); b.setAttribute("aria-label", TIP[it[0]]);
+          if (it[0] !== "set") b.innerHTML = ICON[it[0]];
+        }
+        want.push(b);
+      }
+      for (const x of el.children) if (!want.includes(x)) want.push(x);   // + Text / zoom to selection (hidden) and anything else
+      const cur = [...el.children];
+      if (cur.length === want.length && cur.every((x, i) => x === want[i])) return;
+      mo.disconnect();
+      for (const x of want) el.appendChild(x);
+      mo.observe(el, { childList: true });
+    };
+    const mo = new MutationObserver(arrange);
+    arrange();
+    mo.observe(el, { childList: true });
+    s.arrange = arrange;
+    const hit = e => {
+      for (const b of el.querySelectorAll(".canvas-control[data-cvn]")) {
+        if (!vis(b)) continue;
+        const r = b.getBoundingClientRect();
+        if (e.clientX >= r.left && e.clientX < r.right && e.clientY >= r.top - 1 && e.clientY < r.bottom + 1) return b;
+      }
+      return null;
+    };
+    el.addEventListener("pointermove", e => { const b = hit(e); if (b) showTip(c, b); else hideTip(); });
+    el.addEventListener("pointerenter", e => { const b = hit(e); if (b) showTip(c, b); });
+    el.addEventListener("pointerleave", hideTip);
+    el.addEventListener("pointerdown", hideTip, true);
+    el.addEventListener("wheel", hideTip, { passive: true });
   }
   window.addEventListener("keyup", e => { if (e.key === " " || e.code === "Space") spaceUp(); }, true);
   window.addEventListener("blur", spaceUp);
@@ -311,10 +420,18 @@
     const c = v && v.canvas; if (!c || !c._cvnav) return "";
     const s = c._cvnav, w = c.wrapperEl;
     let t = " [cvnz:" + (w.dataset.zoom || "1") + "|" + Math.round(c.tx) + "|" + Math.round(c.ty) + "]";
-    const q = sel => c.controlsEl && c.controlsEl.querySelector(sel);
-    const pts = [["in", q(".mod-zoom-in")], ["out", q(".mod-zoom-out")], ["fit", q(".mod-zoom-fit")],
-                 ["sel", s.btn.sel], ["reset", s.btn.reset], ["help", s.btn.help], ["set", s.btn.set]].filter(p => vis(p[1]));
-    if (pts.length) t += " [cvctl:" + pts.map(p => p[0] + "=" + ctr(p[1])).join("|") + "]";
+    // every painted control in DOM (column) order: the stack names, + Text / zoom to selection as add / sel if shown
+    const NM = [["mod-add-text", "add"], ["mod-zoom-selection", "sel"]];
+    const pts = c.controlsEl ? [...c.controlsEl.querySelectorAll(".canvas-control")].filter(vis)
+      .map(b => [b.dataset.cvn || (NM.find(n => b.classList.contains(n[0])) || [0, ""])[1], b]).filter(p => p[0]) : [];
+    if (pts.length) {
+      t += " [cvctl:" + pts.map(p => p[0] + "=" + ctr(p[1])).join("|") + "]";
+      t += " [cvbtn:" + pts.map(p => { const r = p[1].getBoundingClientRect(); return p[0] + "=" + [r.x, r.y, r.width, r.height].map(Math.round).join(","); }).join("|") + "]";
+    }
+    if (tip && !(tip.b.isConnected && vis(tip.b))) { tip.el.remove(); tip = null; }   // its board went away (no ping: we are the census)
+    if (tip && tip.c === c) { const r = tip.el.getBoundingClientRect(); t += " [cvtip:" + tip.el.textContent + "@" + [r.x, r.y, r.width, r.height].map(Math.round).join(",") + "]"; }
+    if (s.btn.set) t += " [cvseticon:" + (s.btn.set.dataset.icon || "gear") + "]";
+    { const sl = document.getSelection(); t += " [cvdocsel:" + (sl ? String(sl).length : 0) + "]"; }
     const sz = parseFloat(getComputedStyle(w).backgroundSize);
     if (isFinite(sz)) t += " [cvgrid:sz=" + Math.round(sz * 100) / 100 + "|z=" + (w.dataset.zoom || "1") + "]";
     const o = c.options || {};
@@ -323,7 +440,11 @@
       const its = SETTINGS.filter(([k]) => vis(s.items[k]));
       t += " [cvset:n=" + its.length + its.map(([k]) => "|" + k + "=" + ctr(s.items[k])).join("") + "]";
     }
-    if (help) t += " [cvhelp:n=" + help.contentEl.querySelectorAll(".canvas-help-row").length + "]";
+    if (help) {
+      const rows = [...help.contentEl.querySelectorAll(".canvas-help-row")];
+      t += " [cvhelp:n=" + rows.length + "]";
+      t += " [cvhelpk:" + rows.map(r => r.children[0].textContent + "=" + r.children[1].textContent).join("|") + "]";
+    }
     if (jump) t += " [cvjump:n=" + jump.n + "]";
     return t;
   }
