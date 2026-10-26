@@ -685,6 +685,13 @@
           await splitWith(g, split, t);
           if (prev && prev !== M().fg() && M().groups().indexOf(prev) >= 0 && typeof focusGroup === "function") try { focusGroup(prev); } catch (_) {}
         }
+        else if (t0 && !t0.kind && active && !leaf._nt && PV_INPLACE.has(type)) {
+          // cvf-links CVR-A-096: a canvas opened from a NOTE leaf (a [[X.canvas]] link / embed click) replaces the
+          // note in the same tab, as stock: the canvas tab goes in right after it, then the note tab goes (count unchanged)
+          await openTabView(g, t, at, true);
+          const j = g.tabs.indexOf(t0);
+          if (j >= 0 && typeof closeTab === "function") await closeTab(g, j, "plugin-detach", "plugin", true);
+        }
         else if (t0 && !active && !leaf._nt) {
           // a leaf already showing something changes view in place: the active leaf stays where it is (stock);
           // the leaf's tab stays the one its group shows if it was, without focusing that group

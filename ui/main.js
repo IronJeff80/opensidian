@@ -7693,8 +7693,13 @@ async function cvLinkOpen(n, an) {
   if (an || !/\.canvas$/i.test(String(n || "")) || !CANVAS || !CANVAS.isRegistered()) return false;
   const p = await cvFindCanvas(n);
   if (!p) return false;
-  await openCanvas(p);
+  await cvOpenHere(p);
   return true;
+}
+async function cvOpenHere(p) {   // the link's own leaf (stock: a plain click navigates in place; views.js openTyped swaps the note tab for the canvas)
+  const leaf = PLG.app.workspace.getLeaf(false);
+  if (leaf) await leaf.setViewState({ type: "canvas", state: { file: p }, active: true });
+  else await openCanvas(p);
 }
 /* goal cvf-links CVR-A-101: canvas text cards in global search. Plain terms only (all must occur in one card,
    case-insensitive); a query with operators / quotes is the note grammar's alone. [{canvas, snippet}] */
@@ -7765,11 +7770,17 @@ function cvEmbedFill(root) {
     s.title = a.dataset.note;
     s.setAttribute("role", "link");
     a.replaceWith(s);
-    s.onclick = e => { e.preventDefault(); e.stopPropagation(); if (s.dataset.path) openCanvas(s.dataset.path); };
+    s.onclick = e => { e.preventDefault(); e.stopPropagation(); if (s.dataset.path) cvOpenHere(s.dataset.path); };
     cvEmbedPaint(s, a);
   }
 }
-async function cvEmbedPaint(s, link) {
+async function cvEmbedPaint(s, link) {   // link: the reading view's a.wiki to restore; null = a live-preview span (editor.js), kept text-free
+  if (!link && !s._cvEmb) {
+    s._cvEmb = true;
+    s.style.cssText = "display:block;height:260px;margin:.5em 0;border:1px solid var(--background-modifier-border);border-radius:8px;cursor:pointer;overflow:hidden";
+    s.title = s.dataset.canvas; s.setAttribute("role", "link"); s.contentEditable = "false";
+    s.addEventListener("mousedown", e => { if (e.button === 0 && s.dataset.path) { e.preventDefault(); e.stopPropagation(); cvOpenHere(s.dataset.path); } });
+  }
   const want = s.dataset.canvas;
   let p = null, doc = null;
   try {
@@ -7778,7 +7789,7 @@ async function cvEmbedPaint(s, link) {
     if (p) doc = JSON.parse(await inv("canvas_io", { op: "read", path: p }));
   } catch (_) { doc = null; }
   if (!s.isConnected) return;
-  if (!p || !doc || !Array.isArray(doc.nodes)) { s.replaceWith(document.createTextNode("!"), link); return; }
+  if (!p || !doc || !Array.isArray(doc.nodes)) { if (link) s.replaceWith(document.createTextNode("!"), link); else { s.dataset.miss = want; s.style.height = "2em"; } return; }
   s.dataset.path = p;
   const num = v => (typeof v === "number" && isFinite(v) ? v : 0);
   const ns = doc.nodes.filter(n => n && typeof n === "object");
@@ -7818,7 +7829,7 @@ async function cvEmbedPaint(s, link) {
 function cvEmbTok() {
   const g = state && fg();
   if (!g || !g.preview) return "";
-  const e = [...g.preview.querySelectorAll("span.cv-embed[data-path]")].find(x => x.getClientRects().length > 0 && x.querySelector("svg"));
+  const e = [...g.preview.querySelectorAll("span.cv-embed[data-path]"), ...(g.lp ? g.lp.querySelectorAll("span.cv-embed[data-path]") : [])].find(x => x.getClientRects().length > 0 && x.querySelector("svg"));
   if (!e) return "";
   const r = e.getBoundingClientRect();
   return " [cvemb:" + e.dataset.path.replace(/[[\]|@]/g, "_") + "@" + Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2) +
