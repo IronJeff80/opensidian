@@ -43,12 +43,20 @@
   // never for every media card when a board opens. A file over MEDIA_MAX (main.rs MEDIA_BLOB_MAX)
   // is refused by the first call, before any byte is read, and the card says it cannot play.
   // Every object URL is revoked when its card re-renders, leaves the board or the board closes
-  // (MEDIA.live: url -> media element; an element no longer in the document is swept).
+  // (MEDIA.live: url -> { m, cc, arm }; an element no longer in the document is swept, and one that
+  // is no longer rendered (its tab hidden or closed) drops its bytes and re-arms the lazy read, so a
+  // closed tab whose view lingers in the DOM holds no blob).
   const MIME = { mp3: "audio/mpeg", m4a: "audio/mp4", ogg: "audio/ogg", wav: "audio/wav", flac: "audio/flac", webm: "video/webm", mp4: "video/mp4", ogv: "video/ogg", mov: "video/quicktime" };
   const MEDIA_MAX = 256 * 1024 * 1024, MEDIA_DWELL = 150;
   const MEDIA = { live: new Map(), reads: 0, timer: 0 };
   function mediaSweep() {
-    for (const [u, m] of MEDIA.live) if (!m.isConnected) { URL.revokeObjectURL(u); MEDIA.live.delete(u); }
+    for (const [u, r] of MEDIA.live) {
+      if (r.m.isConnected && r.m.getClientRects().length) continue;
+      URL.revokeObjectURL(u); MEDIA.live.delete(u);
+      if (!r.m.isConnected || r.cc.blob !== u) continue;
+      try { r.m.pause(); r.m.removeAttribute("src"); r.m.load(); } catch (_) {}
+      r.cc.blob = ""; r.cc.state = ""; r.arm();
+    }
     if (!MEDIA.live.size && MEDIA.timer) { clearInterval(MEDIA.timer); MEDIA.timer = 0; }
   }
   function mediaRevoke(cc) {
@@ -80,7 +88,7 @@
       clearTimeout(cc.t);
       mediaBlob(p).then(u => {
         if (node._cc !== cc || !m.isConnected) { URL.revokeObjectURL(u); return; }
-        cc.blob = u; cc.state = "ready"; MEDIA.live.set(u, m);
+        cc.blob = u; cc.state = "ready"; MEDIA.live.set(u, { m, cc, arm });
         if (!MEDIA.timer) MEDIA.timer = setInterval(mediaSweep, 2000);
         m.src = u; ping(ctx);
       }, e => {
@@ -96,14 +104,19 @@
         ping(ctx);
       });
     };
+    function arm() {
+      if (typeof IntersectionObserver !== "function") return;
+      if (cc.io) cc.io.disconnect();
+      cc.io = new IntersectionObserver(en => {
+        const e = en[en.length - 1];
+        clearTimeout(cc.t);
+        if (e.isIntersecting && m.getClientRects().length) cc.t = setTimeout(go, MEDIA_DWELL);
+      });
+      cc.io.observe(m);
+    }
     m.addEventListener("play", go);
     if (typeof IntersectionObserver !== "function") { go(); return; }
-    cc.io = new IntersectionObserver(en => {
-      const e = en[en.length - 1];
-      clearTimeout(cc.t);
-      if (e.isIntersecting) cc.t = setTimeout(go, MEDIA_DWELL);
-    });
-    cc.io.observe(m);
+    arm();
   }
   const mk = (tag, cls, parent) => { const e = document.createElement(tag); if (cls) e.className = cls; if (parent) parent.appendChild(e); return e; };
   const ping = ctx => { if (ctx && ctx.deps && typeof ctx.deps.changed === "function") try { ctx.deps.changed(); } catch (_) {} };
