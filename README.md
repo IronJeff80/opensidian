@@ -1,17 +1,8 @@
+
+<img width="2348" height="1424" alt="image" src="https://github.com/user-attachments/assets/3c26f344-e8cd-452f-891a-8f95f5d9f5bd" />
+
 # Opensidian
 Open-source and non-profit under GPLv3, vault-compatible cross-platform markdown notes app. It's based on Rust + Tauri v2 and under heavy development. We're looking for Linux distribution maintainers. Not affiliated with or endorsed by Obsidian or Dynalist Inc.; "Obsidian" is their trademark. Opensidian is a clean-room functional clone: it reimplements Obsidian's behaviour from the outside and contains none of its code.
-
-## Features
-- live preview, source and reading modes
-- [[wikilinks]], backlinks, tags, graph view
-- tabs, splits, search, quick switcher, command palette, bookmarks
-- themes, fonts, hotkeys; open a vault with `opensidian <folder>`
-- drag an image (png, jpg, gif, webp) or a PDF from your file manager onto a note:
-  an image is **moved** into the vault (the original is removed only after the
-  vault copy is complete and on disk), a PDF is **copied** (the original stays,
-  as in Obsidian), and `![[name]]` is inserted where you dropped it. A name that
-  already exists gets a new one, never overwritten. A .pdf must really be a PDF (it starts with `%PDF-`); other file
-  types are refused and left where they are.
 
 ## Install
 
