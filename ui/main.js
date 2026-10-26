@@ -762,6 +762,7 @@ $("ldiv").onmousedown = e => {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
     if (w) inv("set_sidebar_w", { w }).catch(() => {});
+    updateTitle();                         // gh-icons #21: republish the sidebar geometry ([ghw:]) the drag changed
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
@@ -775,6 +776,7 @@ $("rdiv").onmousedown = e => {             // resizable divider (clamped 140-600
   const up = () => {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
+    updateTitle();                         // gh-icons #21: republish the sidebar geometry ([ghw:]) the drag changed
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
@@ -3866,6 +3868,11 @@ function utBuild() {             // pane/focus census in the window title (headl
         const r = cvEl.getBoundingClientRect();
         gpx += " [gcv:" + fkind + ":" + Math.round(r.left) + "," + Math.round(r.top) +
                "," + Math.round(r.width) + "," + Math.round(r.height) + "]";
+        // gh-graphdpr: [gdpr:<kind>:<dpr>:<css w>x<css h>:<label/2D backing w>x<h>:<gl css w>x<h>:<gl backing w>x<h>]
+        // a phase asserts backing == round(css x dpr) on BOTH canvases ("-" = no GL canvas shown)
+        const gd = fgr.graphDpr ? fgr.graphDpr() : null, gc = fgr.glcv && !fgr.glcv.hidden ? fgr.glcv : null;
+        if (gd) gpx += " [gdpr:" + fkind + ":" + gd.dpr + ":" + gd.cssW + "x" + gd.cssH + ":" + cvEl.width + "x" + cvEl.height +
+               ":" + (gc ? gc.clientWidth + "x" + gc.clientHeight + ":" + gc.width + "x" + gc.height : "-:-") + "]";
       }
     }
   }
@@ -4297,6 +4304,16 @@ const ICON_CHK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" str
   ' stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5L13 5"/></svg>';
 const ICON_PIN = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"' +
   ' stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h4l-.6 4.2 2.6 2.4H3.9l2.7-2.4z"/><path d="M8 8.6V14"/></svg>';
+/* gh-icons: linked-tab mark — two interlocking rounded links, drawn for this app */
+const ICON_LINK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"' +
+  ' stroke-linecap="round" stroke-linejoin="round"><path d="M7 9.2a2.6 2.6 0 0 0 3.7 0l2.3-2.3a2.6 2.6 0 0 0-3.7-3.7l-.9.9"/><path d="M9 6.8a2.6 2.6 0 0 0-3.7 0L3 9.1a2.6 2.6 0 0 0 3.7 3.7l.9-.9"/></svg>';
+/* gh-icons #20: small monochrome glyphs for icon-only buttons that used to carry a text pictograph.
+   class "gi" (style.css) sizes them inline at 12px so the button box does not move. */
+const GI_SVG = d => '<svg class="gi" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' + d + "</svg>";
+const ICON_X = GI_SVG('<path d="M4 4l8 8M12 4l-8 8"/>');
+const ICON_XCIRC = GI_SVG('<circle cx="8" cy="8" r="6"/><path d="M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4"/>');
+const ICON_UP = GI_SVG('<path d="M4 10l4-4 4 4"/>');
+const ICON_DOWN = GI_SVG('<path d="M4 6l4 4 4-4"/>');
 /* The close verbs, R38.3-R38.6. EVERY one of them goes through the existing
    flush-then-close path (closeTab -> flushSave), and each also flushes ONCE up
    front because the doomed set may contain the tab whose buffer is pending
@@ -4904,7 +4921,10 @@ function renderTabs(g) {
     // Obsidian paints it (shots/m3-pinned-tabbar.png). It is a marker element, not
     // text, so [tabs:]/[note:] and every label assertion are unchanged.
     if (tab.pinned) { const p = document.createElement("span"); p.className = "pin"; p.innerHTML = ICON_PIN; d.appendChild(p); }
-    ttl.textContent = (chain ? "\u{1F517} " : "") + tab.name.split("/").pop();
+    // gh-icons #18/#20: the linked-tab mark is a monochrome svg marker element in front of the
+    // label (like the pin), not a colour emoji in the label text
+    if (chain) { const k = document.createElement("span"); k.className = "lk"; k.innerHTML = ICON_LINK; d.appendChild(k); }
+    ttl.textContent = tab.name.split("/").pop();
     const x = document.createElement("span");
     x.className = "x";
     // ux-1: inline svg cross — the ✕ glyph tofu'd under webkit2gtk
@@ -7104,7 +7124,53 @@ async function qsCanvasList() {
 }
 const qslSafe = s => String(s).replace(/[|\]\[]/g, "_");
 CENSUS.push(() => modalKind === "qs" ? " [qsl:" + mdItems.map(it => qslSafe(it.label)).join("|") + "]" : "");   // cvf-explorer CVR-A-067: the switcher's offered rows, in order
-CENSUS.push(() => " [tabt:" + groups().map(g => [...g.tabsEl.querySelectorAll(".tab .t")].map(e => e.textContent.replace(/^\u{1F517} /u, "").replace(/[[\]|;]/g, "")).join(";")).join("|") + "]");   // cvf-explorer CVR-A-086: the painted tab titles, per pane (";" between tabs, "|" between panes)
+CENSUS.push(() => " [tabt:" + groups().map(g => [...g.tabsEl.querySelectorAll(".tab .t")].map(e => e.textContent.replace(/[[\]|;]/g, "")).join(";")).join("|") + "]");   // cvf-explorer CVR-A-086: the painted tab titles, per pane (";" between tabs, "|" between panes)
+/* gh-icons census BEGIN — phase ghicons (#18 #20 #21). Read-only DOM probe, published every refresh.
+   [ghe:<n>[:<root>/<text>;...]] = text nodes carrying an emoji / pictograph code point
+   (U+1F300-1FAFF, U+2600-27BF, U+1F000-1F2FF) inside an ICON surface: ribbon, sidebar tab
+   headers + toolbars, tab bars (tab headers + view-header actions), status bar, open menus,
+   canvas controls/toolbars/menus, every button. <root> = the surface (id, or first class,
+   + data-menu for a tagged menu) so a phase can exclude an exact label, never a range.
+   [ghlk:<pane>.<tab>=<svg|emoji|->:<title>;...|...] = each tab's link mark: svg = a .lk marker
+   holding an <svg>, emoji = a pictograph in the painted title, - = neither.
+   [ghw:L=<left>,<right>:<x>+<w>,...|R=...] = the sidebar boxes and their tab-header buttons
+   (#21), [ghdv:l=<x>,<y>|r=<x>,<y>] = the resize dividers' centres (a driver drags them). */
+const GH_EMO = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F000}-\u{1F2FF}]/u;
+const GH_SURF = "#ribbon, #stabs, #rtabs, #bar, #bmbar, #sbar, #hkclear, .tabbar, .ctxmenu, .canvas-controls, " +
+  ".canvas-selection-toolbar, .canvas-selection-palette, .canvas-card-menu, .canvas-settings-menu, " +
+  ".canvas-edge-toolbar, .canvas-edge-menu, button, [role=button], [role=menuitem]";
+const ghClean = s => Array.from(s.replace(/[[\]|;]/g, " ").replace(/\s+/g, " ").trim()).slice(0, 40).join("");
+const ghRoot = r => (r.id || (r.classList && r.classList[0]) || r.tagName.toLowerCase()) + (r.dataset && r.dataset.menu ? "." + r.dataset.menu : "");
+CENSUS.push(() => {
+  const seen = new Set(), bad = [];
+  for (const r of document.querySelectorAll(GH_SURF)) {
+    const w = document.createTreeWalker(r, NodeFilter.SHOW_TEXT);
+    for (let n = w.nextNode(); n; n = w.nextNode()) {
+      if (seen.has(n)) continue;
+      seen.add(n);
+      if (GH_EMO.test(n.nodeValue)) bad.push(ghRoot(r) + "/" + ghClean(n.nodeValue));
+    }
+  }
+  const lk = groups().map((g, i) => [...g.tabsEl.querySelectorAll(".tab")].map((d, j) => {
+    const t = d.querySelector(".t"), txt = t ? t.textContent : "";
+    const st = d.querySelector(".lk svg") ? "svg" : GH_EMO.test(txt) ? "emoji" : "-";
+    return (i + 1) + "." + (j + 1) + "=" + st + ":" + ghClean(txt);
+  }).join(";")).join("|");
+  const side = (k, s, h) => {
+    const e = document.getElementById(s), b = e && e.getBoundingClientRect();
+    if (!e || e.hidden || !b.width) return "";
+    return k + "=" + Math.round(b.left) + "," + Math.round(b.right) + ":" + [...document.querySelectorAll("#" + h + " .stab")]
+      .map(x => { const r = x.getBoundingClientRect(); return Math.round(r.left) + "+" + Math.round(r.width); }).join(",");
+  };
+  const dv = (k, id) => {
+    const e = document.getElementById(id), b = e && e.getBoundingClientRect();
+    return e && !e.hidden && b.width ? k + "=" + Math.round(b.left + b.width / 2) + "," + Math.round(b.top + b.height / 2) : "";
+  };
+  return " [ghe:" + bad.length + (bad.length ? ":" + bad.join(";") : "") + "] [ghlk:" + lk + "]" +
+    " [ghw:" + [side("L", "side", "stabs"), side("R", "rside", "rtabs")].filter(Boolean).join("|") + "]" +
+    " [ghdv:" + [dv("l", "ldiv"), dv("r", "rdiv")].filter(Boolean).join("|") + "]";
+});
+/* gh-icons census END */
 /* listtoggle A3 (found by the gate phase, not by reading): the palette input
    TAKES the DOM selection, so a palette command that reads the editor
    selection (Ed.sel) found none and was a silent no-op — "Toggle bullet list"
@@ -10072,7 +10138,20 @@ async function startGraph(g, cfg) {
   g.editor.style.display = "none"; g.preview.style.display = "none";
   g.lp.style.display = "none";
   const cv = g.graph; cv.hidden = false;
-  cv.width = cv.clientWidth; cv.height = cv.clientHeight;
+  // gh-graphdpr (GitHub #23 "pixelated graphs"): the backing store was clientWidth x clientHeight,
+  // i.e. CSS px, so at devicePixelRatio 2 the browser upscaled a 1x bitmap (blurred labels and discs).
+  // Now backing = round(css x dpr) for BOTH canvases (labels/2D here, WebGL via glr.draw); the view
+  // (view.scale/tx/ty, toWorld, hit-testing) stays in CSS px and dpr is applied only at draw time,
+  // so zoom re-renders at full resolution. cssW/cssH = the CSS size; at dpr 1 nothing changes.
+  let dpr = 1, cssW = 0, cssH = 0;
+  const fitDpr = () => {               // true = the backing store changed (caller redraws)
+    dpr = window.devicePixelRatio || 1; cssW = cv.clientWidth; cssH = cv.clientHeight;
+    const bw = Math.round(cssW * dpr), bh = Math.round(cssH * dpr);
+    if (cv.width === bw && cv.height === bh) return false;
+    cv.width = bw; cv.height = bh; return true;
+  };
+  fitDpr();
+  g.graphDpr = () => ({ dpr, cssW, cssH });   // census [gdpr:]
   const fetchP = cfg.fetch(), prefP = graphRendererPref();   // backend works while the renderer comes up
   const gcP = cfg.scope ? Promise.resolve(cfg.scope()) : null;   // graph-controls scope: graph.json (read beside the fetch) or the lg tab's options
   const ctx = cv.getContext("2d");
@@ -10212,7 +10291,7 @@ async function startGraph(g, cfg) {
   // cv.onwheel is the ONLY writer of view.scale besides the two ggkeep restores (the tab's own
   // last view on a switch back, and graph.json scale snapped to a notch on a fresh open); no fit/reset button or key sets it,
   // and the local graph shares this startGraph, so the recon §1 bound there covers every view.
-  const view = { scale: 1, tx: cv.width / 2, ty: cv.height / 2, notch: 0, ax: null, ay: null, wx: 0, wy: 0 };
+  const view = { scale: 1, tx: cssW / 2, ty: cssH / 2, notch: 0, ax: null, ay: null, wx: 0, wy: 0 };
   const GZ_OUT = 47, GZ_IN = -20, GZ_MIN = 1 / 128, GZ_MAX = 8;   // the wheel lattice, see cv.onwheel
   const notchScale = n => n === 0 ? 1 : Math.min(GZ_MAX, Math.max(GZ_MIN, Math.pow(0.9, n)));
   // Obsidian force defaults (R16.1) and the gains that turn a slider value into
@@ -10611,13 +10690,14 @@ async function startGraph(g, cfg) {
   function draw() {
     const dT0 = perf.now();
     const P = palette();               // one token read per frame, none per node
+    if ((window.devicePixelRatio || 1) !== dpr) fitDpr();   // gh-graphdpr: dpr changed (monitor / zoom) without a resize
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     // background: the 2D path PAINTS --graph-bg (a transparent canvas would show the pane behind it,
     // which happens to be the same token today and is not a contract); over WebGL the 2D canvas only
     // carries labels, so it stays clear and the GL clear colour below is the one that paints.
     if (glr) ctx.clearRect(0, 0, cv.width, cv.height);
     else { ctx.globalAlpha = 1; ctx.fillStyle = P.bg; ctx.fillRect(0, 0, cv.width, cv.height); }
-    ctx.setTransform(view.scale, 0, 0, view.scale, view.tx, view.ty);
+    ctx.setTransform(view.scale * dpr, 0, 0, view.scale * dpr, view.tx * dpr, view.ty * dpr);   // gh-graphdpr: CSS-px view -> device-px backing
     // hover: hovered node + its edges/neighbors lit accent, rest faded
     const litE = ([i, j]) => hov < 0 || i === hov || j === hov;
     const litN = i => hov < 0 || i === hov || adj[hov].has(i);
@@ -10667,7 +10747,7 @@ async function startGraph(g, cfg) {
     const groups = new Map();         // key -> { col, a, res, dr, idx: [] }
     const GS = g.gcScope ? g.gcScope.st.groups : null;   // graphctx GC19: p.col = first matching colour group (graph_view)
     // world-space cull: nodes outside the viewport are not drawn (R16.4 overflow)
-    const [wx0, wy0] = toWorld(0, 0), [wx1, wy1] = toWorld(cv.width, cv.height), pad = 40 / view.scale;
+    const [wx0, wy0] = toWorld(0, 0), [wx1, wy1] = toWorld(cssW, cssH), pad = 40 / view.scale;
     for (let i = 0; i < N.length; i++) {
       const p = N[i], isC = cn !== null && p.n === cn;
       if (i >= shown) continue;
@@ -10694,12 +10774,18 @@ async function startGraph(g, cfg) {
         const c = RGB[gp.col], ring = gp.res ? 0 : 1.5;
         for (const i of gp.idx) {
           const p = N[i], o = nc * 8;
-          nArr[o] = p.x; nArr[o + 1] = p.y; nArr[o + 2] = (p.r + gp.dr) * NS + ring / 2; nArr[o + 3] = ring;   // 2D strokes straddle the radius
+          nArr[o] = p.x; nArr[o + 1] = p.y; nArr[o + 2] = (p.r + gp.dr) * NS + ring / 2; nArr[o + 3] = ring * dpr;   // ring width is device px in the shader (gh-graphdpr); 2D strokes straddle the radius
           nArr[o + 4] = c[0]; nArr[o + 5] = c[1]; nArr[o + 6] = c[2]; nArr[o + 7] = gp.a; nc++;
         }
         if (labels) { ctx.globalAlpha = gp.a * la; ctx.fillStyle = gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - (p.r + gp.dr) * NS - 4); } }
       }
-      glr.draw(cv.width, cv.height, view, nArr, nc, eArr, ec, RGB[P.bg], D.line);   // bg: the clear colour, from the token like every other colour here
+      // gh-graphdpr: .graphgl is absolutely positioned with no CSS size, so a canvas shows at its
+      // INTRINSIC size = its backing in CSS px; once the backing is css x dpr that is dpr x too big
+      // (measured: GDK_SCALE=2 -> GL canvas 894x1336 CSS over a 447x668 pane). Pin its CSS box to the 2D one.
+      const gst = g.glcv && g.glcv.style, gw = cssW + "px", gh = cssH + "px";
+      if (gst && (gst.width !== gw || gst.height !== gh)) { gst.width = gw; gst.height = gh; }
+      glr.draw(cv.width, cv.height, dpr === 1 ? view : { scale: view.scale * dpr, tx: view.tx * dpr, ty: view.ty * dpr },   // gh-graphdpr: device px
+        nArr, nc, eArr, ec, RGB[P.bg], D.line * dpr);   // bg: the clear colour, from the token like every other colour here
     } else for (const gp of groups.values()) {
       ctx.globalAlpha = gp.a; ctx.beginPath();
       for (const i of gp.idx) { const p = N[i], r = (p.r + gp.dr) * NS; ctx.moveTo(p.x + r, p.y); ctx.arc(p.x, p.y, r, 0, 7); }
@@ -10875,10 +10961,19 @@ async function startGraph(g, cfg) {
   if (window.ResizeObserver) {
     const ro = g.ro = new ResizeObserver(() => {
       if (cv.hidden || !g.graphOn || g.simGen !== gen) { ro.disconnect(); return; }
-      if (cv.width === cv.clientWidth && cv.height === cv.clientHeight) return;
-      cv.width = cv.clientWidth; cv.height = cv.clientHeight; redraw();
+      if (fitDpr()) redraw();          // gh-graphdpr: backing = round(css x dpr)
     });
     ro.observe(cv);
+  }
+  // gh-graphdpr: a dpr change with no CSS resize (window moved to another monitor, GDK scale)
+  // fires no ResizeObserver — watch the resolution media query, re-fit, redraw
+  if (window.matchMedia) {
+    const dprWatch = () => {
+      const mq = matchMedia("(resolution: " + dpr + "dppx)");
+      const on = () => { mq.removeEventListener("change", on); if (cv.hidden || !g.graphOn || g.simGen !== gen) return; fitDpr(); redraw(); dprWatch(); };
+      mq.addEventListener("change", on);
+    };
+    dprWatch();
   }
   // wheel: cursor-anchored zoom, 0.9 per notch out / 1/0.9 in (R16.5);
   // scale is derived from a notch counter so 3 out + 3 in is EXACTLY 1.00
@@ -11815,7 +11910,7 @@ function showSettingsPage(id) {
   const inp = document.createElement("input");
   inp.id = "hkfilter"; inp.placeholder = "Filter..."; inp.spellcheck = false; inp.autocomplete = "off";
   inp.oninput = renderHk;
-  const clr = document.createElement("span"); clr.id = "hkclear"; clr.textContent = "⊗"; clr.title = "Clear";
+  const clr = document.createElement("span"); clr.id = "hkclear"; clr.innerHTML = ICON_XCIRC; clr.title = "Clear";
   clr.onclick = () => { inp.value = ""; renderHk(); inp.focus(); };
   bar.append(inp, clr);
   const chips = document.createElement("div"); chips.id = "hkchips";
@@ -12069,7 +12164,7 @@ function renderThemeCtl() {
 function openThemeMenu(anchor) {
   closeMenu();
   const m = document.createElement("div");
-  m.className = "ctxmenu";
+  m.className = "ctxmenu"; m.dataset.menu = "themes";   // gh-icons ruling 1: its check/cross prefixes are label glyphs (ghicons excludes exactly this menu)
   const mk = (txt, on) => {
     const it = document.createElement("div");
     it.textContent = txt;
@@ -12093,7 +12188,7 @@ function openThemeMenu(anchor) {
 function openSnipMenu(anchor) {
   closeMenu();
   const m = document.createElement("div");
-  m.className = "ctxmenu";
+  m.className = "ctxmenu"; m.dataset.menu = "snippets";   // gh-icons ruling 1: its check prefix is a label glyph (ghicons excludes exactly this menu)
   if (!vaultSnips.length) {
     // absent snippets/ is Obsidian's silent normal (T0): an empty menu entry,
     // deliberately not a notice and not a directory-creating button (yet)
@@ -12815,9 +12910,9 @@ function fBar(g) {                     // the bar's DOM, built once per pane
     '<div class="findrow">' +
       '<input class="findq" type="text" spellcheck="false" autocomplete="off" placeholder="Find">' +
       '<span class="findcount"></span>' +
-      '<button class="findprev" title="Previous match (Shift+Enter)">↑</button>' +
-      '<button class="findnext" title="Next match (Enter)">↓</button>' +
-      '<button class="findclose" title="Close (Escape)">✕</button>' +
+      '<button class="findprev" title="Previous match (Shift+Enter)">' + ICON_UP + '</button>' +
+      '<button class="findnext" title="Next match (Enter)">' + ICON_DOWN + '</button>' +
+      '<button class="findclose" title="Close (Escape)">' + ICON_X + '</button>' +
     '</div>' +
     /* R26.15: the replace row is the SAME bar with a second row revealed, not a
        second widget — that is what makes R26.16 ("replace inherits the find
