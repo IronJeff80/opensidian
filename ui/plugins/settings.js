@@ -296,9 +296,6 @@
   const cvRaw = k => (Object.prototype.hasOwnProperty.call(cvc.canvas, k) && cvc.canvas[k] != null ? cvc.canvas[k] : CV_DEF[k]);
   const cvNorm = (k, v) => (k === "newFileLocation" && v === "same" ? "current" : v);
   const cvGet = k => cvNorm(k, cvRaw(k));
-  /* the backend (src-tauri/src/settings.rs, not this goal's file) accepts only "same" for same-folder today, so the
-     dropdown writes "same" and reads both; writing "current" is this one line once the backend takes it (BLOCKERS.md) */
-  const CV_LOC_SAME_WRITE = "same";
   const cvEmit = keys => { for (const f of cvc.subs) { try { f(keys); } catch (e) { console.error("[canvas] cfg listener:", e); } } };
   // writes go out in order, one at a time (a slider drag is many patches; the file holds the last)
   let cvQ = Promise.resolve();
@@ -427,7 +424,7 @@
     let n = 0;
     const r = (label, desc, ctls) => { n++; return row(c, label, desc, ctls); };
     r("Default location for new canvas files", "Where a new canvas goes when you create one from the palette or the ribbon.",
-      [dropdown("loc", "newFileLocation", [["same", "Same folder as current file", CV_LOC_SAME_WRITE], ["root", "Vault folder"], ["folder", "In the folder specified below"]])]);
+      [dropdown("loc", "newFileLocation", [["same", "Same folder as current file", "current"], ["root", "Vault folder"], ["folder", "In the folder specified below"]])]);
     if (cvGet("newFileLocation") === "folder") {
       const f = el("input", "sctl text live");
       f.type = "text"; f.spellcheck = false; f.autocomplete = "off"; f.placeholder = "Example: folder/sub";
