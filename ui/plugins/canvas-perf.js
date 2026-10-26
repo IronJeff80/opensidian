@@ -163,6 +163,7 @@
     if (s.nN < 0 && !s.total) cull(c);
     else later(c);
     let t = " [cvperf:vis=" + s.vis + "|total=" + c.nodes.size + "|eupd=" + s.eupd + "|emin=" + s.emin + "|emax=" + s.emax + "|moves=" + s.moves + "|evis=" + s.evis + "]";
+    if (window.__cvpBisectV2 !== 0) return t;   // TEMP bisect V2
     // goal cvf-zoom: [cvlod:<id>|lod=0|1(|lab=x,y,w,h for a group)] per painted card (at most 16), [cvpdrag:<id>@x,y,w,h]
     const R = e => { const r = e.getBoundingClientRect(); return [r.x, r.y, r.width, r.height].map(Math.round).join(","); };
     const L = c.wrapperEl && c.wrapperEl.classList.contains("cvp-lod") ? 1 : 0;
