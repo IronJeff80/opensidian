@@ -89,7 +89,7 @@
     if (!nodes.length) return null;
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const n of nodes) { const d = n.data; x0 = Math.min(x0, d.x); y0 = Math.min(y0, d.y); x1 = Math.max(x1, d.x + d.width); y1 = Math.max(y1, d.y + d.height); }
-    const g = addData(c, { id: newId(c), type: "group", x: Math.floor(x0 - PAD), y: Math.floor(y0 - PAD), width: Math.ceil(x1 - x0 + 2 * PAD), height: Math.ceil(y1 - y0 + 2 * PAD) }, true);
+    const g = addData(c, { id: newId(c), type: "group", x: Math.floor(x0 - PAD), y: Math.floor(y0 - PAD), width: Math.ceil(x1 - x0 + 2 * PAD), height: Math.ceil(y1 - y0 + 2 * PAD), label: "Untitled group" }, true);
     c.select(g, false);
     return g;
   }
