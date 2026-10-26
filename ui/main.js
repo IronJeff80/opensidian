@@ -8025,7 +8025,7 @@ function canvasTok() {
    go on phase canvasui step 4 (asserts the single-item menu); flipping it on is this one line. Rows without a backend
    (no folder rename/delete/copy/move command, no clipboard write, no file-manager handler, no bases) are listed
    disabled with the reason, as the other explorer menus do. */
-const CV_FOLDERMENU_FULL = false;
+const CV_FOLDERMENU_FULL = true;
 function folderMenuFull(item, sep, f) {
   const dir = String(f || "").replace(/^\/+|\/+$/g, "");
   item("New note", async () => {
@@ -9085,7 +9085,7 @@ async function undoCloseTab() {
 /* goal cvf-board2 CVR-A-093 (DEFERRED, pending operator go): stock Obsidian drops "Create new canvas" from the
    palette while the Canvas core plugin is off. Until the go, false keeps the row present and refusing (old phase
    canvasui step 5); the follow-up goal flips only this flag. Ribbon + explorer hiding do not depend on it. */
-const CV_PALETTE_HIDE_OFF = false;
+const CV_PALETTE_HIDE_OFF = true;
 const CMDS = [
   ["app:open-settings",        "Open settings",                       ["ctrl+,"],               () => cmdSettings()],
   // R14: the theme switch is a registry entry like any other — no bespoke

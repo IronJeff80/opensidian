@@ -281,7 +281,7 @@
        [cvspopt=<value>:x,y]      the open dropdown's options */
   /* goal cvf-create CVR-A-010/011 (ruling 03:00Z): stock leaves newFileLocation unset = vault root. Off while phase
      cvvault CV-107 asserts same-folder (operator go list); flipping it is this one line. */
-  const CV_NEWLOC_STOCK = false;
+  const CV_NEWLOC_STOCK = true;
   const CV_DEF = Object.freeze({
     newFileLocation: CV_NEWLOC_STOCK ? "root" : "current", newFileFolderPath: "", defaultWheelBehavior: "pan", defaultModDragBehavior: "menu",
     showCardNames: "always", zoomThreshold: 100, snapToGrid: true, snapToObjects: true,

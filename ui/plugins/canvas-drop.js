@@ -37,11 +37,11 @@
   // stock lays a dropped card with its TOP-LEFT on the drop point; develop centres it, and 961-cvjourney (J1, J3..J6)
   // asserts the centring. Coordinator ruling 2 (2026-10-26 03:15Z): stock placement waits behind this flag until the
   // operator lets cvjourney change. false = every explorer / toolbar drop is centred on the point (first card of a row).
-  const CV_DROP_TOPLEFT = false;
+  const CV_DROP_TOPLEFT = true;
   // stock adds a dropped folder's files recursively, one row at a 445 pitch; develop adds its direct files only, laid out by
   // CanvasArrange's grid with the grid's top-left on the point, and 954-cvdrop CV-100 asserts that. Coordinator ruling 3
   // (2026-10-26 03:30Z): the stock folder drop waits behind this flag. false = develop's folder drop.
-  const CV_DROP_FOLDER_STOCK = false;
+  const CV_DROP_FOLDER_STOCK = true;
   const IMG = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"]);
   const HOST = window.__osPluginHost;   // captured at load: the loader seals the host before plugins run
   const app = HOST && HOST.app ? HOST.app : null, X = HOST && HOST.api ? HOST.api : null;
