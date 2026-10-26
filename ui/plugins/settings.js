@@ -444,7 +444,7 @@
       f.value = String(cvGet("newFileFolderPath") || ""); f.dataset.cvsp = "locf";
       f.style.cssText = "width:220px;color:var(--text-chrome);background:var(--bg-surface)";
       f.onmousedown = ev => ev.stopPropagation();
-      f.onkeydown = ev => { ev.stopPropagation(); if (ev.key === "Enter") f.blur(); };
+      f.onkeydown = ev => { if (ev.key === "Escape") { f.blur(); return; } ev.stopPropagation(); if (ev.key === "Enter") f.blur(); };   // Escape still closes Settings
       f.onchange = () => { cvSet({ newFileFolderPath: f.value.trim().replace(/^\/+|\/+$/g, "") }); if (typeof updateTitle === "function") updateTitle(); };
       f.oninput = () => { if (typeof updateTitle === "function") updateTitle(); };
       r("Folder for new canvas files", "New canvas files are created in this folder.", [f]);
@@ -464,7 +464,7 @@
     s.style.cssText = "width:160px;accent-color:var(--accent-mauve, currentColor);cursor:pointer";
     const val = el("span", "cvsp-val", s.value + "%"); val.style.cssText = "min-width:42px;text-align:right;font-variant-numeric:tabular-nums";
     s.onmousedown = ev => ev.stopPropagation();
-    s.onkeydown = ev => ev.stopPropagation();
+    s.onkeydown = ev => { if (ev.key !== "Escape") ev.stopPropagation(); };   // arrows/Home/End stay on the slider; Escape closes Settings
     s.oninput = () => { val.textContent = s.value + "%"; s.title = s.value + "%"; cvSet({ zoomThreshold: Number(s.value) }); if (typeof updateTitle === "function") updateTitle(); };
     const rs = iconBtn("cvsp-reset", SVG('<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/>'), "Restore default", () => {
       cvSet({ zoomThreshold: CV_DEF.zoomThreshold }); rebuildCanvasPage();
