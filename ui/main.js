@@ -7431,7 +7431,7 @@ async function cmdNewCanvas(folder) {
     const leaf = await openCanvas(p);
     if (t0 && !t0.pinned && leaf) {
       const i = g.tabs.indexOf(t0);
-      if (i >= 0 && g.tabs[g.active] !== t0) { try { await closeTab(g, i, "replace", "canvas-new", true); } catch (e) { console.error("[canvas] replace tab:", e); } }
+      if (i >= 0 && g.tabs[g.active] !== t0) { try { await closeTab(g, i, "user-close", "canvas-new", true); } catch (e) { console.error("[canvas] replace tab:", e); } }
     }
     try { const v = leaf && leaf.view; if (v && v.editTitle) v.editTitle(); } catch (_) {}
     return p;

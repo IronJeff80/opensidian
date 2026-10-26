@@ -669,11 +669,19 @@
         const inp = this.nameEl = el("input", "view-header-title-input", t);
         inp.type = "text"; inp.spellcheck = false; inp.setAttribute("aria-label", "File name");
         inp.style.cssText = "font:inherit;color:inherit;background:transparent;border:1px solid transparent;border-radius:4px;padding:1px 4px;min-width:2ch;outline:none";
-        const fit = () => { inp.style.width = Math.max(2, inp.value.length + 1) + "ch"; };
+        // the field is as wide as its text: a hidden twin span with the same font measures it (box-sizing is
+        // border-box app-wide, so padding + border are added on top)
+        const sz = el("span", "view-header-title-sizer", t);
+        sz.style.cssText = "position:absolute;visibility:hidden;white-space:pre;font:inherit;left:-9999px;top:0";
+        const fit = () => { sz.textContent = inp.value || " "; const w = sz.getBoundingClientRect().width;
+          inp.style.width = w > 0 ? Math.ceil(w + 14) + "px" : (inp.value.length + 3) + "ch"; };   // detached: no layout yet, a ch estimate
         inp.addEventListener("input", fit);
-        inp.addEventListener("focus", () => { inp.style.borderColor = "var(--interactive-accent, #7f6df2)"; });
+        inp.addEventListener("focus", () => { fit(); inp.style.borderColor = "var(--interactive-accent, #7f6df2)"; });
         inp.addEventListener("keydown", e => {
-          e.stopPropagation();                       // a file name holds chords: the board and the app keymap stay out
+          // text keys stay in the field (the board's single-key tools must not fire); app chords such as
+          // ctrl+w / ctrl+p still reach the keymap, only the editing chords are kept here
+          const mod = e.ctrlKey || e.metaKey;
+          if (!mod || /^[acvxzy]$/i.test(e.key) || e.key === "Backspace" || e.key === "Delete" || e.key.startsWith("Arrow") || e.key === "Home" || e.key === "End") e.stopPropagation();
           if (e.key === "Enter") { e.preventDefault(); this.commitTitle(); }
           else if (e.key === "Escape") { e.preventDefault(); this.paintHeader(); inp.blur(); }
         });
@@ -687,7 +695,7 @@
         parts.pop();
         this.crumbEl.textContent = parts.length ? parts.join(" / ") + " / " : "";
         this.nameEl.value = p ? baseName(p) : "";
-        this._fitTitle();
+        this._fitTitle(); requestAnimationFrame(() => this._fitTitle());   // again once laid out
       }
       editTitle(n = 0) {   // the board may still be loading (no path yet) or take focus on its first paint: retry a few frames
         const inp = this.nameEl; if (!inp) return;
