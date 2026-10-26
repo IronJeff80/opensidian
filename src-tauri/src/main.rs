@@ -531,6 +531,45 @@ fn serve_media(root: &Path, target: &str, range: Option<&str>) -> Option<MediaRe
     Some(MediaResp { status, mime, range, body })
 }
 
+/// cvf-mediasrv (ruling 1.2): rename ONE media file inside the vault — the
+/// canvas card menu's "Rename" in a vault whose plugin file access is off
+/// (restricted mode answers plugin_vfs rename with EPERM). Narrow on purpose:
+/// both names pass the MEDIA_TYPES (+ served IMG_TYPES: the image card has the
+/// same menu, 963-cvfmenus renames a png) whitelist with the SAME extension
+/// (case-insensitive), `safe_rel` refuses `..`, absolute and hidden paths, NUL
+/// is refused, and `vaultfs::move_file` walks both parents no-follow from the
+/// vault dir fd, refuses a non-regular (symlink) source and claims the target
+/// O_EXCL (no overwrite). It opens no other plugin_vfs operation.
+fn media_rename_in(root: &Path, from: &str, to: &str) -> Result<(), String> {
+    let rel = |s: &str| -> Result<(PathBuf, String), String> {
+        if s.contains('\0') {
+            return Err("invalid name".into());
+        }
+        let r = safe_rel(s).ok_or("invalid name")?;
+        let ext = r.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).ok_or("not a media file")?;
+        if media_mime(&ext).is_none() && !IMG_TYPES.iter().any(|(e, _)| *e == ext) {
+            return Err("not a media file".into());
+        }
+        Ok((r, ext))
+    };
+    let ((fr, fe), (tr, te)) = (rel(from)?, rel(to)?);
+    if fe != te {
+        return Err("the extension cannot change".into());
+    }
+    if fr == tr {
+        return Ok(());
+    }
+    vaultfs::Vault::open(root).and_then(|vfs| vfs.move_file(&fr, &tr)).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists { "target exists".to_string() } else { e.to_string() }
+    })
+}
+
+#[tauri::command]
+fn media_rename(v: State<Vault>, from: String, to: String) -> Result<(), String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    media_rename_in(&root, &from, &to)
+}
+
 /// percent-ENCODE a vault-relative path for the `opensidian-img:` URL. Unreserved
 /// RFC3986 characters and `/` survive; everything else (space, `#`, `?`, `%`,
 /// non-ASCII) becomes %XX, so `pct_decode` on the serving side gets the exact
@@ -6222,7 +6261,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, canvas_io, canvas_attach, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, media_rename, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
             read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
@@ -9325,6 +9364,85 @@ mod tests {
         let _ = fs::remove_dir_all(&outside);
     }
 
+    /* cvf-mediasrv ruling 1.2: media_rename */
+    #[test]
+    fn media_rename_happy_path_moves_the_file() {
+        let (root, outside) = media_vault("mren-ok");
+        assert_eq!(media_rename_in(&root, "tone.mp3", "song.mp3"), Ok(()));
+        assert!(!root.join("tone.mp3").exists());
+        assert_eq!(fs::read(root.join("song.mp3")).unwrap(), b"0123456789");
+        // case of the extension may differ, a vault folder is fine
+        assert_eq!(media_rename_in(&root, "sub/clip.MP4", "sub/new clip.mp4"), Ok(()));
+        assert!(root.join("sub/new clip.mp4").is_file());
+        // the image card has the same menu (963-cvfmenus renames media/pic.png)
+        fs::write(root.join("sub/pic.png"), b"png").unwrap();
+        assert_eq!(media_rename_in(&root, "sub/pic.png", "sub/pic2.png"), Ok(()));
+        assert!(root.join("sub/pic2.png").is_file() && !root.join("sub/pic.png").exists());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn media_rename_refuses_an_extension_change_or_non_media() {
+        let (root, outside) = media_vault("mren-ext");
+        fs::write(root.join("n.md"), b"#").unwrap();
+        fs::write(root.join("v.svg"), b"<svg/>").unwrap();
+        fs::write(root.join("pic.png"), b"png").unwrap();
+        for (a, b) in [("tone.mp3", "tone.wav"), ("tone.mp3", "tone.md"), ("tone.mp3", "tone"), ("n.md", "n.mp3"), ("n.md", "m.md"), ("pic.png", "pic.jpg"), ("v.svg", "w.svg")] {
+            assert!(media_rename_in(&root, a, b).is_err(), "{a} -> {b}");
+        }
+        assert!(root.join("tone.mp3").is_file() && root.join("n.md").is_file());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn media_rename_refuses_overwrite() {
+        let (root, outside) = media_vault("mren-ow");
+        fs::write(root.join("other.mp3"), b"keep").unwrap();
+        assert_eq!(media_rename_in(&root, "tone.mp3", "other.mp3"), Err("target exists".to_string()));
+        assert_eq!(fs::read(root.join("other.mp3")).unwrap(), b"keep");
+        assert!(root.join("tone.mp3").is_file());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn media_rename_refuses_traversal_absolute_nul_hidden() {
+        let (root, outside) = media_vault("mren-trav");
+        let o = outside.file_name().unwrap().to_string_lossy().to_string();
+        for (a, b) in [
+            ("tone.mp3".to_string(), format!("../{o}/x.mp3")),
+            (format!("../{o}/secret.mp3"), "stolen.mp3".to_string()),
+            ("tone.mp3".to_string(), format!("{}/x.mp3", outside.display())),
+            ("tone.mp3".to_string(), "sub/../../x.mp3".to_string()),
+            ("tone.mp3".to_string(), "a\0.mp3".to_string()),
+            ("tone.mp3".to_string(), ".obsidian/x.mp3".to_string()),
+        ] {
+            assert!(media_rename_in(&root, &a, &b).is_err(), "{a:?} -> {b:?}");
+        }
+        assert!(root.join("tone.mp3").is_file() && outside.join("secret.mp3").is_file());
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 1);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn media_rename_refuses_symlinks() {
+        use std::os::unix::fs::symlink;
+        let (root, outside) = media_vault("mren-link");
+        symlink("/etc/hostname", root.join("evil.mp3")).unwrap();
+        symlink(&outside, root.join("outdir")).unwrap();
+        // a symlinked source is not moved; a symlinked target dir is not walked
+        assert!(media_rename_in(&root, "evil.mp3", "fine.mp3").is_err());
+        assert!(fs::symlink_metadata(root.join("evil.mp3")).unwrap().is_symlink());
+        assert!(media_rename_in(&root, "tone.mp3", "outdir/x.mp3").is_err());
+        assert!(media_rename_in(&root, "outdir/secret.mp3", "s.mp3").is_err());
+        assert!(!outside.join("x.mp3").exists() && outside.join("secret.mp3").is_file() && root.join("tone.mp3").is_file());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
     /// R29 + S1: the CSP is a security boundary, so it is asserted as an EXACT
     /// string. A future widening (`img-src *`, an http origin, a stray
     /// 'unsafe-inline' in script-src) then fails a test instead of shipping
@@ -9339,10 +9457,15 @@ mod tests {
         assert_eq!(
             csp,
             "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
-             img-src 'self' data: opensidian-img:; font-src 'self'; \
+             img-src 'self' data: opensidian-img:; media-src 'self' opensidian-img:; font-src 'self'; \
              connect-src ipc: http://ipc.localhost",
             "the CSP changed — if that was deliberate, say why in the commit message"
         );
+        // cvf-mediasrv (ruling 1.1): audio/video ride OUR scheme and nothing else —
+        // no wildcard, no remote origin, no blob:/data: in media-src
+        let media = csp.split("; ").find(|d| d.starts_with("media-src ")).unwrap();
+        assert_eq!(media, format!("media-src 'self' {IMG_SCHEME}:"));
+        assert!(!media.contains('*') && !media.contains("http") && !media.contains("data:") && !media.contains("blob:"), "media-src names a remote origin: {media}");
         // R29: the image widening is ONE scheme token, and it is ours
         let img = csp.split("; ").find(|d| d.starts_with("img-src ")).unwrap();
         assert_eq!(img, format!("img-src 'self' data: {IMG_SCHEME}:"));
