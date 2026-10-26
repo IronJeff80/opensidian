@@ -201,6 +201,25 @@
     return true;
   }
 
+  /* CVR-B-037: while exactly one note card is selected its note is the active file — the explorer highlights it and the
+     status bar counts its backlinks (main.js setCanvasActiveFile); any other selection hands the active file back to
+     the board. Settled once per task: select() clears, then adds. */
+  let actT = null, actOn = false;
+  function actSoon(c) {
+    if (actT) return;
+    actT = Promise.resolve().then(() => {
+      actT = null;
+      const set = G("setCanvasActiveFile");
+      if (!set) return;
+      const s = c && c.selection ? [...c.selection] : [];
+      const n = s.length === 1 ? s[0] : null;
+      const p = n && !n._gone && n._cvf && n._cvf.kind === "note" && n.data && typeof n.data.file === "string" ? n.data.file : null;
+      if (!p && !actOn) return;
+      actOn = !!p;
+      try { set(p); } catch (e) { console.error("[canvas] active file:", e); }
+    });
+  }
+
   // once per note card: the inline editor takes the focus (caret at the double-click point), a link in the
   // selected card opens its target, the label opens the note (double click: this tab, Ctrl/Cmd-click: a new tab)
   function noteWire(node, ctx) {
@@ -213,6 +232,12 @@
     const lt = () => String(node.data.file || "") + (node.data.subpath ? (String(node.data.subpath).startsWith("#") ? "" : "#") + node.data.subpath : "");
     const open = how => { const app = node._cvfCtx && node._cvfCtx.app; if (app && app.workspace) app.workspace.openLinkText(lt(), src(), how).catch(e => console.error("[canvas] open note:", e)); };
     node._cvfOpen = open;                            // the board-level double press (below) opens the note from the label
+    if (typeof node.setSelected === "function") {    // CVR-B-037: a lone selected note card is the active file (main.js seam)
+      const bs = node.setSelected;
+      node.setSelected = function () { const r = bs.apply(this, arguments); actSoon(this.canvas); return r; };
+      const bd = node.detach;                        // a removed card leaves the selection without setSelected
+      if (typeof bd === "function") node.detach = function () { const c = this.canvas, r = bd.apply(this, arguments); actSoon(c); return r; };
+    }
     if (typeof node.startEditing === "function") {
       const base = node.startEditing;
       node.startEditing = function () {
