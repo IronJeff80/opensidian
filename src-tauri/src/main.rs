@@ -370,6 +370,18 @@ fn serve_image(root: &Path, target: &str) -> Option<(&'static str, Vec<u8>)> {
    fd with O_NOFOLLOW at every component (a symlinked directory is refused even
    when it points back inside the vault), and the type comes from OUR list. */
 
+/// WebKitGTK reads this (comma list) to let its GStreamer player load extra schemes
+const GST_ALLOWED_ENV: &str = "WEBKIT_GST_ALLOWED_URI_PROTOCOLS";
+
+/// the env value with IMG_SCHEME added once; whatever the user already set is kept
+fn gst_allowed_protocols(cur: Option<&str>) -> String {
+    let mut v: Vec<&str> = cur.unwrap_or("").split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+    if !v.contains(&IMG_SCHEME) {
+        v.push(IMG_SCHEME);
+    }
+    v.join(",")
+}
+
 /// ext -> Content-Type. Anything not listed is a 404.
 const MEDIA_TYPES: [(&str, &str); 12] = [
     ("mp3", "audio/mpeg"),
@@ -5956,6 +5968,11 @@ fn main() {
     // BEFORE GTK starts, so GNOME groups every window under the launcher; the X11
     // class follows after gtk_init via appid::plugin() (appid.rs).
     appid::apply();
+    // cvf-mediasrv: WebKitGTK's GStreamer player refuses any URL scheme it does not
+    // know (isProtocolAllowed -> MEDIA_ERR_SRC_NOT_SUPPORTED, measured on the box),
+    // so audio/video cards on IMG_SCHEME never load. Name the ONE scheme we serve,
+    // before any webview (the web process inherits the env at spawn).
+    std::env::set_var(GST_ALLOWED_ENV, gst_allowed_protocols(std::env::var(GST_ALLOWED_ENV).ok().as_deref()));
     // RENAME MIGRATION (goal opensidian): old -> new table in migrate.rs —
     //   ~/.rustidian.json -> ~/.opensidian.json,
     //   <vault>/.rustidian-bookmarks -> <vault>/.opensidian-bookmarks (per vault, read_bm_tree),
@@ -9324,6 +9341,17 @@ mod tests {
         }
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn gst_allowed_protocols_adds_only_the_media_scheme_once() {
+        assert_eq!(gst_allowed_protocols(None), "opensidian-img");
+        assert_eq!(gst_allowed_protocols(Some("")), "opensidian-img");
+        assert_eq!(gst_allowed_protocols(Some("foo")), "foo,opensidian-img");
+        assert_eq!(gst_allowed_protocols(Some("opensidian-img")), "opensidian-img");
+        assert_eq!(gst_allowed_protocols(Some(" a , ,opensidian-img")), "a,opensidian-img");
+        // never a scheme we do not serve (no http(s), no file)
+        assert!(!gst_allowed_protocols(None).split(',').any(|s| matches!(s, "http" | "https" | "file")));
     }
 
     #[test]
