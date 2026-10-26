@@ -101,7 +101,7 @@
     const r = c.wrapperEl.getBoundingClientRect();
     if (!r.width || !r.height) return;
     const pad = 40, w = Math.max(1, x1 - x0), h = Math.max(1, y1 - y0);
-    c.zoom = Math.max(0.1 /* TEMP bisect V4 */, Math.min(maxZ, (r.width - 2 * pad) / w, (r.height - 2 * pad) / h));
+    c.zoom = Math.max(0.05, Math.min(maxZ, (r.width - 2 * pad) / w, (r.height - 2 * pad) / h));
     c.tx = r.width / 2 - (x0 + x1) / 2 * c.zoom; c.ty = r.height / 2 - (y0 + y1) / 2 * c.zoom;
     c.applyTransform();
   }

@@ -551,7 +551,7 @@
         let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
         for (const n of this.nodes.values()) { const d = n.data; x0 = Math.min(x0, d.x); y0 = Math.min(y0, d.y); x1 = Math.max(x1, d.x + d.width); y1 = Math.max(y1, d.y + d.height); }
         const pad = 40, w = Math.max(1, x1 - x0), h = Math.max(1, y1 - y0);
-        this.zoom = Math.max(0.1 /* TEMP bisect V4 */, Math.min(1, (r.width - 2 * pad) / w, (r.height - 2 * pad) / h));
+        this.zoom = Math.max(0.05, Math.min(1, (r.width - 2 * pad) / w, (r.height - 2 * pad) / h));
         this.tx = (r.width - w * this.zoom) / 2 - x0 * this.zoom; this.ty = (r.height - h * this.zoom) / 2 - y0 * this.zoom;
         this.applyTransform();
       }
