@@ -38,6 +38,10 @@
   // asserts the centring. Coordinator ruling 2 (2026-10-26 03:15Z): stock placement waits behind this flag until the
   // operator lets cvjourney change. false = every explorer / toolbar drop is centred on the point (first card of a row).
   const CV_DROP_TOPLEFT = false;
+  // stock adds a dropped folder's files recursively, one row at a 445 pitch; develop adds its direct files only, laid out by
+  // CanvasArrange's grid with the grid's top-left on the point, and 954-cvdrop CV-100 asserts that. Coordinator ruling 3
+  // (2026-10-26 03:30Z): the stock folder drop waits behind this flag. false = develop's folder drop.
+  const CV_DROP_FOLDER_STOCK = false;
   const IMG = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"]);
   const HOST = window.__osPluginHost;   // captured at load: the loader seals the host before plugins run
   const app = HOST && HOST.app ? HOST.app : null, X = HOST && HOST.api ? HOST.api : null;
@@ -124,9 +128,10 @@
       const out = [], walk = f => {
         const kids = [...f.children].sort((a, b) => String(a.name || a.path).localeCompare(String(b.name || b.path)));
         for (const k of kids) if (isFile(k)) out.push(k.path);
-        for (const k of kids) if (k && Array.isArray(k.children)) walk(k);
+        if (CV_DROP_FOLDER_STOCK) for (const k of kids) if (k && Array.isArray(k.children)) walk(k);
       };
       walk(d.file);
+      if (!CV_DROP_FOLDER_STOCK) out.sort();          // develop: direct files, by path
       return { kind: "folder", paths: out, name: d.file.path || "/" };
     }
     return null;
@@ -191,6 +196,7 @@
       vdiag = s ? "probe" : "probe:none";
       if (!s && VID.has(ext)) { try { s = await mp4Dims(p); } catch (e) { vdiag += "|tkhd:" + String(e && e.message || e).slice(0, 40); s = null; } }   // no decoder for it (no metadata event): the size the file itself declares
       if (s) return { width: CARD, height: Math.max(1, Math.round(CARD * s.h / s.w)) };
+      if (VID.has(ext)) return { width: CARD, height: 300 };   // size unreadable (no decoder; readBinary refused in a restricted vault): develop's 4:3 video card
     }
     return { width: CARD, height: CARD };
   }
@@ -246,7 +252,7 @@
         say(c, "Canvas: " + d.name + " has " + d.paths.length + " files, over the limit of " + CAP + " files per folder drop");
         return ping(c);
       }
-      const ns = placeRow(c, d.paths, anchor(p, { width: CARD, height: CARD }));
+      const ns = CV_DROP_FOLDER_STOCK ? placeRow(c, d.paths, anchor(p, { width: CARD, height: CARD })) : place(c, d.paths, p);
       last.fold = d.name + "|n=" + ns.length + "|cap=" + CAP;
       return ping(c);
     }
@@ -557,6 +563,6 @@
     return t;
   }
 
-  const api = { claim, attach, census, CAP, drop, pasteKey, mirror, TOPLEFT: CV_DROP_TOPLEFT };
+  const api = { claim, attach, census, CAP, drop, pasteKey, mirror, TOPLEFT: CV_DROP_TOPLEFT, FOLDER_STOCK: CV_DROP_FOLDER_STOCK };
   Object.defineProperty(window, "CanvasDrop", { configurable: true, enumerable: false, writable: false, value: Object.freeze(api) });
 })();
