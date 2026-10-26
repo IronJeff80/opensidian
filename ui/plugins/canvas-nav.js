@@ -29,9 +29,9 @@
   const GRID = 20;                        // plugins.css .canvas-wrapper background-size at zoom 1
   /* goal cvf-zoom: zoom feel (CVR-C-067 / 068). One wheel notch (Ctrl, or Space held) zooms x WHEEL_STEP about the
      pointer, the + / - controls x CTL_STEP about the board centre; a trackpad's small pixel deltas zoom smoothly
-     at the same rate per NOTCH_PX. Far out the dot grid doubles its spacing until the dots are at least GRID_MIN
+     at the same rate per NOTCH_PX. Far out (dots under GRID_MIN px apart) the dot grid doubles its spacing until they are GRID_FAR
      px apart (CVR-C-077), so it never turns into a dense dot field. */
-  const WHEEL_STEP = 1.32, CTL_STEP = Math.SQRT2, NOTCH_PX = 50, GRID_MIN = 10;
+  const WHEEL_STEP = 1.32, CTL_STEP = Math.SQRT2, NOTCH_PX = 50, GRID_MIN = 5, GRID_FAR = 8;
   let hover = null;                       // the board under the pointer: Space + wheel works without focusing it
   const boards = new Set();
   let space = false;                      // Space is held (one keyboard: module-wide)
@@ -91,7 +91,8 @@
   /* ------------------------------------------------ viewport */
   function paintGrid(c) {
     const w = c.wrapperEl; let s = GRID * c.zoom;
-    while (s > 0 && s < GRID_MIN) s *= 2;   // CVR-C-077: coarser far out (4 px at 20 % -> 16 px)
+    // CVR-C-077: 20 x zoom down to 25 %; below that (dots under GRID_MIN px) every 2nd, 4th... dot, GRID_FAR..2 x GRID_FAR px apart
+    if (s > 0 && s < GRID_MIN) while (s < GRID_FAR) s *= 2;
     w.style.backgroundSize = s + "px " + s + "px";
     w.style.backgroundPosition = c.tx + "px " + c.ty + "px";
   }
