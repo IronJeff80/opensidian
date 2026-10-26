@@ -164,9 +164,11 @@
     else later(c);
     let t = " [cvperf:vis=" + s.vis + "|total=" + c.nodes.size + "|eupd=" + s.eupd + "|emin=" + s.emin + "|emax=" + s.emax + "|moves=" + s.moves + "|evis=" + s.evis + "]";
     // goal cvf-zoom: [cvlod:<id>|lod=0|1(|lab=x,y,w,h for a group)] per painted card (at most 16), [cvpdrag:<id>@x,y,w,h]
+    // [cvlod:] only below BIG: its rect reads force a synchronous layout on every census, which on a
+    // big board lands inside the open/pan window (cvperf CV-168)
     const R = e => { const r = e.getBoundingClientRect(); return [r.x, r.y, r.width, r.height].map(Math.round).join(","); };
     const L = c.wrapperEl && c.wrapperEl.classList.contains("cvp-lod") ? 1 : 0;
-    let k = 0;
+    let k = c.nodes.size >= BIG ? 16 : 0;
     for (const n of c.nodes.values()) {
       if (k >= 16) break;
       const el = n.containerEl; if (!el || !el.isConnected || !el.getClientRects().length) continue;
