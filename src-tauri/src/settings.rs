@@ -408,7 +408,7 @@ fn vcfg_rel(file: &str) -> Result<&'static str, String> {
 fn vcfg_key_ok(file: &str, k: &str, v: &serde_json::Value) -> Result<(), String> {
     let one_of = |set: &[&str]| v.as_str().is_some_and(|s| set.contains(&s));
     let ok = match (file, k) {
-        ("canvas", "newFileLocation") => one_of(&["same", "root", "folder"]),
+        ("canvas", "newFileLocation") => one_of(&["same", "current", "root", "folder"]),
         ("canvas", "newFileFolderPath") => v.as_str().is_some_and(|s| s.len() <= 1024 && !s.contains('\0') && !s.split('/').any(|c| c == "..")),
         ("canvas", "defaultWheelBehavior") => one_of(&["pan", "zoom"]),
         ("canvas", "defaultModDragBehavior") => one_of(&["menu", "text", "note", "media", "web", "group"]),
@@ -719,5 +719,16 @@ mod tests {
         assert_eq!(std::fs::read_to_string(root.join(CORE_REL)).unwrap(), "[\"canvas\"]");
         assert_eq!(vcfg_in(&root, &req("core-plugins", None)).unwrap(), serde_json::json!({}));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vcfg_canvas_location_values() {
+        let s = |x: &str| serde_json::json!(x);
+        for ok in ["current", "same", "root", "folder"] {
+            assert!(vcfg_key_ok("canvas", "newFileLocation", &s(ok)).is_ok(), "{ok}");
+        }
+        assert!(vcfg_key_ok("canvas", "newFileLocation", &s("elsewhere")).is_err());
+        assert!(vcfg_key_ok("canvas", "newFileFolderPath", &s("Projects/Deep")).is_ok());
+        assert!(vcfg_key_ok("canvas", "newFileFolderPath", &s("../x")).is_err());
     }
 }
