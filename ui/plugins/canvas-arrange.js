@@ -210,6 +210,11 @@
     }
     const r = at.getBoundingClientRect();
     m.showAtPosition({ x: Math.round(r.left), y: Math.round(r.bottom + 4) });
+    // Escape closes the menu and only the menu: the board's own keydown would take it first
+    // (it clears the selection and stops it), so catch it on the way down while the menu is up
+    const esc = e => { if (e.key === "Escape" && m.dom) { e.preventDefault(); e.stopPropagation(); m.hide(); } };
+    document.addEventListener("keydown", esc, true);
+    m.onHide(() => document.removeEventListener("keydown", esc, true));
   }
   const reach = e => {
     if (!app) app = (window.__osPluginHost && window.__osPluginHost.app) || null;
