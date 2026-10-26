@@ -389,6 +389,7 @@
         this.wire();
         this.applyTransform();
         if (window.CanvasNav) window.CanvasNav.attach(this, X, changed, NODE_CLASS);   // goal cv-nav: pan/zoom keys, controls, grid, settings (canvas-nav.js)
+        Object.defineProperty(this, "NODE_CLASS", { value: Object.freeze(Object.assign({}, NODE_CLASS)) });   // goal cvf-drop (coordinator grant): read-only, for a pasted link card
         // a view opens hidden (0x0): fit the board the first time it has a size
         this.fitted = false;
         if (typeof ResizeObserver === "function") {

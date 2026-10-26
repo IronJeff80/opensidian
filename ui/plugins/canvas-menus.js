@@ -588,6 +588,7 @@
         const r = c.wrapperEl.getBoundingClientRect(), br = bar.getBoundingClientRect();
         let pos, center = true;
         if (d.moved) {
+          center = !(window.CanvasDrop && window.CanvasDrop.TOPLEFT);   // goal cvf-drop (coordinator grant): stock top-left at the drop point behind CV_DROP_TOPLEFT
           const inBoard = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
           const onBar = e.clientX >= br.left && e.clientX <= br.right && e.clientY >= br.top && e.clientY <= br.bottom;
           if (!inBoard || onBar) return;

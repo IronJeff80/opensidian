@@ -34,6 +34,10 @@
 (function () {
   "use strict";
   const CAP = 50;                       // files per folder drop (help: "Add cards from folders")
+  // stock lays a dropped card with its TOP-LEFT on the drop point; develop centres it, and 961-cvjourney (J1, J3..J6)
+  // asserts the centring. Coordinator ruling 2 (2026-10-26 03:15Z): stock placement waits behind this flag until the
+  // operator lets cvjourney change. false = every explorer / toolbar drop is centred on the point (first card of a row).
+  const CV_DROP_TOPLEFT = false;
   const IMG = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"]);
   const HOST = window.__osPluginHost;   // captured at load: the loader seals the host before plugins run
   const app = HOST && HOST.app ? HOST.app : null, X = HOST && HOST.api ? HOST.api : null;
@@ -226,6 +230,8 @@
     place2(c, d, c.toCanvas(e.clientX, e.clientY));
     return true;
   }
+  // the point the first card's top-left goes to: the drop point itself (stock), or the point less half the card (flag off)
+  function anchor(p, sz) { return CV_DROP_TOPLEFT ? p : { x: p.x - sz.width / 2, y: p.y - sz.height / 2 }; }
   async function place2(c, d, p) {
     if (d.kind === "folder") {
       if (d.paths.length > CAP) {
@@ -233,14 +239,14 @@
         say(c, "Canvas: " + d.name + " has " + d.paths.length + " files, over the limit of " + CAP + " files per folder drop");
         return ping(c);
       }
-      const ns = placeRow(c, d.paths, p);
+      const ns = placeRow(c, d.paths, anchor(p, { width: CARD, height: CARD }));
       last.fold = d.name + "|n=" + ns.length + "|cap=" + CAP;
       return ping(c);
     }
-    if (d.kind === "files") { placeRow(c, d.paths, p); last.ex = "files|n=" + d.paths.length; return ping(c); }
+    if (d.kind === "files") { placeRow(c, d.paths, anchor(p, { width: CARD, height: CARD })); last.ex = "files|n=" + d.paths.length; return ping(c); }
     const size = await oneSize(d.paths[0]);
     if (!c.wrapperEl.isConnected || ro(c)) return;
-    placeRow(c, d.paths, p, size);
+    placeRow(c, d.paths, anchor(p, size), size);
     last.ex = "file|" + size.width + "x" + size.height;
     ping(c);
   }
@@ -321,10 +327,8 @@
   function internalPaste(c) {
     try { return !!(window.CanvasHistory && window.CanvasHistory.paste(c)); } catch (_) { return false; }
   }
-  function linkClass(c) {   // canvas.js keeps its node classes private; a link card already on any board names it
-    if (c && c.LinkNode) return c.LinkNode;
-    for (const v of boards()) for (const n of v.canvas.nodes.values()) if (n.data && n.data.type === "link") return n.constructor;
-    return null;
+  function linkClass(c) {   // canvas.js exposes its node classes read-only on the board (coordinator grant 2026-10-26)
+    return (c && c.NODE_CLASS && c.NODE_CLASS.link) || null;
   }
   function textPaste(c, tx) {
     if (copied != null && (tx === copied || tx.trim() === copied)) { last.paste += "|internal"; internalPaste(c); return ping(c); }
@@ -546,6 +550,6 @@
     return t;
   }
 
-  const api = { claim, attach, census, CAP, drop, pasteKey, mirror };
+  const api = { claim, attach, census, CAP, drop, pasteKey, mirror, TOPLEFT: CV_DROP_TOPLEFT };
   Object.defineProperty(window, "CanvasDrop", { configurable: true, enumerable: false, writable: false, value: Object.freeze(api) });
 })();
