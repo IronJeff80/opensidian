@@ -782,6 +782,7 @@
             const c = this.canvas;
             window.__cvSL("v" + this._dv + ":mo:hid=" + (this.containerEl.hidden ? 1 : 0) + ":sh=" + (c && c._shown ? 1 : 0));   // DIAG-STOCKFLIP
             if (c && this.containerEl.hidden && c._shown) { c._shown = false; this.leave().catch(e => console.error("[canvas] save on leave:", e)); }
+            else if (c && !this.containerEl.hidden) this.markShown();
           });
           this._mo.observe(this.containerEl, { attributes: true, attributeFilter: ["hidden"] });
         }
@@ -861,7 +862,10 @@
         if (!p || p === this.path) return;
         await this.flush(true);
         await this.loadPath(p, true);
-        // shown: the board is on screen once it has a size, whether or not a resize notice reported it
+        this.markShown();
+      }
+      // shown: the board is on screen once it has a size, whether or not a resize notice reported it
+      markShown() {
         requestAnimationFrame(() => { const c = this.canvas, w = c && c.wrapperEl; if (!w) return; const r = w.getBoundingClientRect();
           window.__cvSL("v" + this._dv + ":raf:" + Math.round(r.width) + "x" + Math.round(r.height) + ":sh=" + (c._shown ? 1 : 0));   // DIAG-STOCKFLIP
           if (r.width && r.height && !this.containerEl.hidden) c._shown = true; });
