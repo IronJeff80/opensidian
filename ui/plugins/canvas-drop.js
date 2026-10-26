@@ -117,6 +117,7 @@
   const AUD = new Set(["mp3", "wav", "m4a", "ogg", "3gp", "flac"]);
   const VID = new Set(["mp4", "webm", "ogv", "mov", "mkv"]);
   const PITCH = 445, CARD = 400, AUDIO_H = 42;
+  const MP4_SCAN = 1 << 20, MP4_BOXES = 64;   // video header walk: first 1 MB, at most 64 boxes (ruling 5)
   const mediaUrl = p => "opensidian-img://localhost/" + String(p).split("/").map(encodeURIComponent).join("/");
   function payload() {
     const dm = app && app.dragManager, d = dm && dm.draggable;
@@ -163,23 +164,35 @@
     try { b = await adapterBytes(p); } catch (e) { vdiag += "|tkhd:read-" + String(e && e.message || e).slice(0, 40); return null; }
     if (!b) { vdiag += "|tkhd:nofile"; return null; }
     if (!(b instanceof ArrayBuffer) && b.buffer instanceof ArrayBuffer) b = b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
-    const v = new DataView(b), n = b.byteLength;
-    vdiag += "|tkhd:n=" + n;
+    if (!(b instanceof ArrayBuffer)) { vdiag += "|tkhd:notbytes"; return null; }
+    // untrusted input (coordinator ruling 5): only the first MP4_SCAN bytes and MP4_BOXES boxes are looked at, every box
+    // size and offset is checked against the scanned length before it is read, anything malformed -> null (4:3 card)
+    const n = Math.min(b.byteLength, MP4_SCAN), v = new DataView(b, 0, n);
+    vdiag += "|tkhd:n=" + b.byteLength;
+    let boxes = 0;
     const walk = (s, e, depth) => {
       for (let o = s; o + 8 <= e;) {
+        if (++boxes > MP4_BOXES) return null;
         let sz = v.getUint32(o), hd = 8;
         const ty = String.fromCharCode(v.getUint8(o + 4), v.getUint8(o + 5), v.getUint8(o + 6), v.getUint8(o + 7));
-        if (sz === 1 && o + 16 <= e) { sz = v.getUint32(o + 8) * 4294967296 + v.getUint32(o + 12); hd = 16; } else if (sz === 0) sz = e - o;
-        if (sz < hd || o + sz > e) return null;
+        if (sz === 1) { if (o + 16 > e) return null; sz = v.getUint32(o + 8) * 4294967296 + v.getUint32(o + 12); hd = 16; }
+        else if (sz === 0) sz = e - o;
+        if (!(sz >= hd) || o + sz > e) return null;
         if (ty === "tkhd") {
+          if (o + hd + 1 > o + sz) return null;
           const ver = v.getUint8(o + hd), wo = o + hd + (ver === 1 ? 88 : 76);
-          if (wo + 8 <= o + sz) { const w = v.getUint32(wo) / 65536, h = v.getUint32(wo + 4) / 65536; if (w > 0 && h > 0) return { w, h }; }
+          if (wo + 8 <= o + sz) {
+            const w = v.getUint32(wo) / 65536, h = v.getUint32(wo + 4) / 65536;
+            if (w >= 1 && h >= 1 && w <= 16384 && h <= 16384) return { w, h };
+          }
         } else if (depth < 4 && (ty === "moov" || ty === "trak")) { const r = walk(o + hd, o + sz, depth + 1); if (r) return r; }
         o += sz;
       }
       return null;
     };
-    const r = walk(0, n, 0), top = [];
+    let r = null;
+    try { r = walk(0, n, 0); } catch (e) { vdiag += "|tkhd:bad"; r = null; }
+    const top = [];
     for (let o = 0, k = 0; o + 8 <= n && k < 6; k++) { const sz = v.getUint32(o); top.push(String.fromCharCode(v.getUint8(o + 4), v.getUint8(o + 5), v.getUint8(o + 6), v.getUint8(o + 7)) + sz); if (sz < 8) break; o += sz; }
     vdiag += r ? "|tkhd=" + r.w + "x" + r.h : "|tkhd:none:" + top.join(",");
     return r;
