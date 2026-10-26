@@ -32,6 +32,8 @@
   /* text -> the document {nodes:[], edges:[], ...unknown}, or throws
      CanvasFormatError naming the first violation. An EMPTY (0-byte) file is an empty canvas with no
      "nodes"/"edges" keys — a new canvas is created that way; an all-space file is not JSON and is refused. */
+  const DG = window.__cvdg = window.__cvdg || []; const dgT = () => performance.now(); const dg = (k, t0) => { DG.push(k + ":" + Math.round(performance.now() - t0)); };
+  window.addEventListener("pointerdown", () => { if (DG.length < 40) DG.push("pd@" + Math.round(performance.now())); }, true);
   function parseCanvas(text) {
     if (typeof text !== "string") throw new CanvasFormatError("canvas text is not a string");
     let doc;
@@ -42,8 +44,10 @@
     const absent = ["nodes", "edges"].filter(k => !(k in doc));
     for (const k of absent) doc[k] = [];
     if (absent.length) Object.defineProperty(doc, ABSENT, { value: absent, configurable: true });
+    const tk0 = dgT();
     for (const n of doc.nodes) tailKeys(n, NODE_TAIL);
     for (const e of doc.edges) tailKeys(e, EDGE_TAIL);
+    dg("tail", tk0);
     return doc;
   }
 
@@ -437,8 +441,8 @@
         if (typeof ResizeObserver === "function") {
           // shown -> hidden (another tab took the pane) is LEAVING the board: it is written then (CVR-A-004/040/055)
           this._shown = false;
-          this._ro = new ResizeObserver(() => {
-            const r = this.wrapperEl.getBoundingClientRect();
+          this._ro = new ResizeObserver(() => { const ro0 = dgT();
+            const r = this.wrapperEl.getBoundingClientRect(); dg("ro", ro0);
             if (r.width && r.height) this._shown = true;
             else if (this._shown) { this._shown = false; if (this.view && this.view.leave) this.view.leave().catch(e => console.error("[canvas] save on leave:", e)); }
             if (!this.fitted && r.width && r.height && this.nodes.size) { this.fitted = true; this.zoomToFit(); }
@@ -776,11 +780,11 @@
         /* a board tab hidden by another tab is LEAVING the board as much as a 0x0 resize is: the container's hidden
            flag is watched too, so the leave write does not wait on a resize notice that may never come (CVR-A-004/055) */
         if (typeof MutationObserver === "function") {
-          this._mo = new MutationObserver(() => {
+          this._mo = new MutationObserver(() => { const mo0 = dgT(); try {
             const c = this.canvas;
             if (c && this.containerEl.hidden && c._shown) { c._shown = false; this.leave().catch(e => console.error("[canvas] save on leave:", e)); }
             else if (c && !this.containerEl.hidden) this.markShown();
-          });
+          } finally { dg("mo", mo0); } });
           this._mo.observe(this.containerEl, { attributes: true, attributeFilter: ["hidden"] });
         }
         this.errorEl = null;
@@ -857,14 +861,17 @@
         const p = state ? pathOf(state.file) : "";
         if (p && state && typeof state === "object") { const k = {}; for (const key of Object.keys(state)) if (key !== "file") k[key] = state[key]; this.kept = JSON.parse(JSON.stringify(k)); }
         if (!p || p === this.path) return;
+        const st0 = dgT(); DG.push("set@" + Math.round(st0));
         await this.flush(true);
+        const lp0 = dgT();
         await this.loadPath(p, true);
+        dg("loadpath", lp0);
         this.markShown();
       }
       // shown: the board is on screen once it has a size, whether or not a resize notice reported it. Checked now and
       // again on a timer, not on an animation frame: a frame may never come while a native menu holds the window
       markShown() {
-        const chk = tag => { const c = this.canvas, w = c && c.wrapperEl; if (!w) return; const r = w.getBoundingClientRect();
+        const chk = tag => { const c = this.canvas, w = c && c.wrapperEl; if (!w) return; const g0 = dgT(); const r = w.getBoundingClientRect(); dg("chk" + tag, g0);
           if (r.width && r.height && !this.containerEl.hidden) c._shown = true; };
         chk("now"); setTimeout(() => chk("tmo"), 50);
       }
@@ -881,7 +888,7 @@
         let text, rerr = null, doc = null, perr = null;
         try { text = await io("read", p); await up; } catch (e) { rerr = e; }
         if (seq !== this._loadSeq) return;
-        if (!rerr) try { doc = parseCanvas(text); } catch (e) { perr = e; }
+        const pz0 = dgT(); if (!rerr) try { doc = parseCanvas(text); } catch (e) { perr = e; } dg("parse", pz0); if (0) try { } catch (e) { perr = e; }
         if (perr && refuse && this.refuseOpen(p, perr)) return;
         this.path = p; this.file = vaultFile(p) || { path: p, name: p.split("/").pop(), basename: baseName(p), extension: "canvas" };
         this.lastText = null; this.dirty = false; this.edited = false; this.paintHeader();   // cvf-create CVR-A-018
@@ -893,10 +900,10 @@
           return;
         }
         this.lastText = text;
-        this.canvas.importData(doc);
+        const im0 = dgT(); this.canvas.importData(doc); dg("import", im0);
         this.canvas.updateHint();
         this.canvas.fitted = false;
-        requestAnimationFrame(() => { const c = this.canvas; if (this.path === p && c && c.wrapperEl.getBoundingClientRect().width) { c.fitted = true; c.zoomToFit(); } changed(); });
+        const ld1 = dgT(); requestAnimationFrame(() => { dg("rafwait", ld1); const rf0 = dgT(); const c = this.canvas; const gb0 = dgT(); const gbw = c && c.wrapperEl.getBoundingClientRect().width; dg("rafgbr", gb0); if (this.path === p && c && gbw) { c.fitted = true; c.zoomToFit(); } changed(); dg("raf", rf0); });
         try { if (this.leaf && this.leaf.updateHeader) this.leaf.updateHeader(); } catch (_) {}
         changed();
       }

@@ -164,7 +164,7 @@
     const s = S(c);
     if (s.nN < 0 && !s.total) cull(c);
     else later(c);
-    let t = " [cvperf:vis=" + s.vis + "|total=" + c.nodes.size + "|eupd=" + s.eupd + "|emin=" + s.emin + "|emax=" + s.emax + "|moves=" + s.moves + "|evis=" + s.evis + "]";
+    let t = " [cvperf:vis=" + s.vis + "|total=" + c.nodes.size + "|eupd=" + s.eupd + "|emin=" + s.emin + "|emax=" + s.emax + "|moves=" + s.moves + "|evis=" + s.evis + "|dg=" + (window.__cvdg || []).slice(0, 40).join(",") + "]";
     // goal cvf-zoom: [cvlod:<id>|lod=0|1(|lab=x,y,w,h for a group)] per painted card (at most 16), [cvpdrag:<id>@x,y,w,h]
     // [cvlod:] only below BIG: its rect reads force a synchronous layout on every census, which on a
     // big board lands inside the open/pan window (cvperf CV-168)
