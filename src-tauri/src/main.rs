@@ -381,6 +381,156 @@ fn pct_encode(s: &str) -> String {
     out
 }
 
+/* ---- cvf-mediasrv: canvas audio/video bytes over IPC --------------------
+   WebKitGTK's GStreamer player reads only http(s) and blob: (no URI handler
+   for a custom scheme), so a canvas audio/video card assembles a Blob from
+   bounded `media_read` slices. The path comes from a synced .canvas, so the
+   file is OPENED by an openat walk from the vault dir fd with O_NOFOLLOW at
+   every component (a symlinked directory is refused even when it points back
+   inside the vault), and the type comes from OUR list. */
+
+/// ext -> Content-Type. Anything not listed is refused.
+const MEDIA_TYPES: [(&str, &str); 12] = [
+    ("mp3", "audio/mpeg"),
+    ("m4a", "audio/mp4"),
+    ("ogg", "audio/ogg"),
+    ("oga", "audio/ogg"),
+    ("opus", "audio/ogg"),
+    ("wav", "audio/wav"),
+    ("flac", "audio/flac"),
+    ("webm", "video/webm"),
+    ("mp4", "video/mp4"),
+    ("m4v", "video/mp4"),
+    ("mov", "video/quicktime"),
+    ("ogv", "video/ogg"),
+];
+
+/// at most this many bytes per `media_read` slice
+const MEDIA_CHUNK: u64 = 4 * 1024 * 1024;
+
+/// a canvas audio/video card's file larger than this is not loaded (the Blob
+/// lives in memory); the card shows its "cannot play" state instead
+const MEDIA_BLOB_MAX: u64 = 256 * 1024 * 1024;
+
+fn media_mime(ext: &str) -> Option<&'static str> {
+    let ext = ext.to_ascii_lowercase();
+    MEDIA_TYPES.iter().find(|(e, _)| *e == ext).map(|(_, m)| *m)
+}
+
+/// open `rel` read-only by walking from the canonical vault root, one
+/// openat(O_NOFOLLOW) per component, and check the OPENED fd is a regular
+/// file (O_NONBLOCK so a FIFO cannot hang the open). No path is re-resolved
+/// between the check and the read.
+fn media_open(root: &Path, rel: &Path) -> Option<fs::File> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    let open_at = |dfd: libc::c_int, name: &std::ffi::OsStr, flags: libc::c_int| -> Option<OwnedFd> {
+        let c = CString::new(name.as_bytes()).ok()?;
+        // SAFETY: valid dir fd + NUL-terminated name; the fd is owned below
+        let fd = unsafe { libc::openat(dfd, c.as_ptr(), flags | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+        (fd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(fd) })
+    };
+    let croot = root.canonicalize().ok()?;
+    let c = CString::new(croot.as_os_str().as_bytes()).ok()?;
+    // SAFETY: NUL-terminated path; the fd is owned below
+    let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return None;
+    }
+    let mut dir = unsafe { OwnedFd::from_raw_fd(fd) };
+    let comps: Vec<&std::ffi::OsStr> = rel
+        .components()
+        .map(|c| match c {
+            Component::Normal(s) => Some(s),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    let (leaf, dirs) = comps.split_last()?;
+    for d in dirs {
+        dir = open_at(dir.as_raw_fd(), d, libc::O_RDONLY | libc::O_DIRECTORY)?;
+    }
+    let f = fs::File::from(open_at(dir.as_raw_fd(), leaf, libc::O_RDONLY | libc::O_NONBLOCK)?);
+    f.metadata().ok()?.is_file().then_some(f)
+}
+
+/// cvf-mediasrv (ruling 1.2): rename ONE media file inside the vault — the
+/// canvas card menu's "Rename" in a vault whose plugin file access is off
+/// (restricted mode answers plugin_vfs rename with EPERM). Narrow on purpose:
+/// both names pass the MEDIA_TYPES (+ served IMG_TYPES: the image card has the
+/// same menu, 963-cvfmenus renames a png) whitelist with the SAME extension
+/// (case-insensitive), `safe_rel` refuses `..`, absolute and hidden paths, NUL
+/// is refused, and `vaultfs::move_file` walks both parents no-follow from the
+/// vault dir fd, refuses a non-regular (symlink) source and claims the target
+/// O_EXCL (no overwrite). It opens no other plugin_vfs operation.
+fn media_rename_in(root: &Path, from: &str, to: &str) -> Result<(), String> {
+    let rel = |s: &str| -> Result<(PathBuf, String), String> {
+        if s.contains('\0') {
+            return Err("invalid name".into());
+        }
+        let r = safe_rel(s).ok_or("invalid name")?;
+        let ext = r.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).ok_or("not a media file")?;
+        if media_mime(&ext).is_none() && !IMG_TYPES.iter().any(|(e, _)| *e == ext) {
+            return Err("not a media file".into());
+        }
+        Ok((r, ext))
+    };
+    let ((fr, fe), (tr, te)) = (rel(from)?, rel(to)?);
+    if fe != te {
+        return Err("the extension cannot change".into());
+    }
+    if fr == tr {
+        return Ok(());
+    }
+    vaultfs::Vault::open(root).and_then(|vfs| vfs.move_file(&fr, &tr)).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists { "target exists".to_string() } else { e.to_string() }
+    })
+}
+
+#[tauri::command]
+fn media_rename(v: State<Vault>, from: String, to: String) -> Result<(), String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    media_rename_in(&root, &from, &to)
+}
+
+/// cvf-mediasrv (ruling 2): one bounded slice of a canvas audio/video file.
+/// NUL, `safe_rel` (refuses `..`, absolute, hidden), the MEDIA_TYPES whitelist
+/// (no images), the no-follow regular-file open, then the size cap: a file
+/// over MEDIA_BLOB_MAX is refused BEFORE any byte is read. An offset at EOF is
+/// an empty slice, past EOF an error. Works in restricted mode — it opens no
+/// plugin_vfs operation. Ok((file size, at most MEDIA_CHUNK bytes from `offset`)).
+fn media_read_in(root: &Path, path: &str, offset: u64) -> Result<(u64, Vec<u8>), String> {
+    use std::io::{Read, Seek, SeekFrom};
+    if path.contains('\0') {
+        return Err("invalid name".into());
+    }
+    let rel = safe_rel(path).ok_or("invalid name")?;
+    rel.extension().and_then(|e| e.to_str()).and_then(media_mime).ok_or("not a media file")?;
+    let mut f = media_open(root, &rel).ok_or("not found")?;
+    let size = f.metadata().map_err(|e| e.to_string())?.len();
+    if size > MEDIA_BLOB_MAX {
+        return Err("too large".into());
+    }
+    if offset > size {
+        return Err("offset past end".into());
+    }
+    f.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
+    let mut body = Vec::with_capacity(MEDIA_CHUNK.min(size - offset) as usize);
+    f.take(MEDIA_CHUNK).read_to_end(&mut body).map_err(|e| e.to_string())?;
+    Ok((size, body))
+}
+
+/// raw IPC body: 8-byte big-endian file size, then the slice (an ArrayBuffer in JS)
+#[tauri::command]
+fn media_read(v: State<Vault>, path: String, offset: u64) -> Result<tauri::ipc::Response, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    let (size, body) = media_read_in(&root, &path, offset)?;
+    let mut out = Vec::with_capacity(8 + body.len());
+    out.extend_from_slice(&size.to_be_bytes());
+    out.extend_from_slice(&body);
+    Ok(tauri::ipc::Response::new(out))
+}
+
 /// R29.1/R29.2: the html for ONE image embed, from the index's image list.
 ///
 /// Resolution goes through `index::resolve` — the SAME resolver `[[note]]`
@@ -6034,7 +6184,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, canvas_io, canvas_attach, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
             read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
@@ -9003,6 +9153,213 @@ mod tests {
         let _ = fs::remove_dir_all(&outside);
     }
 
+    /* cvf-mediasrv: a vault with media files and an outside dir. */
+    fn media_vault(tag: &str) -> (PathBuf, PathBuf) {
+        let root = tmp_vault(tag);
+        let outside = std::env::temp_dir().join(format!("opensidian-{tag}-out-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.mp3"), b"OUTSIDE").unwrap();
+        fs::write(root.join("tone.mp3"), b"0123456789").unwrap();
+        fs::write(root.join("sub/clip.MP4"), b"vid").unwrap();
+        (root, outside)
+    }
+
+    /* cvf-mediasrv ruling 1.2: media_rename */
+    #[test]
+    fn media_rename_happy_path_moves_the_file() {
+        let (root, outside) = media_vault("mren-ok");
+        assert_eq!(media_rename_in(&root, "tone.mp3", "song.mp3"), Ok(()));
+        assert!(!root.join("tone.mp3").exists());
+        assert_eq!(fs::read(root.join("song.mp3")).unwrap(), b"0123456789");
+        // case of the extension may differ, a vault folder is fine
+        assert_eq!(media_rename_in(&root, "sub/clip.MP4", "sub/new clip.mp4"), Ok(()));
+        assert!(root.join("sub/new clip.mp4").is_file());
+        // the image card has the same menu (963-cvfmenus renames media/pic.png)
+        fs::write(root.join("sub/pic.png"), b"png").unwrap();
+        assert_eq!(media_rename_in(&root, "sub/pic.png", "sub/pic2.png"), Ok(()));
+        assert!(root.join("sub/pic2.png").is_file() && !root.join("sub/pic.png").exists());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn media_rename_refuses_an_extension_change_or_non_media() {
+        let (root, outside) = media_vault("mren-ext");
+        fs::write(root.join("n.md"), b"#").unwrap();
+        fs::write(root.join("v.svg"), b"<svg/>").unwrap();
+        fs::write(root.join("pic.png"), b"png").unwrap();
+        for (a, b) in [("tone.mp3", "tone.wav"), ("tone.mp3", "tone.md"), ("tone.mp3", "tone"), ("n.md", "n.mp3"), ("n.md", "m.md"), ("pic.png", "pic.jpg"), ("v.svg", "w.svg")] {
+            assert!(media_rename_in(&root, a, b).is_err(), "{a} -> {b}");
+        }
+        assert!(root.join("tone.mp3").is_file() && root.join("n.md").is_file());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn media_rename_refuses_overwrite() {
+        let (root, outside) = media_vault("mren-ow");
+        fs::write(root.join("other.mp3"), b"keep").unwrap();
+        assert_eq!(media_rename_in(&root, "tone.mp3", "other.mp3"), Err("target exists".to_string()));
+        assert_eq!(fs::read(root.join("other.mp3")).unwrap(), b"keep");
+        assert!(root.join("tone.mp3").is_file());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn media_rename_refuses_traversal_absolute_nul_hidden() {
+        let (root, outside) = media_vault("mren-trav");
+        let o = outside.file_name().unwrap().to_string_lossy().to_string();
+        for (a, b) in [
+            ("tone.mp3".to_string(), format!("../{o}/x.mp3")),
+            (format!("../{o}/secret.mp3"), "stolen.mp3".to_string()),
+            ("tone.mp3".to_string(), format!("{}/x.mp3", outside.display())),
+            ("tone.mp3".to_string(), "sub/../../x.mp3".to_string()),
+            ("tone.mp3".to_string(), "a\0.mp3".to_string()),
+            ("tone.mp3".to_string(), ".obsidian/x.mp3".to_string()),
+        ] {
+            assert!(media_rename_in(&root, &a, &b).is_err(), "{a:?} -> {b:?}");
+        }
+        assert!(root.join("tone.mp3").is_file() && outside.join("secret.mp3").is_file());
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 1);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn media_rename_refuses_symlinks() {
+        use std::os::unix::fs::symlink;
+        let (root, outside) = media_vault("mren-link");
+        symlink("/etc/hostname", root.join("evil.mp3")).unwrap();
+        symlink(&outside, root.join("outdir")).unwrap();
+        // a symlinked source is not moved; a symlinked target dir is not walked
+        assert!(media_rename_in(&root, "evil.mp3", "fine.mp3").is_err());
+        assert!(fs::symlink_metadata(root.join("evil.mp3")).unwrap().is_symlink());
+        assert!(media_rename_in(&root, "tone.mp3", "outdir/x.mp3").is_err());
+        assert!(media_rename_in(&root, "outdir/secret.mp3", "s.mp3").is_err());
+        assert!(!outside.join("x.mp3").exists() && outside.join("secret.mp3").is_file() && root.join("tone.mp3").is_file());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    /* cvf-mediasrv ruling 2: media_read */
+    #[test]
+    fn media_read_returns_bounded_slices_with_the_size() {
+        let (root, outside) = media_vault("mread-ok");
+        assert_eq!(media_read_in(&root, "tone.mp3", 0).unwrap(), (10, b"0123456789".to_vec()));
+        assert_eq!(media_read_in(&root, "tone.mp3", 7).unwrap(), (10, b"789".to_vec()));
+        assert_eq!(media_read_in(&root, "sub/clip.MP4", 0).unwrap().1, b"vid");
+        fs::write(root.join("my song.mp3"), b"x").unwrap();
+        assert_eq!(media_read_in(&root, "my song.mp3", 0).unwrap(), (1, b"x".to_vec()));
+        // a big file comes back one MEDIA_CHUNK at a time (sparse)
+        fs::File::create(root.join("big.webm")).unwrap().set_len(MEDIA_CHUNK + 5).unwrap();
+        let (n, b) = media_read_in(&root, "big.webm", 0).unwrap();
+        assert_eq!((n, b.len() as u64), (MEDIA_CHUNK + 5, MEDIA_CHUNK));
+        assert_eq!(media_read_in(&root, "big.webm", MEDIA_CHUNK).unwrap().1.len(), 5);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn media_read_offset_at_or_past_eof_is_empty_or_err_never_a_panic() {
+        let (root, outside) = media_vault("mread-eof");
+        assert_eq!(media_read_in(&root, "tone.mp3", 10).unwrap(), (10, Vec::new()));
+        for off in [11, 4096, MEDIA_CHUNK, u64::MAX / 2, u64::MAX] {
+            assert!(media_read_in(&root, "tone.mp3", off).is_err(), "offset {off}");
+        }
+        fs::write(root.join("empty.mp3"), b"").unwrap();
+        assert_eq!(media_read_in(&root, "empty.mp3", 0).unwrap(), (0, Vec::new()));
+        assert!(media_read_in(&root, "empty.mp3", 1).is_err());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn media_read_enforces_the_256_mib_cap() {
+        let (root, outside) = media_vault("mread-cap");
+        assert_eq!(MEDIA_BLOB_MAX, 256 * 1024 * 1024);
+        // exactly the cap is read; one byte over is refused at every offset (sparse files)
+        fs::File::create(root.join("edge.mp4")).unwrap().set_len(MEDIA_BLOB_MAX).unwrap();
+        assert_eq!(media_read_in(&root, "edge.mp4", MEDIA_BLOB_MAX - 3).unwrap(), (MEDIA_BLOB_MAX, vec![0; 3]));
+        fs::File::create(root.join("huge.mp4")).unwrap().set_len(MEDIA_BLOB_MAX + 1).unwrap();
+        fs::File::create(root.join("tone300.mp3")).unwrap().set_len(300 * 1024 * 1024).unwrap();
+        for (p, off) in [("huge.mp4", 0), ("huge.mp4", MEDIA_CHUNK), ("tone300.mp3", 0)] {
+            assert_eq!(media_read_in(&root, p, off).unwrap_err(), "too large", "{p}@{off}");
+        }
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn media_read_refuses_non_whitelisted_types() {
+        let (root, outside) = media_vault("mread-ext");
+        for (p, b) in [("note.md", "#"), ("pic.png", "png"), ("a.svg", "<svg/>"), ("a.html", "<script>"), ("a.pdf", "%PDF-"),
+                       ("a.canvas", "{}"), ("mp3", "x"), ("a.mp3.exe", "x"), ("noext", "x")] {
+            fs::write(root.join(p), b).unwrap();
+            assert!(media_read_in(&root, p, 0).is_err(), "{p} was read");
+        }
+        for (e, m) in [("mp3", "audio/mpeg"), ("MP4", "video/mp4"), ("wav", "audio/wav"), ("webm", "video/webm"), ("opus", "audio/ogg")] {
+            assert_eq!(media_mime(e), Some(m));
+        }
+        // a directory or a FIFO named like media is not a regular file (and must not hang)
+        fs::create_dir_all(root.join("dir.mp3")).unwrap();
+        let fifo = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(root.join("pipe.mp3").as_os_str())).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        for p in ["dir.mp3", "pipe.mp3", "sub", "missing.mp3"] {
+            assert!(media_read_in(&root, p, 0).is_err(), "{p} was read");
+        }
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn media_read_refuses_every_symlink_component() {
+        use std::os::unix::fs::symlink;
+        let (root, outside) = media_vault("mread-link");
+        // leaf link out of the vault (the gate's evil.mp3 -> /etc/hostname), leaf link
+        // INSIDE the vault, a dir link out and a dir link pointing back inside
+        symlink("/etc/hostname", root.join("evil.mp3")).unwrap();
+        symlink(outside.join("secret.mp3"), root.join("out.mp3")).unwrap();
+        symlink(root.join("tone.mp3"), root.join("alias.mp3")).unwrap();
+        symlink(root.join("sub"), root.join("sublink")).unwrap();
+        symlink(&outside, root.join("outdir")).unwrap();
+        for p in ["evil.mp3", "out.mp3", "alias.mp3", "sublink/clip.MP4", "outdir/secret.mp3"] {
+            assert!(media_read_in(&root, p, 0).is_err(), "followed a symlink: {p}");
+        }
+        // POSITIVE CONTROL: a vault reached through a symlink still reads
+        let vlink = std::env::temp_dir().join(format!("opensidian-mread-vlink-{}", std::process::id()));
+        let _ = fs::remove_file(&vlink);
+        symlink(&root, &vlink).unwrap();
+        assert_eq!(media_read_in(&vlink, "tone.mp3", 0).unwrap().1, b"0123456789");
+        let _ = fs::remove_file(&vlink);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn media_read_refuses_traversal_absolute_nul_and_hidden() {
+        let (root, outside) = media_vault("mread-trav");
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        fs::write(root.join(".obsidian/x.mp3"), b"h").unwrap();
+        let o = outside.file_name().unwrap().to_string_lossy().to_string();
+        for p in [
+            format!("../{o}/secret.mp3"),
+            format!("sub/../../{o}/secret.mp3"),
+            format!("{}/secret.mp3", outside.display()),
+            "/etc/hostname.mp3".to_string(),
+            "tone.mp3\0".to_string(),
+            "tone.mp3\0.txt".to_string(),
+            ".obsidian/x.mp3".to_string(),
+            "./../tone.mp3".to_string(),
+        ] {
+            assert!(media_read_in(&root, &p, 0).is_err(), "{p:?} was read");
+        }
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
     /// R29 + S1: the CSP is a security boundary, so it is asserted as an EXACT
     /// string. A future widening (`img-src *`, an http origin, a stray
     /// 'unsafe-inline' in script-src) then fails a test instead of shipping
@@ -9017,10 +9374,15 @@ mod tests {
         assert_eq!(
             csp,
             "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
-             img-src 'self' data: opensidian-img:; font-src 'self'; \
+             img-src 'self' data: opensidian-img:; media-src 'self' blob:; font-src 'self'; \
              connect-src ipc: http://ipc.localhost",
             "the CSP changed — if that was deliberate, say why in the commit message"
         );
+        // cvf-mediasrv (option A): audio/video play from a Blob the card builds —
+        // media-src: self + blob: only (the card Blob) — no wildcard, no remote origin, no data:, no scheme
+        let media = csp.split("; ").find(|d| d.starts_with("media-src ")).unwrap();
+        assert_eq!(media, "media-src 'self' blob:");
+        assert!(!media.contains('*') && !media.contains("http") && !media.contains("data:") && !media.contains(IMG_SCHEME), "media-src widened: {media}");
         // R29: the image widening is ONE scheme token, and it is ours
         let img = csp.split("; ").find(|d| d.starts_with("img-src ")).unwrap();
         assert_eq!(img, format!("img-src 'self' data: {IMG_SCHEME}:"));
@@ -9037,7 +9399,8 @@ mod tests {
         for d in csp.split("; ") {
             for tok in d.split_whitespace() {
                 assert_ne!(tok, "'unsafe-eval'", "JS eval re-enabled in {d}");
-                assert!(!tok.starts_with("blob:"), "blob: source in {d}");
+                // cvf-mediasrv: blob: only for media-src (pinned above); never scripts/workers
+                assert!(d.starts_with("media-src ") || !tok.starts_with("blob:"), "blob: source in {d}");
             }
         }
         assert!(!script.contains("unsafe-inline") && !script.contains("data:") && !script.contains('*'), "{script}");
@@ -9053,12 +9416,18 @@ mod tests {
             .unwrap()
             .to_string();
         assert_eq!(csp_by_trust(&base, false), base);
-        assert!(!csp_by_trust(&base, false).split_whitespace().any(|t| t == "'unsafe-eval'" || t.starts_with("blob:")));
+        // restricted: no eval, no blob: in script-src / worker-src (media-src 'self' blob: is the media card Blob, cvf-mediasrv)
+        let sw = |c: &str| c.split("; ").filter(|d| d.starts_with("script-src") || d.starts_with("worker-src")).collect::<Vec<_>>().join(" ");
+        assert!(!csp_by_trust(&base, false).split_whitespace().any(|t| t == "'unsafe-eval'"));
+        assert!(!sw(&csp_by_trust(&base, false)).split_whitespace().any(|t| t.starts_with("blob:")));
+        // trusted widening adds nothing to media-src
+        let ms = |c: &str| c.split("; ").find(|d| d.starts_with("media-src")).map(str::to_owned);
+        assert_eq!(ms(&csp_by_trust(&base, true)), ms(&base));
         let t = csp_by_trust(&base, true);
         assert_eq!(
             t,
             "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval' 'unsafe-eval' blob:; \
-             style-src 'self' 'unsafe-inline'; img-src 'self' data: opensidian-img:; font-src 'self'; \
+             style-src 'self' 'unsafe-inline'; img-src 'self' data: opensidian-img:; media-src 'self' blob:; font-src 'self'; \
              connect-src ipc: http://ipc.localhost 'self'; worker-src 'self' blob:"
         );
         // every directive other than script-src / worker-src / connect-src is byte-identical
