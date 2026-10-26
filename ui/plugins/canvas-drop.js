@@ -9,15 +9,9 @@
    -> main.js. This file registers two document listeners and defines
    window.CanvasDrop; it never edits canvas.js and needs no per-board install.
 
-   A FOLDER from the file explorer (CV-100). The explorer's R24.6 mouse machine
-   (main.js) drags folder rows too; over a plugin view it offers the drop as a
-   dragover/drop whose payload is app.dragManager.draggable = {type: "folder",
-   file: TFolder}. Over a board this file accepts it: one file card per DIRECT
-   child file of the folder (no recursion, subfolders skipped), created at the
-   drop point and laid out by CanvasArrange's grid (no second layout here), all
-   in one synchronous turn -> ONE cv-history step (one undo removes them all).
-   A folder with more than CAP files adds nothing and says so (a notice naming
-   the cap). The new cards end selected.
+   FROM THE FILE EXPLORER (CV-100, goal cvf-drop): a file, a Shift+click selection or a folder (recursively)
+   dropped on a board becomes file cards at the drop point, as stock lays them out — see "everything dragged
+   from the file explorer" below. One synchronous placement -> ONE cv-history step; the new cards end selected.
 
    A FILE from another application (CV-101). A real OS drop reaches the page
    only as main.js's `drop-files` event -> attachDrop(paths, at); "Insert
@@ -43,7 +37,7 @@
   const IMG = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"]);
   const HOST = window.__osPluginHost;   // captured at load: the loader seals the host before plugins run
   const app = HOST && HOST.app ? HOST.app : null, X = HOST && HOST.api ? HOST.api : null;
-  let last = { att: "", fold: "", msg: "", paste: "" };
+  let last = { att: "", fold: "", msg: "", paste: "", ex: "" };
   let ptr = null;                       // {x, y, w}: the last pointer position over a board wrapper
 
   const vis = e => !!e && e.isConnected && e.getClientRects().length > 0;
@@ -98,33 +92,126 @@
     return ns;
   }
 
-  /* ---------------------------------------------- CV-100: a folder from the explorer */
-  function folderOf() {
+  /* ---------------------------------------------- goal cvf-drop: everything dragged from the file explorer
+     The explorer's mouse machine (main.js) offers a drag over a plugin view as dragover/drop whose payload is
+     app.dragManager.draggable: {type:"file", file}, {type:"files", files} (a Shift+click selection) or
+     {type:"folder", file: TFolder}. This file takes all three over a board, in CAPTURE on the document, so the
+     drop is decided here once (canvas-menus' own wrapper handler never sees a drop this file took).
+     Measured on stock 1.13.7 (docs/recon-cv2/A, black-box):
+       one file      -> one card whose TOP-LEFT is the drop point; 400 wide; a note / PDF / anything else 400 high,
+                        an image or a video as high as its aspect makes it (320x200 -> 400x250), audio 42 high
+       a selection   -> one 400x400 card per item, left to right at a 445 pitch (400 + 45), one y, the first at P
+       a folder      -> the same row of 400x400 cards for every file under it, recursively (its own files first,
+                        then each subfolder, by name); never a card for the folder itself
+     New cards go to the front of nodes[] (right after any groups that lead it: a group stays below what is
+     dropped on it) and a group under the drop point is left alone (no auto-grow). One synchronous placement after
+     the media sizes are known = one cv-history step. More than CAP files adds nothing and says so. */
+  const AUD = new Set(["mp3", "wav", "m4a", "ogg", "3gp", "flac"]);
+  const VID = new Set(["mp4", "webm", "ogv", "mov", "mkv"]);
+  const PITCH = 445, CARD = 400, AUDIO_H = 42;
+  const mediaUrl = p => "opensidian-img://localhost/" + String(p).split("/").map(encodeURIComponent).join("/");
+  function payload() {
     const dm = app && app.dragManager, d = dm && dm.draggable;
-    if (!d || d.type !== "folder" || !d.file || !Array.isArray(d.file.children)) return null;
-    return d.file;
+    if (!d) return null;
+    const isFile = f => f && typeof f.path === "string" && !Array.isArray(f.children) && (!X || !X.TFile || f instanceof X.TFile);
+    if (d.type === "file" && isFile(d.file)) return { kind: "file", paths: [d.file.path] };
+    if (d.type === "files" && Array.isArray(d.files)) { const ps = d.files.filter(isFile).map(f => f.path); return ps.length ? { kind: "files", paths: ps } : null; }
+    if (d.type === "folder" && d.file && Array.isArray(d.file.children)) {
+      const out = [], walk = f => {
+        const kids = [...f.children].sort((a, b) => String(a.name || a.path).localeCompare(String(b.name || b.path)));
+        for (const k of kids) if (isFile(k)) out.push(k.path);
+        for (const k of kids) if (k && Array.isArray(k.children)) walk(k);
+      };
+      walk(d.file);
+      return { kind: "folder", paths: out, name: d.file.path || "/" };
+    }
+    return null;
+  }
+  function probe(p, ms) {   // natural size of an image / video in the vault -> {w, h} or null
+    const ext = extOf(p);
+    return new Promise(res => {
+      let t = 0, el = null;
+      const done = v => { clearTimeout(t); if (el) { el.onload = el.onerror = el.onloadedmetadata = null; if (el.tagName === "VIDEO") { el.removeAttribute("src"); try { el.load(); } catch (_) {} } } res(v); };
+      t = setTimeout(() => done(null), ms);
+      if (IMG.has(ext)) {
+        el = new Image();
+        el.onload = () => done(el.naturalWidth > 0 && el.naturalHeight > 0 ? { w: el.naturalWidth, h: el.naturalHeight } : null);
+        el.onerror = () => done(null);
+        el.src = mediaUrl(p);
+      } else if (VID.has(ext)) {
+        el = document.createElement("video"); el.preload = "metadata"; el.muted = true;
+        el.onloadedmetadata = () => done(el.videoWidth > 0 && el.videoHeight > 0 ? { w: el.videoWidth, h: el.videoHeight } : null);
+        el.onerror = () => done(null);
+        el.src = mediaUrl(p);
+      } else done(null);
+    });
+  }
+  async function oneSize(p) {
+    const ext = extOf(p);
+    if (AUD.has(ext)) return { width: CARD, height: AUDIO_H };
+    if (IMG.has(ext) || VID.has(ext)) {
+      const s = await probe(p, 2000);
+      if (s) return { width: CARD, height: Math.max(1, Math.round(CARD * s.h / s.w)) };
+    }
+    return { width: CARD, height: CARD };
+  }
+  // the new nodes move to the front of the board order, behind only the groups that already lead it
+  function toFront(c, ns) {
+    const ids = new Set(ns.map(n => n.id)), all = [...c.nodes].filter(([k]) => !ids.has(k));
+    let g = 0; while (g < all.length && all[g][1].data && all[g][1].data.type === "group") g++;
+    c.nodes.clear();
+    for (const [k, v] of all.slice(0, g)) c.nodes.set(k, v);
+    for (const n of ns) c.nodes.set(n.id, n);
+    for (const [k, v] of all.slice(g)) c.nodes.set(k, v);
+  }
+  function placeRow(c, paths, p, size) {
+    const sz = size || { width: CARD, height: CARD };
+    const ns = paths.map((f, i) => c.createFileNode({ file: f, pos: { x: p.x + i * PITCH, y: p.y }, size: sz, save: false }));
+    toFront(c, ns);
+    c.deselectAll();
+    ns.forEach((n, i) => c.select(n, i > 0));
+    if (typeof c.renderEdges === "function") c.renderEdges();
+    c.requestSave();                    // the step (cv-history commits once per turn)
+    return ns;
+  }
+  // the canvas point under the middle of the board's viewport
+  function viewMid(c) { const r = c.wrapperEl.getBoundingClientRect(); return c.toCanvas(r.left + r.width / 2, r.top + r.height / 2); }
+  // a pasted picture's card size from its own bytes (no URL load: the bytes are not in the vault yet)
+  async function bufSize(type, buf) {
+    try {
+      const bm = await createImageBitmap(new Blob([buf], { type }));
+      const w = bm.width, h = bm.height; if (bm.close) bm.close();
+      if (w > 0 && h > 0) return { width: CARD, height: Math.max(1, Math.round(CARD * h / w)) };
+    } catch (_) {}
+    return { width: CARD, height: CARD };
   }
   function onDragOver(e) {
-    const f = folderOf(); if (!f) return;
+    if (!payload()) return;
     const c = boardAt(e.target); if (!c || ro(c)) return;
     e.preventDefault();
     try { e.dataTransfer.dropEffect = "copy"; } catch (_) {}
   }
-  function onDrop(e) {
-    const f = folderOf(); if (!f) return;
+  async function onDrop(e) {
+    const d = payload(); if (!d) return;
     const c = boardAt(e.target); if (!c || ro(c)) return;
     e.preventDefault(); e.stopPropagation();
-    const files = f.children.filter(x => x && (!X || !X.TFile || x instanceof X.TFile) && typeof x.path === "string" && !Array.isArray(x.children))
-      .map(x => x.path).sort();
-    const name = f.path || "/";
-    if (files.length > CAP) {
-      last.fold = name + "|n=0|cap=" + CAP;
-      say(c, "Canvas: " + name + " has " + files.length + " files, over the limit of " + CAP + " files per folder drop");
-      return;
+    const p = c.toCanvas(e.clientX, e.clientY);
+    if (d.kind === "folder") {
+      if (d.paths.length > CAP) {
+        last.fold = d.name + "|n=0|cap=" + CAP;
+        say(c, "Canvas: " + d.name + " has " + d.paths.length + " files, over the limit of " + CAP + " files per folder drop");
+        return ping(c);
+      }
+      const ns = placeRow(c, d.paths, p);
+      last.fold = d.name + "|n=" + ns.length + "|cap=" + CAP;
+      return ping(c);
     }
-    const ns = place(c, files, c.toCanvas(e.clientX, e.clientY));
-    last.fold = name + "|n=" + ns.length + "|cap=" + CAP;
-    // the census repaints when the explorer machine ends the drag (main.js updateTitle after a plugin drop)
+    if (d.kind === "files") { placeRow(c, d.paths, p); last.ex = "files|n=" + d.paths.length; return ping(c); }
+    const size = await oneSize(d.paths[0]);
+    if (!c.wrapperEl.isConnected || ro(c)) return;
+    placeRow(c, d.paths, p, size);
+    last.ex = "file|" + size.width + "x" + size.height;
+    ping(c);
   }
   function say(c, msg) {
     last.msg = msg;
@@ -176,6 +263,65 @@
     if (catcher) catcher.textContent = "";
     if (p && p.back && p.back.isConnected && document.activeElement === catcher) try { p.back.focus({ preventScroll: true }); } catch (_) {}
   }
+  /* goal cvf-drop: the OS clipboard wins (stock, CVR-A-035/036, C-057/058/059). Ctrl+V on a board is decided here
+     before cv-history sees the key: text -> a 250x60 text card centred on the view, opened for editing (the literal
+     text: "[[Beta]]" or a vault path stays text); an http(s) URL alone -> a 400x400 link card centred on the view; an
+     image -> "Pasted image <stamp>.png" (below). A card copy (Ctrl+C on the board, cv-history) is ALSO written to the
+     OS clipboard as its JSON, so a paste of exactly that text is our own copy and goes back to cv-history's paste;
+     a copy the OS clipboard refused leaves Ctrl+V to cv-history as before. */
+  let copied = null, copyFailed = false;
+  function onCopyKey(e) {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || String(e.key).toLowerCase() !== "c" || !app || inEd(e.target)) return;
+    const top = e.target === document.body || e.target === document.documentElement;
+    const c = boardAt(e.target) || (top ? activeBoard() : null);
+    if (!c || !c.selection || !c.selection.size) return;
+    const ids = new Set([...c.selection].map(n => n.id));
+    const txt = JSON.stringify({ nodes: [...c.selection].map(n => n.data), edges: [...c.edges.values()].filter(x => ids.has(x.fromNode) && ids.has(x.toNode)) });
+    const k = catcherEl(), back = document.activeElement;
+    let ok = false;
+    try {
+      k.textContent = txt; k.focus({ preventScroll: true });
+      const r = document.createRange(); r.selectNodeContents(k); const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+      ok = document.execCommand("copy");
+      s.removeAllRanges();
+    } catch (_) { ok = false; }
+    k.textContent = "";
+    if (back && back !== k && back.isConnected) try { back.focus({ preventScroll: true }); } catch (_) {}
+    copied = ok ? txt : null; copyFailed = !ok;
+    last.paste = "copy|" + (ok ? "os" : "internal-only");
+  }
+  function internalPaste(c) {
+    try { return !!(window.CanvasHistory && window.CanvasHistory.paste(c)); } catch (_) { return false; }
+  }
+  function linkClass(c) {   // canvas.js keeps its node classes private; a link card already on any board names it
+    if (c && c.LinkNode) return c.LinkNode;
+    for (const v of boards()) for (const n of v.canvas.nodes.values()) if (n.data && n.data.type === "link") return n.constructor;
+    return null;
+  }
+  function textPaste(c, tx) {
+    if (copied != null && (tx === copied || tx.trim() === copied)) { last.paste += "|internal"; internalPaste(c); return ping(c); }
+    const m = viewMid(c), u = tx.trim();
+    if (/^https?:\/\/\S+$/i.test(u)) {
+      const L = linkClass(c);
+      if (L) {
+        const d = { id: newIdOf(c), type: "link", url: u, x: Math.round(m.x - CARD / 2), y: Math.round(m.y - CARD / 2), width: CARD, height: CARD };
+        const n = c.addNode(new L(c, d));
+        c.deselectAll(); c.select(n, false);
+        if (typeof c.renderEdges === "function") c.renderEdges();
+        c.requestSave();
+        last.paste += "|link";
+        return ping(c);
+      }
+      last.paste += "|link=no-class";
+    }
+    c.createTextNode({ text: tx, pos: { x: m.x - 125, y: m.y - 30 }, focus: true });
+    last.paste += "|text:" + tx.length;
+    ping(c);
+  }
+  function newIdOf(c) {
+    const taken = c.ids();
+    for (;;) { const b = new Uint8Array(8); crypto.getRandomValues(b); const id = Array.from(b, x => x.toString(16).padStart(2, "0")).join(""); if (!taken.has(id)) return id; }
+  }
   function onPasteKey(e) {
     if (e.defaultPrevented || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || String(e.key).toLowerCase() !== "v") return;
     if (!app) { last.paste = "key|no-app"; return; }
@@ -184,6 +330,8 @@
     const top = e.target === document.body || e.target === document.documentElement;
     const c = boardAt(e.target) || (top ? activeBoard() : null);
     if (!c || ro(c)) { if (top) { last.paste = "key|no-board"; ping(c); } return; }
+    if (copyFailed) return;             // goal cvf-drop: the last card copy never reached the OS clipboard: cv-history pastes it (old road)
+    e.stopPropagation();                // goal cvf-drop: the OS clipboard decides (text / URL / image); a paste of our own card copy hands back to cv-history
     pasteFor = { c, back: document.activeElement };
     const k = catcherEl();
     k.textContent = "";
@@ -192,7 +340,7 @@
     last.paste = "key|armed";
     setTimeout(() => {   // the paste (if any) ran inside this key's default action
       if (pasteFor && pasteFor.wantImg) return imgPaste(pasteFor);   // the engine put the image INTO the catcher (below)
-      if (pasteFor && last.paste === "key|armed") { last.paste = "key|no-paste-event"; ping(c); }
+      if (pasteFor && last.paste === "key|armed") { last.paste = "key|no-paste-event"; internalPaste(c); ping(c); }
       giveBack();
     }, 0);
   }
@@ -210,11 +358,12 @@
   function waitImg(ms) {
     return new Promise(res => {
       const k = catcher; if (!k) return res([]);
-      if (k.querySelector("img")) return res(catcherImgs());
+      const got = () => !!(k.querySelector("img") || (k.textContent || "").length);   // goal cvf-drop: pasted TEXT lands here too (WebKitGTK hands the page an empty clipboardData)
+      if (got()) return res(catcherImgs());
       let t = 0;
-      const mo = new MutationObserver(() => { if (k.querySelector("img")) done(); });
+      const mo = new MutationObserver(() => { if (got()) done(); });
       const done = () => { mo.disconnect(); clearTimeout(t); res(catcherImgs()); };
-      mo.observe(k, { childList: true, subtree: true });
+      mo.observe(k, { childList: true, subtree: true, characterData: true });
       t = setTimeout(done, ms);
     });
   }
@@ -263,12 +412,15 @@
     }
     last.paste += "|acb=" + String(a).slice(0, 40);
     const imgs = await waitImg(1500);
+    const ktx = !imgs.length && catcher ? String(catcher.innerText || catcher.textContent || "") : "";
+    if (ktx) { giveBack(); const c1 = pf && pf.c; last.paste += "|ktext"; if (!c1 || ro(c1)) return ping(c1); return textPaste(c1, ktx); }
     const src = imgs.length ? String(imgs[0].currentSrc || imgs[0].src || "") : "";
     last.paste += "|img=" + (imgs.length ? (src.split(":")[0] || "?") : "0");
     let d = null;
     try { if (imgs.length) d = await imgBytes(imgs[0]); } catch (_) {}
     giveBack();
     const c = pf && pf.c;
+    if (!d && !imgs.length && c && !ro(c) && internalPaste(c)) return ping(c);   // nothing on the OS clipboard: our own card copy, if any
     if (!d || !c || ro(c)) { if (imgs.length && !d) last.paste += "|unreadable"; return ping(c); }
     last.paste += "|" + d.type + ":" + d.buf.byteLength;
     return savePaste(c, d.type, d.buf);
@@ -289,6 +441,7 @@
     e.preventDefault();
     giveBack();
     const c = pf && pf.c;
+    if (!file && c && !ro(c)) { let tx = ""; try { tx = cd ? cd.getData("text/plain") : ""; } catch (_) {} if (tx) return textPaste(c, tx); }
     if (!file || !c || ro(c)) return ping(c);
     return savePaste(c, file.type, await file.arrayBuffer());
   }
@@ -301,7 +454,8 @@
   }
   async function savePaste(c, type, buf) {
     const inv = invG(); if (!inv) { last.paste += "|err=inv"; return ping(c); }
-    const p = pointOf(c, null), ext = PASTE_EXT[type], data = b64(buf);
+    const ext = PASTE_EXT[type], data = b64(buf);
+    const sz = await bufSize(type, buf);   // goal cvf-drop: 400 wide, as high as the picture's aspect (320x200 -> 400x250)
     let path = await attachPath(c, "Pasted image " + stampNow() + "." + ext), rel = null;
     const stem = path.slice(0, -(ext.length + 1));
     for (let i = 0; rel == null; i++) {
@@ -314,13 +468,13 @@
     }
     if (typeof rel !== "string" || !rel) rel = path;
     try { if (typeof refreshTree === "function") await refreshTree(); } catch (_) {}   // main.js: the explorer row + the file model (vaultSync)
-    if (!ro(c)) place(c, [rel], { x: p.x - 200, y: p.y - 150 });
+    if (!ro(c)) { const m = viewMid(c); placeRow(c, [rel], { x: m.x - sz.width / 2, y: m.y - sz.height / 2 }, sz); }   // centred on the VIEW (stock), not the pointer
     last.paste += "|" + rel;
     ping(c);
   }
   const invG = () => { try { return typeof inv === "function" ? inv : null; } catch (_) { return null; } };   // main.js (global lexical)
   function ping(c) { try { if (typeof updateTitle === "function") updateTitle(); } catch (_) {} }
-  document.addEventListener("keydown", onPasteKey);
+  document.addEventListener("keydown", e => { onCopyKey(e); onPasteKey(e); }, true);   // capture: before the board's own Ctrl+C / Ctrl+V (cv-history)
   // the paste lands where the engine puts it: the catcher when the focus move took, else the old focus (body / the
   // board wrapper) — a paste outside any editor while a board is up is the board's
   document.addEventListener("paste", e => {
@@ -332,8 +486,8 @@
     onPaste(e);
   }, true);
 
-  document.addEventListener("dragover", onDragOver);
-  document.addEventListener("drop", onDrop);
+  document.addEventListener("dragover", onDragOver, true);   // capture: the board decides an explorer drop here, once
+  document.addEventListener("drop", onDrop, true);
   document.addEventListener("pointermove", e => {
     const w = e.target && e.target.closest ? e.target.closest(".canvas-wrapper") : null;
     if (w) ptr = { x: e.clientX, y: e.clientY, w };
@@ -343,6 +497,7 @@
     const esc = s => String(s).replace(/[[\]|@\n]/g, "_");
     let t = "";
     if (last.att) t += " [cvdrop:" + last.att + "]";
+    if (last.ex) t += " [cvdropx:" + esc(last.ex) + "]";
     if (last.fold) t += " [cvdropf:" + last.fold.replace(/[[\]@\n]/g, "_") + "]";
     if (last.paste) t += " [cvpaste:" + esc(last.paste.slice(0, 120)) + "]";
     if (last.msg) t += " [cvdropmsg:" + esc(last.msg.slice(0, 120)) + "]";
