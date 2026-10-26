@@ -9503,7 +9503,7 @@ mod tests {
         assert_eq!(
             t,
             "default-src 'self'; script-src 'self' opensidian-plugin: 'wasm-unsafe-eval' 'unsafe-eval' blob:; \
-             style-src 'self' 'unsafe-inline'; img-src 'self' data: opensidian-img:; font-src 'self'; \
+             style-src 'self' 'unsafe-inline'; img-src 'self' data: opensidian-img:; media-src 'self' opensidian-img:; font-src 'self'; \
              connect-src ipc: http://ipc.localhost 'self'; worker-src 'self' blob:"
         );
         // every directive other than script-src / worker-src / connect-src is byte-identical
