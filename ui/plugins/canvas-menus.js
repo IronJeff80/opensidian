@@ -592,6 +592,7 @@
         const r = c.wrapperEl.getBoundingClientRect(), br = bar.getBoundingClientRect();
         let pos, center = true;
         if (d.moved) {
+          center = !(window.CanvasDrop && window.CanvasDrop.TOPLEFT);   // goal cvf-drop (coordinator grant): stock top-left at the drop point behind CV_DROP_TOPLEFT
           const inBoard = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
           const onBar = e.clientX >= br.left && e.clientX <= br.right && e.clientY >= br.top && e.clientY <= br.bottom;
           if (!inBoard || onBar) return;
@@ -624,6 +625,8 @@
     try { e.dataTransfer.dropEffect = "copy"; } catch (_) {}
   }
   function onDrop(c, e) {
+    // goal cvf-drop (coordinator grant 2026-10-26): canvas-drop.js lays out every explorer drop (file, selection, folder)
+    if (window.CanvasDrop && typeof window.CanvasDrop.drop === "function") { window.CanvasDrop.drop(c, e); return; }
     const fs = dragged(c);
     if (ro(c) || !fs.length) return;
     e.preventDefault(); e.stopPropagation();
