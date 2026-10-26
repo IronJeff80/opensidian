@@ -374,8 +374,16 @@
       const dir = dirOf(old), to = (dir ? dir + "/" : "") + nm + (ext ? "." + ext : "");
       if (app.vault.getAbstractFileByPath(to)) { notify(c, "Canvas: " + to + " already exists"); return; }
       try {
-        if (app.fileManager && typeof app.fileManager.renameFile === "function") await app.fileManager.renameFile(f, to);
-        else await app.vault.rename(f, to);
+        try {
+          if (app.fileManager && typeof app.fileManager.renameFile === "function") await app.fileManager.renameFile(f, to);
+          else await app.vault.rename(f, to);
+        } catch (e) {
+          // restricted vault (plugin file access off -> EPERM): an audio/video/image card renames through the core's
+          // narrow media_rename (vault-confined, same extension, no overwrite); everything else reports as before
+          const T = window.__TAURI__, inv = T && T.core && T.core.invoke;
+          if (!/EPERM/.test(String((e && e.message) || e)) || !/^(mp3|m4a|ogg|oga|opus|wav|flac|webm|mp4|m4v|mov|ogv|png|jpe?g|gif|webp)$/.test(ext) || !inv) throw e;
+          await inv("media_rename", { from: old, to });
+        }
       } catch (e) { notify(c, "Canvas: " + old + " was not renamed — " + String((e && e.message) || e)); return; }
       relink(c, old, to);
     });
