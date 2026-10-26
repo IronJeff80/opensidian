@@ -32,16 +32,6 @@
    palette of the six preset colours + clear), zoom to selection, edit (one editable card). */
 (function () {
   "use strict";
-  /* gh-icons #20: monochrome inline svg icons (drawn for this app, currentColor) in place of
-     text pictographs / emoji; class "gi" sizes them (style.css / plugins.css) */
-  const I = d => '<svg class="gi" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' + d + "</svg>";
-  const GI = {
-    trash: I('<path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.7 8.5h5.6l.7-8.5"/>'),
-    color: I('<circle cx="8" cy="8" r="5.5"/><path d="M8 2.5a5.5 5.5 0 0 1 0 11z" fill="currentColor"/>'),
-    zoom: I('<path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5L9 7M2.5 13.5L7 9"/>'),
-    edit: I('<path d="M10.6 2.7a1.6 1.6 0 0 1 2.3 2.3l-7.6 7.6-3 .9.9-3z"/>'),
-    x: I('<path d="M4 4l8 8M12 4l-8 8"/>'),
-  };
   const GRID = 20;            // grid step, canvas units
   const EDGE = 7;             // border hit zone, client px (inside the card)
   const SNAP = 8;             // snap distance, client px
@@ -93,19 +83,19 @@
     for (const x of [s.tbEl, s.palEl]) { x.addEventListener("pointerdown", stop); x.addEventListener("dblclick", stop); x.addEventListener("wheel", stop); }
     const btn = (parent, name, label, txt, fn) => {
       const b = el("button", "canvas-selection-btn mod-" + name, parent);
-      b.type = "button"; if (txt.startsWith("<svg")) b.innerHTML = txt; else b.textContent = txt; b.title = label; b.setAttribute("aria-label", label); b.dataset.action = name;
+      b.type = "button"; b.textContent = txt; b.title = label; b.setAttribute("aria-label", label); b.dataset.action = name;
       b.addEventListener("click", e => { e.stopPropagation(); fn(); });
       return b;
     };
     s.btn = {
-      remove: btn(s.tbEl, "remove", "Remove", GI.trash, () => { s.palette = false; if (!ro(c)) c.deleteSelection(); refresh(c); notify(c); }),
-      color: btn(s.tbEl, "color", "Set color", GI.color, () => { s.palette = !s.palette; refresh(c); notify(c); }),
-      zoom: btn(s.tbEl, "zoom", "Zoom to selection", GI.zoom, () => { zoomToSelection(c); }),
-      edit: btn(s.tbEl, "edit", "Edit", GI.edit, () => { const n = only(c); s.palette = false; if (n && n.isEditable() && !ro(c)) n.startEditing(); refresh(c); notify(c); }),
+      remove: btn(s.tbEl, "remove", "Remove", "\u{1F5D1}", () => { s.palette = false; if (!ro(c)) c.deleteSelection(); refresh(c); notify(c); }),
+      color: btn(s.tbEl, "color", "Set color", "◐", () => { s.palette = !s.palette; refresh(c); notify(c); }),
+      zoom: btn(s.tbEl, "zoom", "Zoom to selection", "⤢", () => { zoomToSelection(c); }),
+      edit: btn(s.tbEl, "edit", "Edit", "✎", () => { const n = only(c); s.palette = false; if (n && n.isEditable() && !ro(c)) n.startEditing(); refresh(c); notify(c); }),
     };
     s.pal = {};
     for (const [k, name, css] of COLORS) { const b = btn(s.palEl, "color-" + k, name, "", () => setColor(c, k)); b.style.background = css; s.pal[k] = b; }
-    s.pal.clear = btn(s.palEl, "color-clear", "No color", GI.x, () => setColor(c, ""));
+    s.pal.clear = btn(s.palEl, "color-clear", "No color", "✕", () => setColor(c, ""));
     // the overlay follows the view (pan / zoom) and the document (remove, undo rebuild)
     const at = c.applyTransform, rs = c.requestSave;
     c.applyTransform = function () { const r = at.apply(this, arguments); refresh(c); return r; };

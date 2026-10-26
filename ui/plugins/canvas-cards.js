@@ -27,14 +27,6 @@
    a blob: URL, read only once the card is on screen. */
 (function () {
   "use strict";
-  /* gh-icons #20: monochrome inline svg icons (drawn for this app, currentColor) in place of
-     text pictographs / emoji; class "gi" sizes them (style.css / plugins.css) */
-  const I = d => '<svg class="gi" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' + d + "</svg>";
-  const GI = {
-    align: I('<path d="M2.8 2.5v11"/><rect x="5" y="4" width="8.2" height="3" rx=".8"/><rect x="5" y="9" width="5" height="3" rx=".8"/>'),
-    edit: I('<path d="M10.6 2.7a1.6 1.6 0 0 1 2.3 2.3l-7.6 7.6-3 .9.9-3z"/>'),
-    image: I('<rect x="2.5" y="3.5" width="11" height="9" rx="1.5"/><circle cx="6" cy="6.8" r="1"/><path d="M13.5 10.5l-3-3-6.5 5"/>'),
-  };
   const IMG = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"]);
   const AUD = new Set(["mp3", "wav", "m4a", "ogg", "3gp", "flac"]);
   const VID = new Set(["mp4", "webm", "ogv", "mov", "mkv"]);
@@ -558,7 +550,7 @@
      the colour palette gains a custom swatch whose small picker takes a #rrggbb value.
      Installed once per board, from the first group render, once canvas-select has built
      the toolbar. */
-  const GBTN = [["arrange", "Align and arrange", GI.align], ["label", "Edit label", GI.edit], ["background", "Set background", GI.image]];
+  const GBTN = [["arrange", "Align and arrange", "⊞"], ["label", "Edit label", "✎"], ["background", "Set background", "\u{1F5BC}"]];
   const groupOf = c => { const n = c.selection.size === 1 ? [...c.selection][0] : null; return n && n.data && n.data.type === "group" && c.nodes.get(n.id) === n ? n : null; };
   const roOf = c => !!(c.readonly || (c.options && c.options.readOnly));
   const gping = c => ping(c._ccGX);
@@ -576,7 +568,7 @@
     const g = c._ccG = { btn: {}, on: null, custom: null, pick: null, hex: null, ok: null };
     const mkb = (parent, name, label, txt, fn) => {
       const b = mk("button", "canvas-selection-btn mod-" + name, parent);
-      b.type = "button"; if (txt.startsWith("<svg")) b.innerHTML = txt; else b.textContent = txt; b.title = label; b.setAttribute("aria-label", label); b.dataset.action = name;
+      b.type = "button"; b.textContent = txt; b.title = label; b.setAttribute("aria-label", label); b.dataset.action = name;
       b.addEventListener("click", e => { e.stopPropagation(); fn(e); });
       return b;
     };

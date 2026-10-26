@@ -762,7 +762,6 @@ $("ldiv").onmousedown = e => {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
     if (w) inv("set_sidebar_w", { w }).catch(() => {});
-    updateTitle();                         // gh-icons #21: republish the sidebar geometry ([ghw:]) the drag changed
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
@@ -776,7 +775,6 @@ $("rdiv").onmousedown = e => {             // resizable divider (clamped 140-600
   const up = () => {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
-    updateTitle();                         // gh-icons #21: republish the sidebar geometry ([ghw:]) the drag changed
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
@@ -2286,6 +2284,7 @@ let saveErr = "";
    can never read it through a temporal-dead-zone. The drop code itself is in
    the R31 section further down. */
 let dropTok = "", dropT = null, dropAtTok = "";
+let pasteTok = "", pasteN = 0, pasteR = 0;   // gh-paste census (attachPaste), declared before updateTitle can run
 /* R24.6 explorer drag-to-move, declared here for the same reason as dropTok:
    updateTitle() reads both and runs from load-time code ABOVE the explorer
    section, where a `let` in its own section would be a temporal-dead-zone
@@ -3799,6 +3798,7 @@ function utBuild() {             // pane/focus census in the window title (headl
   // and "a drop whose banner faded" must not look the same to a probe.
   if (dropTok) md += " [drop:" + dropTok.replace(/[[\]|]/g, "") + "]";
   if (dropAtTok) md += " [dropat:" + dropAtTok + "]";   // osdrop: where the last REAL drop put the caret
+  if (pasteTok || pasteN || pasteR) md += " [paste:" + pasteN + "/" + pasteR + "|" + pasteTok + "]";   // gh-paste: images pasted / refused | the last clipboard's types
   // R24.6 explorer drag-to-move: [dragt:<dest or - >:<the chip's own text>] while
   // a drag is up, [mv:<old>><new>/<files linking in>] for the last completed move.
   if (dragTok) md += " [dragt:" + dragTok.replace(/[[\]|]/g, "").slice(0, 120) + "]";
@@ -4297,16 +4297,6 @@ const ICON_CHK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" str
   ' stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5L13 5"/></svg>';
 const ICON_PIN = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"' +
   ' stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h4l-.6 4.2 2.6 2.4H3.9l2.7-2.4z"/><path d="M8 8.6V14"/></svg>';
-/* gh-icons: linked-tab mark — two interlocking rounded links, drawn for this app */
-const ICON_LINK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"' +
-  ' stroke-linecap="round" stroke-linejoin="round"><path d="M7 9.2a2.6 2.6 0 0 0 3.7 0l2.3-2.3a2.6 2.6 0 0 0-3.7-3.7l-.9.9"/><path d="M9 6.8a2.6 2.6 0 0 0-3.7 0L3 9.1a2.6 2.6 0 0 0 3.7 3.7l.9-.9"/></svg>';
-/* gh-icons #20: small monochrome glyphs for icon-only buttons that used to carry a text pictograph.
-   class "gi" (style.css) sizes them inline at 12px so the button box does not move. */
-const GI_SVG = d => '<svg class="gi" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' + d + "</svg>";
-const ICON_X = GI_SVG('<path d="M4 4l8 8M12 4l-8 8"/>');
-const ICON_XCIRC = GI_SVG('<circle cx="8" cy="8" r="6"/><path d="M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4"/>');
-const ICON_UP = GI_SVG('<path d="M4 10l4-4 4 4"/>');
-const ICON_DOWN = GI_SVG('<path d="M4 6l4 4 4-4"/>');
 /* The close verbs, R38.3-R38.6. EVERY one of them goes through the existing
    flush-then-close path (closeTab -> flushSave), and each also flushes ONCE up
    front because the doomed set may contain the tab whose buffer is pending
@@ -4914,10 +4904,7 @@ function renderTabs(g) {
     // Obsidian paints it (shots/m3-pinned-tabbar.png). It is a marker element, not
     // text, so [tabs:]/[note:] and every label assertion are unchanged.
     if (tab.pinned) { const p = document.createElement("span"); p.className = "pin"; p.innerHTML = ICON_PIN; d.appendChild(p); }
-    // gh-icons #18/#20: the linked-tab mark is a monochrome svg marker element in front of the
-    // label (like the pin), not a colour emoji in the label text
-    if (chain) { const k = document.createElement("span"); k.className = "lk"; k.innerHTML = ICON_LINK; d.appendChild(k); }
-    ttl.textContent = tab.name.split("/").pop();
+    ttl.textContent = (chain ? "\u{1F517} " : "") + tab.name.split("/").pop();
     const x = document.createElement("span");
     x.className = "x";
     // ux-1: inline svg cross — the ✕ glyph tofu'd under webkit2gtk
@@ -7117,7 +7104,7 @@ async function qsCanvasList() {
 }
 const qslSafe = s => String(s).replace(/[|\]\[]/g, "_");
 CENSUS.push(() => modalKind === "qs" ? " [qsl:" + mdItems.map(it => qslSafe(it.label)).join("|") + "]" : "");   // cvf-explorer CVR-A-067: the switcher's offered rows, in order
-CENSUS.push(() => " [tabt:" + groups().map(g => [...g.tabsEl.querySelectorAll(".tab .t")].map(e => e.textContent.replace(/[[\]|;]/g, "")).join(";")).join("|") + "]");   // cvf-explorer CVR-A-086: the painted tab titles, per pane (";" between tabs, "|" between panes)
+CENSUS.push(() => " [tabt:" + groups().map(g => [...g.tabsEl.querySelectorAll(".tab .t")].map(e => e.textContent.replace(/^\u{1F517} /u, "").replace(/[[\]|;]/g, "")).join(";")).join("|") + "]");   // cvf-explorer CVR-A-086: the painted tab titles, per pane (";" between tabs, "|" between panes)
 /* gh-icons census BEGIN — phase ghicons (#18 #20 #21). Read-only DOM probe, published every refresh.
    [ghe:<n>[:<root>/<text>;...]] = text nodes carrying an emoji / pictograph code point
    (U+1F300-1FAFF, U+2600-27BF, U+1F000-1F2FF) inside an ICON surface: ribbon, sidebar tab
@@ -8297,6 +8284,69 @@ async function attachDrop(paths, at) {
   dropTok = a.copied.length + "/" + a.refused.length;
   dropSay(a.refused.concat(a.kept || []).join("\n"));
   updateTitle();
+}
+/* ---------- gh-paste (GitHub #19): paste an image -------------------------
+   Stock 1.13.7: Ctrl+V of a screenshot saves it as "Pasted image <ts>.png" in
+   the attachment folder and inserts ![[…]] at the cursor (harness
+   docs/gh-paste/README.md). Called from the editor's CM6 paste handler
+   (ui/editor.js) BEFORE CM6's own text paste: it claims the event only when
+   the clipboard carries a PNG file and no text, so every text paste stays
+   CM6's. Like attachDrop this half only moves bytes and places text — name,
+   folder, link form and every refusal come from paste_image -> pasteimg.rs.
+   Census [paste:<n ok>/<n refused>|<clipboard types>[/file][/acb:<types>]]. */
+function b64Bytes(u8) {
+  let s = "";
+  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+function attachPaste(g, e) {
+  const dt = e && e.clipboardData;
+  if (!dt) return false;
+  const types = Array.from(dt.types || []);
+  let f = null;
+  try {
+    for (const it of Array.from(dt.items || [])) if (it.kind === "file" && it.type === "image/png") { f = it.getAsFile(); if (f) break; }
+    if (!f) f = Array.from(dt.files || []).find(x => x.type === "image/png") || null;
+  } catch (_) {}
+  pasteTok = (types.join("+").replace(/[[\]|\s]/g, "") || "-") + (f ? "/file" : "");
+  // text wins: WebKitGTK may list NO types for an X selection offered only as
+  // UTF8_STRING yet still answer getData (canvas-drop.js), so ask, never trust types
+  let tx = "";
+  if (!f) try { tx = String(dt.getData("text/plain") || dt.getData("text/uri-list") || ""); } catch (_) {}
+  if (!f && (tx || types.includes("text/plain") || types.includes("text/html"))) { updateTitle(); return false; }
+  /* no file and no text: WebKitGTK hands a clipboard IMAGE to the page with an
+     EMPTY clipboardData (canvas-drop.js, measured). The async Clipboard API,
+     asked while this paste gesture is live, returns the image as a Blob. */
+  let acb = null;
+  if (!f) {
+    try { acb = navigator.clipboard && typeof navigator.clipboard.read === "function" ? navigator.clipboard.read() : null; } catch (_) { acb = null; }
+    if (!acb) { pasteTok += "/noacb"; updateTitle(); return false; }
+  }
+  e.preventDefault();
+  const t = g && g.active >= 0 ? g.tabs[g.active] : null;
+  if (!t || t.kind || t.mode === "reading") { pasteR++; updateTitle(); return true; }
+  const d = new Date();
+  const tm = { y: d.getFullYear(), mo: d.getMonth() + 1, d: d.getDate(), h: d.getHours(), mi: d.getMinutes(),
+    s: d.getSeconds(), ms: d.getMilliseconds(), off: -d.getTimezoneOffset(), epoch_ms: d.getTime() };
+  const got = f ? Promise.resolve(f) : acb.then(async items => {
+    const all = [];
+    for (const it of items || []) for (const ty of it.types || []) { all.push(ty); if (ty === "image/png") return it.getType(ty); }
+    pasteTok += "/acb:" + (all.join("+").replace(/[[\]|\s]/g, "") || "-");   // stock pastes PNG only (README): a jpeg-only clipboard pastes nothing
+    return null;
+  }, err => { pasteTok += "/acberr:" + ((err && err.name) || "?"); return null; });
+  // two pastes in the same second must reach Rust in order (stock's " 1" suffix): one chain
+  attachPaste.q = (attachPaste.q || Promise.resolve()).then(async () => {
+    const b = await got;
+    if (!b) return updateTitle();
+    let a;
+    try { a = await inv("paste_image", { note: t.name, mime: "image/png", data: b64Bytes(new Uint8Array(await b.arrayBuffer())), tm }); }
+    catch (err) { pasteR++; dropSay(errStr(err)); return updateTitle(); }
+    pasteN++;
+    await refreshTree();     // R29.11: the LP image list must know the file before the embed renders
+    if (fg() === g && g.tabs[g.active] === t) edEdit((v, s, e2) => [v.slice(0, s) + a.text + v.slice(e2), s + a.text.length, s + a.text.length]);
+    updateTitle();
+  });
+  return true;
 }
 /* R31.7 "Insert attachment" — the keyboard road to the SAME attach a drop
    takes. It exists for two reasons, in this order: an OS drop is unreachable
@@ -11811,7 +11861,7 @@ function showSettingsPage(id) {
   const inp = document.createElement("input");
   inp.id = "hkfilter"; inp.placeholder = "Filter..."; inp.spellcheck = false; inp.autocomplete = "off";
   inp.oninput = renderHk;
-  const clr = document.createElement("span"); clr.id = "hkclear"; clr.innerHTML = ICON_XCIRC; clr.title = "Clear";
+  const clr = document.createElement("span"); clr.id = "hkclear"; clr.textContent = "⊗"; clr.title = "Clear";
   clr.onclick = () => { inp.value = ""; renderHk(); inp.focus(); };
   bar.append(inp, clr);
   const chips = document.createElement("div"); chips.id = "hkchips";
@@ -12065,7 +12115,7 @@ function renderThemeCtl() {
 function openThemeMenu(anchor) {
   closeMenu();
   const m = document.createElement("div");
-  m.className = "ctxmenu"; m.dataset.menu = "themes";   // gh-icons ruling 1: its check/cross prefixes are label glyphs (ghicons excludes exactly this menu)
+  m.className = "ctxmenu";
   const mk = (txt, on) => {
     const it = document.createElement("div");
     it.textContent = txt;
@@ -12089,7 +12139,7 @@ function openThemeMenu(anchor) {
 function openSnipMenu(anchor) {
   closeMenu();
   const m = document.createElement("div");
-  m.className = "ctxmenu"; m.dataset.menu = "snippets";   // gh-icons ruling 1: its check prefix is a label glyph (ghicons excludes exactly this menu)
+  m.className = "ctxmenu";
   if (!vaultSnips.length) {
     // absent snippets/ is Obsidian's silent normal (T0): an empty menu entry,
     // deliberately not a notice and not a directory-creating button (yet)
@@ -12811,9 +12861,9 @@ function fBar(g) {                     // the bar's DOM, built once per pane
     '<div class="findrow">' +
       '<input class="findq" type="text" spellcheck="false" autocomplete="off" placeholder="Find">' +
       '<span class="findcount"></span>' +
-      '<button class="findprev" title="Previous match (Shift+Enter)">' + ICON_UP + '</button>' +
-      '<button class="findnext" title="Next match (Enter)">' + ICON_DOWN + '</button>' +
-      '<button class="findclose" title="Close (Escape)">' + ICON_X + '</button>' +
+      '<button class="findprev" title="Previous match (Shift+Enter)">↑</button>' +
+      '<button class="findnext" title="Next match (Enter)">↓</button>' +
+      '<button class="findclose" title="Close (Escape)">✕</button>' +
     '</div>' +
     /* R26.15: the replace row is the SAME bar with a second row revealed, not a
        second widget — that is what makes R26.16 ("replace inherits the find

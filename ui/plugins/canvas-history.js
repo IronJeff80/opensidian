@@ -25,13 +25,6 @@
    edges at the copies. */
 (function () {
   "use strict";
-  /* gh-icons #20: monochrome inline svg icons (drawn for this app, currentColor) in place of
-     text pictographs / emoji; class "gi" sizes them (style.css / plugins.css) */
-  const I = d => '<svg class="gi" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' + d + "</svg>";
-  const GI = {
-    undo: I('<path d="M5.5 4l-3 3 3 3"/><path d="M2.5 7H9a3.5 3.5 0 0 1 0 7H7"/>'),
-    redo: I('<path d="M10.5 4l3 3-3 3"/><path d="M13.5 7H7a3.5 3.5 0 0 0 0 7h2"/>'),
-  };
   const LIMIT = 100;                       // steps kept per board
   const OFFSET = 30;                       // duplicate / paste-without-pointer offset, canvas px
   let clip = null;                         // {nodes, edges}: the last copy (app-wide, so it pastes into another canvas too)
@@ -61,15 +54,15 @@
     if (c.controlsEl) {
       const btn = (cls, label, txt, fn) => {
         const b = document.createElement("button");
-        b.className = "canvas-control " + cls; b.type = "button"; b.innerHTML = txt; b.title = label; b.setAttribute("aria-label", label);
+        b.className = "canvas-control " + cls; b.type = "button"; b.textContent = txt; b.title = label; b.setAttribute("aria-label", label);
         b.addEventListener("pointerdown", e => e.stopPropagation());
         b.addEventListener("click", e => { e.stopPropagation(); fn(); });
         c.controlsEl.insertBefore(b, c.controlsEl.firstChild ? c.controlsEl.firstChild.nextSibling : null);
         return b;
       };
       // after "+ Text", before the zoom buttons: redo inserted first, then undo in front of it
-      h.btn.redo = btn("mod-redo", "Redo", GI.redo, () => redo(c));
-      h.btn.undo = btn("mod-undo", "Undo", GI.undo, () => undo(c));
+      h.btn.redo = btn("mod-redo", "Redo", "↷", () => redo(c));
+      h.btn.undo = btn("mod-undo", "Undo", "↶", () => undo(c));
       paint(c);
     }
     registerCommands(c.app);
