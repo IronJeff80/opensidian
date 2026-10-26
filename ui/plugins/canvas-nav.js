@@ -23,9 +23,9 @@
    its wheel listener; main.js canvasTok() appends census(view). */
 (function () {
   "use strict";
-  /* CVR-A-073 DEFERRED (coordinator ruling 2026-10-26, pending operator go): "+ Text" and zoom to selection stay,
-     at the foot of the stack, until the canvasui / cvnav CV-127 / cvjourney J4 / cvworks oracles change. false = stock */
-  const DEFER_073 = true;
+  /* CVR-A-073 (operator go 2026-10-26, goal cv-stockflip): stock has no "+ Text" and no zoom-to-selection control;
+     text cards come from the bottom bar / double-click, zoom to selection from Shift+2. true = the old stack */
+  const DEFER_073 = false;
   const GRID = 20;                        // plugins.css .canvas-wrapper background-size at zoom 1
   const boards = new Set();
   let space = false;                      // Space is held (one keyboard: module-wide)
@@ -288,15 +288,8 @@
     cmdsDone = true;
     try {
       app.commands.addCommand({ id: "canvas:jump-to-group", name: "Canvas: Jump to group",
-        checkCallback: chk => { const c = board(); if (!c || !groupsOf(c).length) return false; if (!chk) openJump(c); return true; } });
-      app.commands.addCommand({ id: "canvas:zoom-to-fit", name: "Canvas: Zoom to fit",
-        checkCallback: chk => { const c = board(); if (!c) return false; if (!chk) c.zoomToFit(); return true; } });
-      app.commands.addCommand({ id: "canvas:zoom-to-selection", name: "Canvas: Zoom to selection",
-        checkCallback: chk => { const c = board(); if (!c || !c.selection.size) return false; if (!chk) zoomToSelection(c); return true; } });
-      app.commands.addCommand({ id: "canvas:reset-zoom", name: "Canvas: Reset zoom",
-        checkCallback: chk => { const c = board(); if (!c) return false; if (!chk) resetZoom(c); return true; } });
-      app.commands.addCommand({ id: "canvas:help", name: "Canvas: Show help",
-        checkCallback: chk => { const c = board(); if (!c) return false; if (!chk) openHelp(c); return true; } });
+        checkCallback: chk => { const c = board(); if (!c) return false; if (!chk) openJump(c); return true; } });
+      // CVR-A-007: stock's palette has no zoom / help rows (Shift+1, Shift+2 and the controls cover them)
     } catch (e) { cmdsDone = false; console.error("[canvas] nav commands:", e); }
   }
 
