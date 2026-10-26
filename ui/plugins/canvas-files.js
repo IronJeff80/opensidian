@@ -59,6 +59,7 @@
   // true = painted here; false = not ours (canvas-cards.js / canvas.js paint it)
   function file(node, ctx) {
     remember(ctx);
+    if (window.CanvasMedia && !ctx._cvm && window.CanvasMedia.file(node, ctx, file)) return true;   // goal cvf-media: media / missing / canvas / PDF toolbar (canvas-media.js)
     const p = String(node.data.file || ""), ext = ctx.file && ctx.file.extension ? String(ctx.file.extension).toLowerCase() : extOf(p);
     node._cvfSeq = (node._cvfSeq || 0) + 1;
     node._cvf = null; node._cvfWhy = ""; node._cvfErr = "";

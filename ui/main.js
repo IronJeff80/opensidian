@@ -7979,6 +7979,8 @@ function canvasTok() {
            "|foot=" + (vis(sg.querySelector(".canvas-link-suggest-foot")) ? 1 : 0) + "@" + c(sg) + "]";
     }
   } catch (_) {}
+  // goal cvf-media: [cvm:<id>|k=|lbl=|...] [cvmb:] [cvmpdf:] [cvmpick:swap|...] file cards (ui/plugins/canvas-media.js)
+  if (window.CanvasMedia) try { t += window.CanvasMedia.census(v); } catch (_) {}
   return t;
 }
 function folderMenu(e, f) {                 // right-click an explorer folder row: New canvas in that folder
