@@ -363,6 +363,174 @@ fn serve_image(root: &Path, target: &str) -> Option<(&'static str, Vec<u8>)> {
     Some((mime, fs::read(&p).ok()?))
 }
 
+/* ---- cvf-mediasrv: audio/video bytes on the same scheme -----------------
+   Canvas audio/video cards point <audio>/<video> at IMG_SCHEME. This is a file
+   server whose path a synced .canvas decides, so it is held to a stricter rule
+   than the image path: the file is OPENED by an openat walk from the vault dir
+   fd with O_NOFOLLOW at every component (a symlinked directory is refused even
+   when it points back inside the vault), and the type comes from OUR list. */
+
+/// ext -> Content-Type. Anything not listed is a 404.
+const MEDIA_TYPES: [(&str, &str); 12] = [
+    ("mp3", "audio/mpeg"),
+    ("m4a", "audio/mp4"),
+    ("ogg", "audio/ogg"),
+    ("oga", "audio/ogg"),
+    ("opus", "audio/ogg"),
+    ("wav", "audio/wav"),
+    ("flac", "audio/flac"),
+    ("webm", "video/webm"),
+    ("mp4", "video/mp4"),
+    ("m4v", "video/mp4"),
+    ("mov", "video/quicktime"),
+    ("ogv", "video/ogg"),
+];
+
+/// at most this many bytes per ranged response: a `bytes=0-` for a 2 GB file
+/// answers with the first chunk, and the player asks for the next one
+const MEDIA_CHUNK: u64 = 4 * 1024 * 1024;
+/// an un-ranged request is answered whole (200) only up to this size; above it
+/// the first MEDIA_CHUNK is sent as a 206, so no request ever reads a whole
+/// large file into memory
+const MEDIA_FULL_MAX: u64 = 16 * 1024 * 1024;
+
+fn media_mime(ext: &str) -> Option<&'static str> {
+    let ext = ext.to_ascii_lowercase();
+    MEDIA_TYPES.iter().find(|(e, _)| *e == ext).map(|(_, m)| *m)
+}
+
+/// is `target` (raw URL path) a media request? decides the dispatch only;
+/// `serve_media` re-checks everything
+fn is_media_target(target: &str) -> bool {
+    target.rsplit_once('.').is_some_and(|(_, e)| media_mime(e).is_some())
+}
+
+/// raw URL path -> (vault-relative path, mime), or None: decode first, then
+/// NUL, then `safe_rel` (refuses `..`, absolute, hidden), then the whitelist
+fn media_rel(target: &str) -> Option<(PathBuf, &'static str)> {
+    let dec = pct_decode(target)?;
+    if dec.contains('\0') {
+        return None;
+    }
+    let rel = safe_rel(&dec)?;
+    let mime = media_mime(rel.extension()?.to_str()?)?;
+    Some((rel, mime))
+}
+
+/// open `rel` read-only by walking from the canonical vault root, one
+/// openat(O_NOFOLLOW) per component, and check the OPENED fd is a regular
+/// file (O_NONBLOCK so a FIFO cannot hang the open). No path is re-resolved
+/// between the check and the read.
+fn media_open(root: &Path, rel: &Path) -> Option<fs::File> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    let open_at = |dfd: libc::c_int, name: &std::ffi::OsStr, flags: libc::c_int| -> Option<OwnedFd> {
+        let c = CString::new(name.as_bytes()).ok()?;
+        // SAFETY: valid dir fd + NUL-terminated name; the fd is owned below
+        let fd = unsafe { libc::openat(dfd, c.as_ptr(), flags | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+        (fd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(fd) })
+    };
+    let croot = root.canonicalize().ok()?;
+    let c = CString::new(croot.as_os_str().as_bytes()).ok()?;
+    // SAFETY: NUL-terminated path; the fd is owned below
+    let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return None;
+    }
+    let mut dir = unsafe { OwnedFd::from_raw_fd(fd) };
+    let comps: Vec<&std::ffi::OsStr> = rel
+        .components()
+        .map(|c| match c {
+            Component::Normal(s) => Some(s),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    let (leaf, dirs) = comps.split_last()?;
+    for d in dirs {
+        dir = open_at(dir.as_raw_fd(), d, libc::O_RDONLY | libc::O_DIRECTORY)?;
+    }
+    let f = fs::File::from(open_at(dir.as_raw_fd(), leaf, libc::O_RDONLY | libc::O_NONBLOCK)?);
+    f.metadata().ok()?.is_file().then_some(f)
+}
+
+/// what to send for a file of `size` bytes and an optional Range header:
+/// Ok((status, first, last)) inclusive — or Err(()) = 416. Single range only;
+/// a multi-range header, a malformed spec or an unsatisfiable one is a 416.
+/// A unit other than `bytes` is ignored (RFC 9110 §14.2), i.e. a plain 200.
+fn media_plan(range: Option<&str>, size: u64) -> Result<(u16, u64, u64), ()> {
+    let whole = || {
+        if size <= MEDIA_FULL_MAX {
+            Ok((200, 0, size.saturating_sub(1)))
+        } else {
+            Ok((206, 0, MEDIA_CHUNK - 1))
+        }
+    };
+    let Some(h) = range.map(str::trim) else { return whole() };
+    let Some(spec) = h.strip_prefix("bytes=") else { return whole() };
+    if spec.contains(',') {
+        return Err(());
+    }
+    let num = |s: &str| -> Result<u64, ()> {
+        let s = s.trim();
+        if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(());
+        }
+        s.parse::<u64>().map_err(|_| ())
+    };
+    let (a, b) = spec.split_once('-').ok_or(())?;
+    let (first, last) = if a.trim().is_empty() {
+        // suffix: the last N bytes
+        let n = num(b)?;
+        if n == 0 || size == 0 {
+            return Err(());
+        }
+        (size - n.min(size), size - 1)
+    } else {
+        let first = num(a)?;
+        if first >= size {
+            return Err(());
+        }
+        let last = if b.trim().is_empty() { size - 1 } else { num(b)? };
+        if last < first {
+            return Err(());
+        }
+        (first, last.min(size - 1))
+    };
+    Ok((206, first, last.min(first + MEDIA_CHUNK - 1)))
+}
+
+/// one media response: status, type, Content-Range (206 and 416), body
+#[derive(Debug)]
+struct MediaResp {
+    status: u16,
+    mime: &'static str,
+    range: Option<String>,
+    body: Vec<u8>,
+}
+
+/// cvf-mediasrv: a contained, whitelisted audio/video file, honouring a single
+/// Range by seek + bounded read. None = 404 (refused or absent — the same
+/// answer, so an escape is indistinguishable from a typo, like R29.5).
+fn serve_media(root: &Path, target: &str, range: Option<&str>) -> Option<MediaResp> {
+    use std::io::{Read, Seek, SeekFrom};
+    let (rel, mime) = media_rel(target)?;
+    let mut f = media_open(root, &rel)?;
+    let size = f.metadata().ok()?.len();
+    let Ok((status, first, last)) = media_plan(range, size) else {
+        return Some(MediaResp { status: 416, mime, range: Some(format!("bytes */{size}")), body: Vec::new() });
+    };
+    let len = if size == 0 { 0 } else { last - first + 1 };
+    f.seek(SeekFrom::Start(first)).ok()?;
+    let mut body = Vec::with_capacity(len as usize);
+    f.take(len).read_to_end(&mut body).ok()?;
+    if body.len() as u64 != len {
+        return None; // truncated underneath us
+    }
+    let range = (status == 206).then(|| format!("bytes {first}-{last}/{size}"));
+    Some(MediaResp { status, mime, range, body })
+}
+
 /// percent-ENCODE a vault-relative path for the `opensidian-img:` URL. Unreserved
 /// RFC3986 characters and `/` survive; everything else (space, `#`, `?`, `%`,
 /// non-ASCII) becomes %XX, so `pct_decode` on the serving side gets the exact
@@ -5995,6 +6163,26 @@ fn main() {
                     })
                 }));
             }
+            if is_media_target(&target) {
+                let range = req.headers().get("range").and_then(|v| v.to_str().ok());
+                let res = match root.as_deref().and_then(|r| serve_media(r, &target, range)) {
+                    Some(m) => {
+                        let mut b = tauri::http::Response::builder()
+                            .status(m.status)
+                            .header("Content-Type", m.mime)
+                            .header("Accept-Ranges", "bytes")
+                            .header("X-Content-Type-Options", "nosniff")
+                            .header("Cache-Control", "no-store");
+                        if let Some(cr) = m.range {
+                            b = b.header("Content-Range", cr);
+                        }
+                        b.body(m.body)
+                    }
+                    None => tauri::http::Response::builder().status(404).body(Vec::new()),
+                }
+                .expect("media response");
+                return responder.respond(res);
+            }
             let res = match root.as_deref().and_then(|r| serve_image(r, &target)) {
                 Some((mime, body)) => tauri::http::Response::builder()
                     .status(200)
@@ -8999,6 +9187,140 @@ mod tests {
         assert_eq!(serve_image(&vlink, "pic.png").unwrap().1, b"\x89PNG\r\n\x1a\nin-vault".to_vec());
         assert_eq!(img_path_in(&vlink, "link.png"), None); // still refused through the link
         let _ = fs::remove_file(&vlink);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    /* cvf-mediasrv: the media byte server (serve_media). */
+    fn media_vault(tag: &str) -> (PathBuf, PathBuf) {
+        let root = tmp_vault(tag);
+        let outside = std::env::temp_dir().join(format!("opensidian-{tag}-out-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.mp3"), b"OUTSIDE").unwrap();
+        fs::write(root.join("tone.mp3"), b"0123456789").unwrap();
+        fs::write(root.join("sub/clip.MP4"), b"vid").unwrap();
+        (root, outside)
+    }
+
+    #[test]
+    fn media_serves_whitelisted_vault_files_whole() {
+        let (root, outside) = media_vault("media-ok");
+        let r = serve_media(&root, "tone.mp3", None).unwrap();
+        assert_eq!((r.status, r.mime, r.range.as_deref(), &r.body[..]), (200, "audio/mpeg", None, &b"0123456789"[..]));
+        let v = serve_media(&root, "sub/clip.MP4", None).unwrap();
+        assert_eq!((v.status, v.mime, &v.body[..]), (200, "video/mp4", &b"vid"[..]));
+        fs::write(root.join("my song.mp3"), b"x").unwrap();
+        assert_eq!(serve_media(&root, "my%20song.mp3", None).unwrap().body, b"x");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn media_refuses_traversal_absolute_nul_and_hidden() {
+        let (root, outside) = media_vault("media-trav");
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        fs::write(root.join(".obsidian/x.mp3"), b"h").unwrap();
+        let o = outside.file_name().unwrap().to_string_lossy().to_string();
+        for t in [
+            format!("../{o}/secret.mp3"),
+            format!("sub/../../{o}/secret.mp3"),
+            format!("%2e%2e/{o}/secret.mp3"),
+            format!("%2e%2e%2f{o}%2fsecret.mp3"),
+            format!("{}/secret.mp3", outside.display()),
+            "/etc/hostname.mp3".to_string(),
+            "tone.mp3%00.txt".to_string(),
+            "tone.mp3\0.txt".to_string(),
+            ".obsidian/x.mp3".to_string(),
+            "%zz.mp3".to_string(),
+        ] {
+            assert!(serve_media(&root, &t, None).is_none(), "served {t:?}");
+        }
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn media_refuses_every_symlink_component() {
+        use std::os::unix::fs::symlink;
+        let (root, outside) = media_vault("media-link");
+        // leaf link out of the vault (the gate's evil.mp3 -> /etc/hostname)
+        symlink("/etc/hostname", root.join("evil.mp3")).unwrap();
+        symlink(outside.join("secret.mp3"), root.join("out.mp3")).unwrap();
+        // leaf link INSIDE the vault, and a dir link pointing back inside
+        symlink(root.join("tone.mp3"), root.join("alias.mp3")).unwrap();
+        symlink(root.join("sub"), root.join("sublink")).unwrap();
+        symlink(&outside, root.join("outdir")).unwrap();
+        for t in ["evil.mp3", "out.mp3", "alias.mp3", "sublink/clip.MP4", "outdir/secret.mp3"] {
+            assert!(serve_media(&root, t, None).is_none(), "followed a symlink: {t}");
+            assert!(serve_media(&root, t, Some("bytes=0-")).is_none(), "followed a symlink (ranged): {t}");
+        }
+        // a FIFO with a media name is not a regular file (and must not hang)
+        let fifo = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(root.join("pipe.mp3").as_os_str())).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert!(serve_media(&root, "pipe.mp3", None).is_none());
+        // a directory named like media
+        fs::create_dir_all(root.join("dir.mp3")).unwrap();
+        assert!(serve_media(&root, "dir.mp3", None).is_none());
+        // POSITIVE CONTROL: a vault reached through a symlink still serves
+        let vlink = std::env::temp_dir().join(format!("opensidian-media-vlink-{}", std::process::id()));
+        let _ = fs::remove_file(&vlink);
+        symlink(&root, &vlink).unwrap();
+        assert_eq!(serve_media(&vlink, "tone.mp3", None).unwrap().body, b"0123456789");
+        let _ = fs::remove_file(&vlink);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn media_refuses_non_whitelisted_types() {
+        let (root, outside) = media_vault("media-ext");
+        for (f, b) in [("a.txt", "t"), ("a.html", "<script>"), ("a.svg", "<svg/>"), ("a.png", "png"), ("a.md", "#"), ("a.pdf", "%PDF-"), ("mp3", "x"), ("a.mp3.exe", "x")] {
+            fs::write(root.join(f), b).unwrap();
+            assert!(serve_media(&root, f, None).is_none(), "served {f}");
+        }
+        assert!(!is_media_target("a.png") && !is_media_target("a.pdf") && is_media_target("x/a.OGG"));
+        for (e, m) in [("mp3", "audio/mpeg"), ("m4a", "audio/mp4"), ("wav", "audio/wav"), ("flac", "audio/flac"), ("webm", "video/webm"), ("mov", "video/quicktime"), ("ogv", "video/ogg"), ("opus", "audio/ogg")] {
+            assert_eq!(media_mime(e), Some(m));
+        }
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn media_range_bounds_single_range_only() {
+        let (root, outside) = media_vault("media-range");
+        let get = |h: &str| serve_media(&root, "tone.mp3", Some(h)).unwrap();
+        // 0- : whole file as a 206
+        let r = get("bytes=0-");
+        assert_eq!((r.status, r.range.as_deref(), &r.body[..]), (206, Some("bytes 0-9/10"), &b"0123456789"[..]));
+        // mid
+        let r = get("bytes=3-5");
+        assert_eq!((r.status, r.range.as_deref(), &r.body[..]), (206, Some("bytes 3-5/10"), &b"345"[..]));
+        // end clamped to size
+        let r = get("bytes=8-999");
+        assert_eq!((r.range.as_deref(), &r.body[..]), (Some("bytes 8-9/10"), &b"89"[..]));
+        // suffix -N, and a suffix longer than the file
+        let r = get("bytes=-3");
+        assert_eq!((r.range.as_deref(), &r.body[..]), (Some("bytes 7-9/10"), &b"789"[..]));
+        assert_eq!(get("bytes=-50").body, b"0123456789");
+        // unsatisfiable / malformed / multi-range -> 416 with bytes */size
+        for h in ["bytes=10-", "bytes=99-100", "bytes=5-3", "bytes=-0", "bytes=0-1,4-5", "bytes=0-1, 4-5", "bytes=a-b", "bytes=-", "bytes=1", "bytes=99999999999999999999999-"] {
+            let r = get(h);
+            assert_eq!((r.status, r.range.as_deref(), r.body.len()), (416, Some("bytes */10"), 0), "{h}");
+        }
+        // another unit is ignored -> plain 200
+        assert_eq!(get("items=0-1").status, 200);
+        // the per-response chunk cap: never more than MEDIA_CHUNK bytes read
+        assert_eq!(media_plan(Some("bytes=0-"), 10 * MEDIA_CHUNK), Ok((206, 0, MEDIA_CHUNK - 1)));
+        assert_eq!(media_plan(Some("bytes=5-"), 10 * MEDIA_CHUNK), Ok((206, 5, 5 + MEDIA_CHUNK - 1)));
+        assert_eq!(media_plan(None, MEDIA_FULL_MAX + 1), Ok((206, 0, MEDIA_CHUNK - 1)));
+        assert_eq!(media_plan(None, MEDIA_FULL_MAX), Ok((200, 0, MEDIA_FULL_MAX - 1)));
+        // an empty file: whole = 200 empty, any range = 416
+        fs::write(root.join("empty.mp3"), b"").unwrap();
+        assert_eq!(serve_media(&root, "empty.mp3", None).unwrap().body.len(), 0);
+        assert_eq!(serve_media(&root, "empty.mp3", Some("bytes=0-")).unwrap().status, 416);
+        assert_eq!(serve_media(&root, "empty.mp3", Some("bytes=-1")).unwrap().status, 416);
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&outside);
     }
