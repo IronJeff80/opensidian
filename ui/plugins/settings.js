@@ -447,8 +447,7 @@
   function showCorePane(id) {
     leaveTab(); closeSpMenu();
     const pg = clearPage(id, "rows");
-    // af-fix 2b: no nav entry is selected on this pane, so it names itself
-    const hd = el("div", "snavh cvsp-title", "Canvas"); hd.style.cssText = "margin:0 0 8px"; pg.appendChild(hd);
+    // af-fix 2b: no extra heading — the page keeps develop's layout so its last row (zoom threshold) stays on screen
     buildCanvasPage(pg);
     if (typeof updateTitle === "function") updateTitle();
     return true;
