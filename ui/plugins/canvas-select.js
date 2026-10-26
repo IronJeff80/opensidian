@@ -438,17 +438,23 @@
       if (!c.selection.size || !H.copy(c)) return;
       c.deleteSelection();
     } else {
-      const before = new Set(c.nodes.keys());
+      const before = new Set(c.nodes.keys()), D = window.CanvasDrop;
+      // the OS clipboard wins (cvf-drop, C-057/058): the history's Ctrl+V asks CanvasDrop.pasteKey, whose card paste
+      // centres through centrePaste; only a copy the OS clipboard refused is pasted here
+      if (D && typeof D.census === "function" && !/\[cvpaste:copy[_|]internal-only\]/.test(D.census())) return;
       if (!H.paste(c)) return;
-      const fresh = [...c.nodes.values()].filter(n => !before.has(n.id)), b = bboxOf(fresh), r = c.wrapperEl.getBoundingClientRect();
-      if (b && r.width && r.height) {
-        const m = c.toCanvas(r.left + r.width / 2, r.top + r.height / 2);
-        const dx = Math.round(m.x - (b.x + b.w / 2)), dy = Math.round(m.y - (b.y + b.h / 2));
-        if (dx || dy) { for (const n of fresh) n.moveTo({ x: n.data.x + dx, y: n.data.y + dy }); c.renderEdges(); c.requestSave(); }
-      }
+      centrePaste(c, before);
     }
     e.preventDefault(); e.stopImmediatePropagation();
     refresh(c); notify(c);
+  }
+  function centrePaste(c, before) {
+    const fresh = [...c.nodes.values()].filter(n => !before.has(n.id)), b = bboxOf(fresh), r = c.wrapperEl.getBoundingClientRect();
+    if (b && r.width && r.height) {
+      const m = c.toCanvas(r.left + r.width / 2, r.top + r.height / 2);
+      const dx = Math.round(m.x - (b.x + b.w / 2)), dy = Math.round(m.y - (b.y + b.h / 2));
+      if (dx || dy) { for (const n of fresh) n.moveTo({ x: n.data.x + dx, y: n.data.y + dy }); c.renderEdges(); c.requestSave(); }
+    }
   }
   const inEditor = t => !!(t && t.closest && t.closest("textarea, input, .markdown-source-view, [contenteditable=true]"));
   function onKey(c, e) {
@@ -523,6 +529,6 @@
     return " [cvklook:" + String(n.id).replace(/[[\]|@,]/g, "_") + "|bw=" + (solid ? bw : 0) + "|hdl=" + hdl + "|acc=" + acc + "]";
   }
 
-  const api = { install, down, move, up, onKey, selected, selectAll, zoomToSelection, refresh, census, GRID };
+  const api = { install, down, move, up, onKey, selected, selectAll, zoomToSelection, refresh, census, GRID, centrePaste };
   Object.defineProperty(window, "CanvasSelect", { configurable: true, enumerable: false, writable: false, value: Object.freeze(api) });
 })();

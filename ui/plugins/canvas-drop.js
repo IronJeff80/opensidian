@@ -350,8 +350,13 @@
     copied = ok ? txt : null; copyFailed = !ok;
     last.paste = "copy|" + (ok ? "os" : "internal-only");
   }
-  function internalPaste(c) {
-    try { return !!(window.CanvasHistory && window.CanvasHistory.paste(c)); } catch (_) { return false; }
+  function internalPaste(c) {   // our own card copy: cv-history pastes it, CanvasSelect centres it on the view in the same task (one undo step, CVR-A-119/C-055)
+    try {
+      const before = new Set(c.nodes.keys()), S = window.CanvasSelect;
+      if (!(window.CanvasHistory && window.CanvasHistory.paste(c))) return false;
+      if (S && typeof S.centrePaste === "function") S.centrePaste(c, before);
+      return true;
+    } catch (_) { return false; }
   }
   function linkClass(c) {   // canvas.js exposes its node classes read-only on the board (coordinator grant 2026-10-26)
     return (c && c.NODE_CLASS && c.NODE_CLASS.link) || null;
