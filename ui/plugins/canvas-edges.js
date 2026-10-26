@@ -441,11 +441,10 @@
       const i = el("div", "canvas-edge-menu-item", m); i.dataset.act = act; i.textContent = txt;
       i.addEventListener("click", e => { e.stopPropagation(); closeMenu(c); fn(); });
     };
+    // edit first, navigation in the middle, the destructive action last
+    if (!c.readonly) item("label", "Edit label", () => { select(c, id); openLabel(c, id); });
     item("follow", "Follow connection", () => follow(c, id, p));
-    if (!c.readonly) {
-      item("label", "Edit label", () => { select(c, id); openLabel(c, id); });
-      item("del", "Delete connection", () => removeEdge(c, id));
-    }
+    if (!c.readonly) item("del", "Remove", () => removeEdge(c, id));
     for (const ty of ["pointerdown", "dblclick", "wheel"]) m.addEventListener(ty, e => e.stopPropagation());
     S.menu = m;
     select(c, id);
