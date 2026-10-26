@@ -436,7 +436,7 @@
     if (!H || (k !== "x" && k !== "v")) return;
     if (k === "x") {
       if (!c.selection.size || !H.copy(c)) return;
-      c.deleteSelection();
+      /* negctl part 2: cut reverted */
     } else {
       const before = new Set(c.nodes.keys());
       if (!H.paste(c)) return;
