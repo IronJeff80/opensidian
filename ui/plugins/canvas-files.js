@@ -212,6 +212,7 @@
     const src = () => (node.canvas && node.canvas.path) || "";
     const lt = () => String(node.data.file || "") + (node.data.subpath ? (String(node.data.subpath).startsWith("#") ? "" : "#") + node.data.subpath : "");
     const open = how => { const app = node._cvfCtx && node._cvfCtx.app; if (app && app.workspace) app.workspace.openLinkText(lt(), src(), how).catch(e => console.error("[canvas] open note:", e)); };
+    node._cvfOpen = open;                            // the board-level double press (below) opens the note from the label
     if (typeof node.startEditing === "function") {
       const base = node.startEditing;
       node.startEditing = function () {
@@ -401,27 +402,53 @@
      lands on the wrapper, where nodeOf() finds no card and a NEW text card is made (canvas-cards.js
      documents the same for other-kind files). A double press on a text card is therefore detected
      on its second pointerdown, before the board sees it, and opens that card's editor. */
-  let dpId = "", dpT = 0, dpX = 0, dpY = 0;
-  document.addEventListener("pointerdown", e => {
-    const t = e.target, card = t && t.closest ? t.closest(".canvas-node.canvas-node-text[data-node-id]") : null;
-    if (!card || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) { dpId = ""; return; }
-    if (t.closest("textarea, input, .markdown-source-view, [contenteditable=true], .canvas-node-resizer, .canvas-node-label")) { dpId = ""; return; }
-    const id = card.dataset.nodeId, now = Date.now();
-    const dbl = id === dpId && now - dpT < 500 && Math.abs(e.clientX - dpX) + Math.abs(e.clientY - dpY) < 8;
-    dpId = id; dpT = now; dpX = e.clientX; dpY = e.clientY;
-    if (!dbl) return;                               // the first press still selects / drags the card
-    dpId = "";
+  /* The same holds for a NOTE file card: a double press on its body edits the note inline (caret at
+     the press point), a double press on its label opens the note in this tab. The dblclick that
+     follows such a press is kept from the board, which would otherwise make a text card. */
+  let dpId = "", dpT = 0, dpX = 0, dpY = 0, dpLab = false, dpEat = 0;
+  const nodeFor = (card, id) => {
     const app = ST.app || (window.__osPluginHost && window.__osPluginHost.app) || null;
-    let node = null;
     try {
       for (const l of app ? app.workspace.getLeavesOfType("canvas") : []) {
         const v = l.view;
-        if (v && v.canvas && v.containerEl && v.containerEl.contains(card)) { node = v.canvas.nodes.get(id) || null; break; }
+        if (v && v.canvas && v.containerEl && v.containerEl.contains(card)) return v.canvas.nodes.get(id) || null;
       }
-    } catch (_) { node = null; }
-    if (!node || node.isEditing || !node.canvas || node.canvas.readonly || typeof node.startEditing !== "function") return;
+    } catch (_) {}
+    return null;
+  };
+  document.addEventListener("pointerdown", e => {
+    const t = e.target, card = t && t.closest ? t.closest(".canvas-node[data-node-id]") : null;
+    const text = !!(card && card.classList.contains("canvas-node-text")), lab = !!(card && t.closest(".canvas-node-label"));
+    if (!card || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) { dpId = ""; return; }
+    if (t.closest("textarea, input, .markdown-source-view, [contenteditable=true], .canvas-node-resizer") || (text && lab)) { dpId = ""; return; }
+    const id = card.dataset.nodeId, now = Date.now();
+    const dbl = id === dpId && lab === dpLab && now - dpT < 500 && Math.abs(e.clientX - dpX) + Math.abs(e.clientY - dpY) < 8;
+    dpId = id; dpT = now; dpX = e.clientX; dpY = e.clientY; dpLab = lab;
+    if (!dbl) return;                               // the first press still selects / drags the card
+    dpId = "";
+    if (!text && !card.classList.contains("canvas-node-file")) return;
+    const node = nodeFor(card, id);
+    if (!node || node.isEditing || !node.canvas) return;
+    if (!text) {                                    // a file card: only a note card answers here (other kinds: canvas-cards.js)
+      if (!node._cvf || node._cvf.kind !== "note") return;
+      const o = node._cvf.out;                      // a second press on a link of the (now selected) card opens the link
+      if (!lab && o && document.elementsFromPoint(e.clientX, e.clientY).some(x => x.closest && o.contains(x) && x.closest("a.wiki, a.internal-link"))) return;
+      e.stopPropagation(); e.preventDefault();
+      dpEat = now;
+      if (lab) { if (typeof node._cvfOpen === "function") node._cvfOpen(false); return; }
+      if (node.canvas.readonly || typeof node.startEditing !== "function" || !node.isEditable || !node.isEditable()) return;
+      node._cvfDbl = [e.clientX, e.clientY];
+      node.startEditing();
+      return;
+    }
+    if (node.canvas.readonly || typeof node.startEditing !== "function") return;
     e.stopPropagation(); e.preventDefault();
     node.startEditing();
+  }, true);
+  document.addEventListener("dblclick", e => {
+    if (!dpEat || Date.now() - dpEat > 700) return;
+    dpEat = 0;
+    if (e.target && e.target.closest && e.target.closest(".canvas-wrapper, .canvas-node, .canvas-node-container")) e.stopPropagation();
   }, true);
 
   /* ------------------------------------------------ link card menu */
