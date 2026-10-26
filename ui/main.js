@@ -2284,6 +2284,7 @@ let saveErr = "";
    can never read it through a temporal-dead-zone. The drop code itself is in
    the R31 section further down. */
 let dropTok = "", dropT = null, dropAtTok = "";
+let pasteTok = "", pasteN = 0, pasteR = 0;   // gh-paste census (attachPaste), declared before updateTitle can run
 /* R24.6 explorer drag-to-move, declared here for the same reason as dropTok:
    updateTitle() reads both and runs from load-time code ABOVE the explorer
    section, where a `let` in its own section would be a temporal-dead-zone
@@ -3797,6 +3798,7 @@ function utBuild() {             // pane/focus census in the window title (headl
   // and "a drop whose banner faded" must not look the same to a probe.
   if (dropTok) md += " [drop:" + dropTok.replace(/[[\]|]/g, "") + "]";
   if (dropAtTok) md += " [dropat:" + dropAtTok + "]";   // osdrop: where the last REAL drop put the caret
+  if (pasteTok || pasteN || pasteR) md += " [paste:" + pasteN + "/" + pasteR + "|" + pasteTok + "]";   // gh-paste: images pasted / refused | the last clipboard's types
   // R24.6 explorer drag-to-move: [dragt:<dest or - >:<the chip's own text>] while
   // a drag is up, [mv:<old>><new>/<files linking in>] for the last completed move.
   if (dragTok) md += " [dragt:" + dragTok.replace(/[[\]|]/g, "").slice(0, 120) + "]";
@@ -8236,6 +8238,69 @@ async function attachDrop(paths, at) {
   dropTok = a.copied.length + "/" + a.refused.length;
   dropSay(a.refused.concat(a.kept || []).join("\n"));
   updateTitle();
+}
+/* ---------- gh-paste (GitHub #19): paste an image -------------------------
+   Stock 1.13.7: Ctrl+V of a screenshot saves it as "Pasted image <ts>.png" in
+   the attachment folder and inserts ![[…]] at the cursor (harness
+   docs/gh-paste/README.md). Called from the editor's CM6 paste handler
+   (ui/editor.js) BEFORE CM6's own text paste: it claims the event only when
+   the clipboard carries a PNG file and no text, so every text paste stays
+   CM6's. Like attachDrop this half only moves bytes and places text — name,
+   folder, link form and every refusal come from paste_image -> pasteimg.rs.
+   Census [paste:<n ok>/<n refused>|<clipboard types>[/file][/acb:<types>]]. */
+function b64Bytes(u8) {
+  let s = "";
+  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+function attachPaste(g, e) {
+  const dt = e && e.clipboardData;
+  if (!dt) return false;
+  const types = Array.from(dt.types || []);
+  let f = null;
+  try {
+    for (const it of Array.from(dt.items || [])) if (it.kind === "file" && it.type === "image/png") { f = it.getAsFile(); if (f) break; }
+    if (!f) f = Array.from(dt.files || []).find(x => x.type === "image/png") || null;
+  } catch (_) {}
+  pasteTok = (types.join("+").replace(/[[\]|\s]/g, "") || "-") + (f ? "/file" : "");
+  // text wins: WebKitGTK may list NO types for an X selection offered only as
+  // UTF8_STRING yet still answer getData (canvas-drop.js), so ask, never trust types
+  let tx = "";
+  if (!f) try { tx = String(dt.getData("text/plain") || dt.getData("text/uri-list") || ""); } catch (_) {}
+  if (!f && (tx || types.includes("text/plain") || types.includes("text/html"))) { updateTitle(); return false; }
+  /* no file and no text: WebKitGTK hands a clipboard IMAGE to the page with an
+     EMPTY clipboardData (canvas-drop.js, measured). The async Clipboard API,
+     asked while this paste gesture is live, returns the image as a Blob. */
+  let acb = null;
+  if (!f) {
+    try { acb = navigator.clipboard && typeof navigator.clipboard.read === "function" ? navigator.clipboard.read() : null; } catch (_) { acb = null; }
+    if (!acb) { pasteTok += "/noacb"; updateTitle(); return false; }
+  }
+  e.preventDefault();
+  const t = g && g.active >= 0 ? g.tabs[g.active] : null;
+  if (!t || t.kind || t.mode === "reading") { pasteR++; updateTitle(); return true; }
+  const d = new Date();
+  const tm = { y: d.getFullYear(), mo: d.getMonth() + 1, d: d.getDate(), h: d.getHours(), mi: d.getMinutes(),
+    s: d.getSeconds(), ms: d.getMilliseconds(), off: -d.getTimezoneOffset(), epoch_ms: d.getTime() };
+  const got = f ? Promise.resolve(f) : acb.then(async items => {
+    const all = [];
+    for (const it of items || []) for (const ty of it.types || []) { all.push(ty); if (ty === "image/png") return it.getType(ty); }
+    pasteTok += "/acb:" + (all.join("+").replace(/[[\]|\s]/g, "") || "-");   // stock pastes PNG only (README): a jpeg-only clipboard pastes nothing
+    return null;
+  }, err => { pasteTok += "/acberr:" + ((err && err.name) || "?"); return null; });
+  // two pastes in the same second must reach Rust in order (stock's " 1" suffix): one chain
+  attachPaste.q = (attachPaste.q || Promise.resolve()).then(async () => {
+    const b = await got;
+    if (!b) return updateTitle();
+    let a;
+    try { a = await inv("paste_image", { note: t.name, mime: "image/png", data: b64Bytes(new Uint8Array(await b.arrayBuffer())), tm }); }
+    catch (err) { pasteR++; dropSay(errStr(err)); return updateTitle(); }
+    pasteN++;
+    await refreshTree();     // R29.11: the LP image list must know the file before the embed renders
+    if (fg() === g && g.tabs[g.active] === t) edEdit((v, s, e2) => [v.slice(0, s) + a.text + v.slice(e2), s + a.text.length, s + a.text.length]);
+    updateTitle();
+  });
+  return true;
 }
 /* R31.7 "Insert attachment" — the keyboard road to the SAME attach a drop
    takes. It exists for two reasons, in this order: an OS drop is unreachable

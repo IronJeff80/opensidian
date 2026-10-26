@@ -1714,6 +1714,9 @@ Object.assign(Ed, {
           return false;
         },
         blur: () => { if (typeof hideAc === "function") setTimeout(hideAc, 100); return false; },
+        // gh-paste (#19): a PNG on the clipboard (a screenshot) is saved into the vault and
+        // embedded, like stock (ui/main.js attachPaste); true = claimed, CM6 does not paste text
+        paste: (e) => typeof attachPaste === "function" ? attachPaste(G(), e) : false,
       }),
       CMv.EditorView.lineWrapping,
       CMv.EditorView.contentAttributes.of({ spellcheck: "false", autocorrect: "off", autocapitalize: "off" }),

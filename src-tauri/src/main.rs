@@ -29,6 +29,7 @@ use opensidian_lib::outline;
 mod pdf;
 mod plugins;
 mod plugin_store;
+mod pasteimg;
 mod qscreate;
 mod perf;
 mod sandbox;
@@ -956,6 +957,34 @@ async fn attach_files(
         ix.add_image(rel);
     }
     Ok(a)
+}
+
+/* gh-paste (#19) THE WRAPPER — the clipboard twin of attach_files. The editor's
+   paste handler (ui/main.js attachPaste) hands over the clipboard File's bytes
+   (base64: the IPC is JSON) and the webview's local clock; every rule lives
+   in pasteimg::paste_into. The base64 length is capped BEFORE decoding, and the
+   index learns the image so both renderers resolve the embed on first paint. */
+#[tauri::command]
+async fn paste_image(
+    v: State<'_, Vault>,
+    note: String,
+    mime: String,
+    data: String,
+    tm: datefmt::Tm,
+) -> Result<pasteimg::Pasted, String> {
+    let root = cur_vault(&v).ok_or("no vault open")?;
+    if data.len() as u64 > pasteimg::MAX_PASTE_BYTES / 3 * 4 + 8 {
+        return Err(pasteimg::PasteErr::TooBig(data.len() as u64 / 4 * 3).say());
+    }
+    let bytes = vaultfs::b64_decode(&data).ok_or("the clipboard image is not valid base64")?;
+    let st = pasteimg::stamp(&tm).map_err(|e| e.say())?;
+    let (cfg, md) = pasteimg::app_cfg(&root);
+    let imgs: Vec<String> = v.index.lock().unwrap().images().to_vec();
+    let taken = |n: &str| imgs.iter().any(|p| p.rsplit('/').next() == Some(n));
+    let p = pasteimg::paste_into(&root, &note, &mime, &bytes, &st, &cfg, md, &taken).map_err(|e| e.say())?;
+    eprintln!("[paste] {} bytes -> {}", bytes.len(), p.path);
+    v.index.lock().unwrap().add_image(&p.path);
+    Ok(p)
 }
 
 /// S5: read a note off disk, "" when it is oversized (never part of the vault)
@@ -6182,7 +6211,7 @@ fn main() {
             .map(std::borrow::Cow::Owned)
         })
         .invoke_handler(tauri::generate_handler![
-            list_notes, list_images, canvas_io, canvas_attach, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
+            list_notes, list_images, canvas_io, canvas_attach, paste_image, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
             list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
