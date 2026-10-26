@@ -837,6 +837,9 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 /* R38.7: the pin glyph rides in FRONT of a pinned tab's label (shots/m3-pinned-tabbar.png) */
 .tab .pin { flex: 0 0 auto; display: flex; align-items: center; color: var(--text-chrome-muted); margin-right: 3px }
 .tab .pin svg { width: 11px; height: 11px; display: block }
+/* gh-icons #18: the linked-tab chain is a monochrome svg marker, sized like the pin */
+.tab .lk { flex: 0 0 auto; display: flex; align-items: center; color: var(--text-chrome-muted); margin-right: 4px }
+.tab .lk svg { width: 12px; height: 12px; display: block }
 /* "Reveal file in navigation": a focus ring on the explorer row, no selection (recon 10-reveal.png) */
 .trow.revealed { outline: 2px solid var(--border-focus-ring); outline-offset: -2px }
 /* goal graphparity: the global graph's Forces card (docs/recon-graphpanel). Open: 240 wide,
@@ -1870,3 +1873,6 @@ span.is-flashing { background: var(--highlight-yellow) }
 .cm-editor .cm-scroller .cm-cursor.cm-cursor,
 .cm-editor .cm-scroller .cm-dropCursor.cm-dropCursor { border-left-color: var(--caret-color, var(--text-normal)) }
 :where(input, textarea, [contenteditable]:not([contenteditable="false"])) { caret-color: var(--caret-color, var(--text-normal)) }
+/* gh-icons #20: inline monochrome glyph in an icon-only button (replaces a text pictograph);
+   inline at 12px, on the text's middle, so the button keeps its line box */
+svg.gi { width: 12px; height: 12px; vertical-align: -2px; display: inline-block; pointer-events: none }

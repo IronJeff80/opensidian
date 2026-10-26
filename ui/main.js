@@ -4295,6 +4295,16 @@ const ICON_CHK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" str
   ' stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5L13 5"/></svg>';
 const ICON_PIN = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"' +
   ' stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h4l-.6 4.2 2.6 2.4H3.9l2.7-2.4z"/><path d="M8 8.6V14"/></svg>';
+/* gh-icons: linked-tab mark — two interlocking rounded links, drawn for this app */
+const ICON_LINK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"' +
+  ' stroke-linecap="round" stroke-linejoin="round"><path d="M7 9.2a2.6 2.6 0 0 0 3.7 0l2.3-2.3a2.6 2.6 0 0 0-3.7-3.7l-.9.9"/><path d="M9 6.8a2.6 2.6 0 0 0-3.7 0L3 9.1a2.6 2.6 0 0 0 3.7 3.7l.9-.9"/></svg>';
+/* gh-icons #20: small monochrome glyphs for icon-only buttons that used to carry a text pictograph.
+   class "gi" (style.css) sizes them inline at 12px so the button box does not move. */
+const GI_SVG = d => '<svg class="gi" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' + d + "</svg>";
+const ICON_X = GI_SVG('<path d="M4 4l8 8M12 4l-8 8"/>');
+const ICON_XCIRC = GI_SVG('<circle cx="8" cy="8" r="6"/><path d="M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4"/>');
+const ICON_UP = GI_SVG('<path d="M4 10l4-4 4 4"/>');
+const ICON_DOWN = GI_SVG('<path d="M4 6l4 4 4-4"/>');
 /* The close verbs, R38.3-R38.6. EVERY one of them goes through the existing
    flush-then-close path (closeTab -> flushSave), and each also flushes ONCE up
    front because the doomed set may contain the tab whose buffer is pending
@@ -4902,7 +4912,10 @@ function renderTabs(g) {
     // Obsidian paints it (shots/m3-pinned-tabbar.png). It is a marker element, not
     // text, so [tabs:]/[note:] and every label assertion are unchanged.
     if (tab.pinned) { const p = document.createElement("span"); p.className = "pin"; p.innerHTML = ICON_PIN; d.appendChild(p); }
-    ttl.textContent = (chain ? "\u{1F517} " : "") + tab.name.split("/").pop();
+    // gh-icons #18/#20: the linked-tab mark is a monochrome svg marker element in front of the
+    // label (like the pin), not a colour emoji in the label text
+    if (chain) { const k = document.createElement("span"); k.className = "lk"; k.innerHTML = ICON_LINK; d.appendChild(k); }
+    ttl.textContent = tab.name.split("/").pop();
     const x = document.createElement("span");
     x.className = "x";
     // ux-1: inline svg cross — the ✕ glyph tofu'd under webkit2gtk
@@ -7102,7 +7115,7 @@ async function qsCanvasList() {
 }
 const qslSafe = s => String(s).replace(/[|\]\[]/g, "_");
 CENSUS.push(() => modalKind === "qs" ? " [qsl:" + mdItems.map(it => qslSafe(it.label)).join("|") + "]" : "");   // cvf-explorer CVR-A-067: the switcher's offered rows, in order
-CENSUS.push(() => " [tabt:" + groups().map(g => [...g.tabsEl.querySelectorAll(".tab .t")].map(e => e.textContent.replace(/^\u{1F517} /u, "").replace(/[[\]|;]/g, "")).join(";")).join("|") + "]");   // cvf-explorer CVR-A-086: the painted tab titles, per pane (";" between tabs, "|" between panes)
+CENSUS.push(() => " [tabt:" + groups().map(g => [...g.tabsEl.querySelectorAll(".tab .t")].map(e => e.textContent.replace(/[[\]|;]/g, "")).join(";")).join("|") + "]");   // cvf-explorer CVR-A-086: the painted tab titles, per pane (";" between tabs, "|" between panes)
 /* listtoggle A3 (found by the gate phase, not by reading): the palette input
    TAKES the DOM selection, so a palette command that reads the editor
    selection (Ed.sel) found none and was a silent no-op — "Toggle bullet list"
@@ -11750,7 +11763,7 @@ function showSettingsPage(id) {
   const inp = document.createElement("input");
   inp.id = "hkfilter"; inp.placeholder = "Filter..."; inp.spellcheck = false; inp.autocomplete = "off";
   inp.oninput = renderHk;
-  const clr = document.createElement("span"); clr.id = "hkclear"; clr.textContent = "⊗"; clr.title = "Clear";
+  const clr = document.createElement("span"); clr.id = "hkclear"; clr.innerHTML = ICON_XCIRC; clr.title = "Clear";
   clr.onclick = () => { inp.value = ""; renderHk(); inp.focus(); };
   bar.append(inp, clr);
   const chips = document.createElement("div"); chips.id = "hkchips";
@@ -12750,9 +12763,9 @@ function fBar(g) {                     // the bar's DOM, built once per pane
     '<div class="findrow">' +
       '<input class="findq" type="text" spellcheck="false" autocomplete="off" placeholder="Find">' +
       '<span class="findcount"></span>' +
-      '<button class="findprev" title="Previous match (Shift+Enter)">↑</button>' +
-      '<button class="findnext" title="Next match (Enter)">↓</button>' +
-      '<button class="findclose" title="Close (Escape)">✕</button>' +
+      '<button class="findprev" title="Previous match (Shift+Enter)">' + ICON_UP + '</button>' +
+      '<button class="findnext" title="Next match (Enter)">' + ICON_DOWN + '</button>' +
+      '<button class="findclose" title="Close (Escape)">' + ICON_X + '</button>' +
     '</div>' +
     /* R26.15: the replace row is the SAME bar with a second row revealed, not a
        second widget — that is what makes R26.16 ("replace inherits the find

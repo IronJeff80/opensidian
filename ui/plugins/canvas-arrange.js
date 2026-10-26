@@ -34,6 +34,13 @@
      Justify horizontally / vertically every card takes B's width (x = B.left) / B's height (y = B.top) */
 (function () {
   "use strict";
+  /* gh-icons #20: monochrome inline svg icons (drawn for this app, currentColor) in place of
+     text pictographs / emoji; class "gi" sizes them (style.css / plugins.css) */
+  const I = d => '<svg class="gi" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' + d + "</svg>";
+  const GI = {
+    group: I('<rect x="2.5" y="2.5" width="11" height="11" rx="2" stroke-dasharray="2.4 1.8"/><rect x="5.5" y="5.5" width="5" height="5" rx="1"/>'),
+    align: I('<path d="M2.8 2.5v11"/><rect x="5" y="4" width="8.2" height="3" rx=".8"/><rect x="5" y="9" width="5" height="3" rx=".8"/>'),
+  };
   const GAP = 20;   // arrange spacing, canvas units (the grid step of cv-select)
 
   const ro = c => !!(c.readonly || (c.options && c.options.readOnly));
@@ -155,7 +162,7 @@
      buttons join canvas-select's button map (s.btn) so its census [cvstb:] / [cvstbb:] lists
      them; one card, a read-only board or no selection hides them. Installed once per board,
      the first time the user presses or types on it (the overlay exists by then). */
-  const MBTN = [["create-group", "Create group", "▣"], ["align", "Align and arrange", "☰"]];
+  const MBTN = [["create-group", "Create group", GI.group], ["align", "Align and arrange", GI.align]];
   const boardAt = el => {
     const w = el && el.closest && el.closest(".canvas-wrapper");
     if (!w || !app) return null;
@@ -169,7 +176,7 @@
     const t = c._cva = { btn: {}, on: null };
     for (const [name, label, txt] of MBTN) {
       const b = document.createElement("button");
-      b.className = "canvas-selection-btn mod-" + name; b.type = "button"; b.textContent = txt;
+      b.className = "canvas-selection-btn mod-" + name; b.type = "button"; b.innerHTML = txt;
       b.title = label; b.setAttribute("aria-label", label); b.dataset.action = name; b.hidden = true;
       b.addEventListener("click", e => { e.stopPropagation(); name === "align" ? alignMenu(c, b) : makeGroup(c); });
       s.tbEl.appendChild(b);
