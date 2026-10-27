@@ -8248,6 +8248,7 @@ function folderMenu(e, f) {                 // right-click an explorer folder ro
   if (CV_FOLDERMENU_FULL) folderMenuFull(item, sep, f);
   else item("New canvas", () => cmdNewCanvas(f));
   m.dataset.mt = "folder:" + String(f).replace(/[|\]]/g, "");
+  if (PMENU && PMENU.folderMenu) PMENU.folderMenu(m, f);   // plug-val: workspace "file-menu" rows for the TFolder, after a rule
   placeMenu(m, e.clientX, e.clientY);
 }
 /* ---------- R14: command registry = the ONE source of truth for the palette

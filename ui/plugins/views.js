@@ -1521,6 +1521,11 @@
         const f = files.get(name + ".md");
         return f instanceof TFile ? menuHook("file-menu", m, [f, source || "file-explorer-context-menu", null]) : 0;
       },
+      /* an explorer FOLDER row: "file-menu" with its TFolder (templater "Create new note from template") */
+      folderMenu(m, path) {
+        const f = files.get(normalizePath(String(path || "")));
+        return f instanceof K.TFolder ? menuHook("file-menu", m, [f, "file-explorer-context-menu", null]) : 0;
+      },
       editorMenu(e) {
         const x = bridge.editor ? bridge.editor() : null;
         if (!x || !x.editor) return false;
