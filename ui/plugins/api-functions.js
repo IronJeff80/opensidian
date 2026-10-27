@@ -64,6 +64,14 @@
       "external-link": P('<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/>'),
       "image": P('<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>'),
       "palette": P('<circle cx="12" cy="12" r="10"/><circle cx="8" cy="10" r="1"/><circle cx="12" cy="7" r="1"/><circle cx="16" cy="10" r="1"/>'),
+      // plug-top5: obsidian-git's source control view (its buttons name these through data-icon)
+      "minus": P('<path d="M5 12h14"/>'),
+      "minus-circle": P('<circle cx="12" cy="12" r="10"/><path d="M8 12h8"/>'),
+      "arrow-up-circle": P('<circle cx="12" cy="12" r="10"/><path d="M12 16V8M8 12l4-4 4 4"/>'),
+      "upload": P('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>'),
+      "download": P('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>'),
+      "undo": P('<path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/>'),
+      "go-to-file": P('<path d="M14 3H6a2 2 0 0 0-2 2v4M14 3v6h6M14 3l6 6v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-1"/><path d="M2 15h10M9 12l3 3-3 3"/>'),
     };
     const custom = new Map();           // addIcon: name -> svg inner content (viewBox 0 0 100 100)
     const DEFAULT_ICON = P('<rect x="4" y="4" width="16" height="16" rx="3"/>');

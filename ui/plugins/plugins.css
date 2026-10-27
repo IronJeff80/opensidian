@@ -183,3 +183,27 @@ body.os-has-plugin-status #main .status { bottom: 30px }
 /* plug-top5: a link a plugin renders with Obsidian's class name and no href (Tasks' backlink to the
    task's note) looks like the app's own note links; the preview's delegated click follows it */
 :where(.preview, .lp, .cm-editor) a.internal-link { color: var(--accent-blue); cursor: pointer; text-decoration: underline }
+/* plug-top5: the sidebar-pane vocabulary plugins build their own views from (obsidian-git's source
+   control view: a .nav-header with a .nav-buttons-container of .clickable-icon buttons over
+   .tree-item rows — name, then the row's own tools — that fold by .tree-item-children). Zero
+   specificity: a plugin's own stylesheet and every rule above still win. */
+:where(.os-pv) :where(.nav-header) { padding: 6px 8px 4px }
+:where(.os-pv) :where(.nav-buttons-container) { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 2px }
+:where(.os-pv) :where(.clickable-icon) { display: inline-flex; align-items: center; justify-content: center; padding: 4px 6px;
+  border: 0; border-radius: 4px; background: none; color: var(--text-muted); cursor: pointer }
+:where(.os-pv) :where(.clickable-icon:hover) { background: var(--background-modifier-hover); color: var(--text-normal) }
+:where(.os-pv) :where(.clickable-icon) > :where(svg) { width: 16px; height: 16px }
+:where(.os-pv) :where(.tree-item-self) { display: flex; align-items: center; gap: 4px; position: relative; min-height: 24px;
+  padding: 2px 6px 2px 24px; border-radius: 4px; color: var(--text-muted); font-size: 13px }
+:where(.os-pv) :where(.tree-item-self.is-clickable) { cursor: pointer }
+:where(.os-pv) :where(.tree-item-self:hover) { background: var(--background-modifier-hover); color: var(--text-normal) }
+:where(.os-pv) :where(.tree-item-inner) { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+:where(.os-pv) :where(.tree-item-icon, .collapse-icon) { position: absolute; left: 6px; display: inline-flex; color: var(--text-faint) }
+:where(.os-pv) :where(.tree-item-icon, .collapse-icon) :where(svg) { width: 12px; height: 12px; transition: transform .1s }
+:where(.os-pv) :where(.is-collapsed) > :where(.tree-item-self) :where(.collapse-icon svg) { transform: rotate(-90deg) }
+:where(.os-pv) :where(.tree-item-flair) { flex: 0 0 auto; color: var(--text-faint) }
+:where(.os-pv) :where(.tree-item-children) { padding-left: 12px }
+:where(.os-pv) :where(.tree-item-self) :where(.buttons) :where(.clickable-icon) { padding: 2px }
+:where(.os-pv) :where(.tree-item-self) :where(.clickable-icon) > :where(svg) { width: 14px; height: 14px }
+:where(.os-pv) :where(textarea, input[type="text"], input[type="search"]) { box-sizing: border-box; width: 100%; padding: 4px 8px; font: inherit; font-size: 13px;
+  border: 1px solid var(--background-modifier-border); border-radius: 4px; background: var(--background-primary); color: var(--text-normal); resize: vertical }
