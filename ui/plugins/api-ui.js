@@ -55,7 +55,13 @@
         const j = scopes.lastIndexOf(this.scope); if (j >= 0) scopes.splice(j, 1);
         try { this.onClose(); } catch (e) { console.error("[plugin] Modal.onClose:", e); }
         if (this._closeCb) try { this._closeCb(); } catch (e) { console.error("[plugin] Modal close callback:", e); }
-        if (this.shouldRestoreSelection && this._prevFocus && this._prevFocus.focus) try { this._prevFocus.focus(); } catch (_) {}
+        /* an editor that had focus gets it back through its EditorView: a bare DOM focus() makes CM6
+           read the browser's caret (the first text node, e.g. after LP's hidden "# ") as the new
+           selection, so Templater's insert landed at 0:2 instead of the caret it was opened at */
+        if (this.shouldRestoreSelection && this._prevFocus && this._prevFocus.focus) try {
+          const EV = (window.__osModules || {})["@codemirror/view"], ev = EV && EV.EditorView.findFromDOM(this._prevFocus);
+          if (ev && this._prevFocus.isConnected) ev.focus(); else this._prevFocus.focus();
+        } catch (_) {}
         touch();
       }
       onOpen() {}
