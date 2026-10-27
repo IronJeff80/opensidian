@@ -729,12 +729,12 @@
     // this part runs from api.js before main.js has declared PTABGONE, so it cannot be set here.
     const armTabGone = () => { try { if (PTABGONE !== embRelease) PTABGONE = embRelease; } catch (_) {} };
     const pathOf = n => (n ? n + ".md" : "");   // the app names notes without ".md"
-    function mdCtx(sourcePath, holder) {
+    function mdCtx(sourcePath, holder, sec) {
       let fm; try { const c = K.metadataCache.getCache(sourcePath); fm = c ? c.frontmatter : undefined; } catch (_) {}
       return {
         docId: sourcePath, sourcePath, frontmatter: fm,
         addChild: ch => { holder.addChild(ch); return ch; },
-        getSectionInfo: () => null,
+        getSectionInfo: el => (sec ? sec(el) : null),
       };
     }
     function runCode(lang, p, src, el, ctx) {
@@ -842,11 +842,11 @@
        (oracle: stock 1.13.7 hands them the element passed to render, not one call per block);
        the reading view (PP.run) hands them every top-level block. `nodes` limits the code
        block scan to what this render added. */
-    async function mdProcess(root, sourcePath, holder, whole, nodes, embHold) {
+    async function mdProcess(root, sourcePath, holder, whole, nodes, embHold, sec) {
       const pend = embedPass(nodes || [root], sourcePath, embHold || holder, whole ? true : undefined);
       if (pend.length) await Promise.all(pend);
       if (!MDP.code.size && !MDP.post.length) return;
-      const ctx = mdCtx(sourcePath, holder);
+      const ctx = mdCtx(sourcePath, holder, sec);
       if (MDP.code.size) for (const f of fences(nodes || root, null)) { const p = MDP.code.get(f.lang); if (p) codeBlock(f, p, ctx); }
       if (!MDP.post.length) return;
       const posts = MDP.post.slice().sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
@@ -874,12 +874,38 @@
       e.prev = e.cur; e.cur = new Component(); e.cur.load();
       return e.cur;
     }
-    const PP = {   // main.js preview(): PPOST.run(pane, note, tab) after the reading html is in
+    /* plug-top5: ctx.getSectionInfo(el) in the reading view = {text, lineStart, lineEnd} of the top-level
+       block el is (or sits in): text = the whole note source, lines 0-based, lineEnd = the block's last
+       non-blank line. From the renderer's own block -> 1-based start line map (main.js preview: pvLines,
+       one entry per top-level element), taken when the html went in, so a block a plugin inserts or
+       replaces later does not shift the others (a replaced block falls back to its position while the
+       pane still has one element per entry). Obsidian Tasks reads it to locate the tasks it re-renders
+       in the reading view (its checkbox then writes the done date into that source line). */
+    function secMap(P, src, lines) {
+      if (typeof src !== "string" || !Array.isArray(lines) || !P || P.children.length !== lines.length) return null;
+      const L = src.split("\n"), at = new Map();
+      [...P.children].forEach((c, k) => at.set(c, k));
+      const span = k => {
+        const s = lines[k] - 1;
+        let e = (k + 1 < lines.length ? lines[k + 1] - 1 : L.length) - 1;
+        while (e > s && !/\S/.test(L[e] || "")) e--;
+        return { text: src, lineStart: s, lineEnd: e };
+      };
+      return el => {
+        let n = el;
+        while (n && n.parentElement && n.parentElement !== P) n = n.parentElement;
+        if (!n || n.parentElement !== P) return null;
+        let k = at.get(n);
+        if (k === undefined && P.children.length === lines.length) k = [...P.children].indexOf(n);
+        return k === undefined || k < 0 ? null : span(k);
+      };
+    }
+    const PP = {   // main.js preview(): PPOST.run(pane, note, tab, src, lines) after the reading html is in
       get gen() { return MDP.gen; },
-      run(P, note, tab) {
+      run(P, note, tab, src, lines) {
         if (P._ppHold) try { P._ppHold.unload(); } catch (e) { console.error(e); }
         const h = P._ppHold = new Component(); h.load();
-        return mdProcess(P, pathOf(note), h, false, null, embPluginExts() ? embHolder(tab, note) : null);
+        return mdProcess(P, pathOf(note), h, false, null, embPluginExts() ? embHolder(tab, note) : null, secMap(P, src, lines));
       },
       release: embRelease,
     };

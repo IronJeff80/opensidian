@@ -6923,7 +6923,7 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   // plugin-views item 7: plugin code-block / post processors over the fresh html. Before the
   // observer is armed, so their synchronous output is part of the retained DOM; async writes
   // later mark it dirty (the next switch re-renders). Not awaited: a slow plugin never holds the switch.
-  if (PPOST) try { PPOST.run(P, curOf(g), g.active >= 0 ? g.tabs[g.active] : null).catch(e => console.error("[plugin] markdown processors:", e)); } catch (e) { console.error(e); }
+  if (PPOST) try { PPOST.run(P, curOf(g), g.active >= 0 ? g.tabs[g.active] : null, src, pvL).catch(e => console.error("[plugin] markdown processors:", e)); } catch (e) { console.error(e); }
   // modeswitch opt2: arm the retained-DOM key. Our own innerHTML above is the
   // last write: drop its records synchronously, from here on any record = dirty.
   if (!P._pvObs) {

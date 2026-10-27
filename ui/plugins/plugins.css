@@ -176,3 +176,10 @@ body.os-has-plugin-status #main .status { bottom: 30px }
 .sctl.cpgear svg.gi { width: 16px; height: 16px; display: block; pointer-events: none }
 .canvas-settings-check svg.gi, .cvsp-chk svg.gi { width: 12px; height: 12px; vertical-align: -2px; pointer-events: none }
 .cvsp-chk { margin-right: 6px }
+/* plug-top5: an icon setIcon/getIcon made has a size of its own (an unsized inline svg fills its
+   container: Obsidian Tasks' search-box filter icon is absolutely positioned and covered the pane).
+   Zero specificity, so every sized icon rule above still wins. */
+:where(svg.svg-icon) { width: var(--icon-size, 18px); height: var(--icon-size, 18px) }
+/* plug-top5: a link a plugin renders with Obsidian's class name and no href (Tasks' backlink to the
+   task's note) looks like the app's own note links; the preview's delegated click follows it */
+:where(.preview, .lp, .cm-editor) a.internal-link { color: var(--accent-blue); cursor: pointer; text-decoration: underline }
