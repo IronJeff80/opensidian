@@ -137,7 +137,7 @@ const Ed = {
         const cb = Ed.el("input", "tbox");
         cb.type = "checkbox"; cb.checked = task[1] !== " ";
         cb.contentEditable = "false";
-        cb.addEventListener("mousedown", e => Ed.toggleTask(e, row));
+        Ed.taskBox(cb);
         row.appendChild(cb);
         const tm = Ed.mk("[" + task[1] + "] ", "task");
         row.appendChild(tm);
@@ -2119,7 +2119,7 @@ Ed.lpExt = function (v, G) {
       // widget events — so the task checkbox clone gets its own toggle (R8.6)
       const c = this.el.cloneNode(true);
       const cb = c.matches && c.matches("input.tbox") ? c : (c.querySelector ? c.querySelector("input.tbox") : null);
-      if (cb) cb.addEventListener("mousedown", e => Ed.toggleTask(e));
+      if (cb) Ed.taskBox(cb);
       return c;
     }
     ignoreEvent() { return true; }
@@ -2323,9 +2323,16 @@ Ed.hl = function (g, k, ranges) {
   }
   cm.dispatch({ effects: v._hlFx.of({ k, d: CMv.Decoration.set(out, true) }) });
 };
-// a task checkbox (an LP widget): toggle "[ ]" <-> "[x]" on ITS line, one undo step
+// a task checkbox (an LP widget): mousedown keeps the caret off the line (the raw "[ ]" must not
+// reveal under the pointer); the toggle runs on click, once the event has bubbled through the
+// editor, so a plugin editor extension's own click handler (Obsidian Tasks: done date, recurrence)
+// takes it with preventDefault as in stock; untaken, Ed.toggleTask flips the line itself
+Ed.taskBox = function (cb) {
+  cb.addEventListener("mousedown", e => { e.preventDefault(); e.stopPropagation(); });
+  cb.addEventListener("click", e => setTimeout(() => { if (!e.defaultPrevented) Ed.toggleTask(e); }, 0));
+};
+// toggle "[ ]" <-> "[x]" on the checkbox's line, one undo step
 Ed.toggleTask = function (e) {
-  e.preventDefault(); e.stopPropagation();
   const box = e.target, pane = box && box.closest ? box.closest(".pane") : null, g = pane ? pane._g : null, cm = Ed.cm(g);
   if (!cm) return;
   let l;
