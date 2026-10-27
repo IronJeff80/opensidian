@@ -211,14 +211,22 @@
       onChange(cb) { this._cb = cb; return this; }
     }
     class SliderComponent extends ValueComponent {
-      constructor(containerEl) { super(); installDom(); this.sliderEl = containerEl.createEl("input", { cls: "slider", attr: { type: "range" } }); this._cb = null; this.sliderEl.addEventListener("input", () => { if (this._cb) this._cb(this.getValue()); }); }
+      constructor(containerEl) {
+        super(); installDom();
+        /* the current value is printed before the slider, as stock does (setDisplayFormat formats it) */
+        this.valueEl = containerEl.createEl("span", { cls: "slider-value" });
+        this.sliderEl = containerEl.createEl("input", { cls: "slider", attr: { type: "range" } }); this._cb = null;
+        this.sliderEl.addEventListener("input", () => { this._show(); if (this._cb) this._cb(this.getValue()); });
+        this._show();
+      }
+      _show() { if (this.valueEl) this.valueEl.textContent = this.getValuePretty(); }
       setDisabled(d) { super.setDisabled(d); this.sliderEl.disabled = !!d; return this; }
-      setLimits(min, max, step) { if (min != null) this.sliderEl.min = min; if (max != null) this.sliderEl.max = max; this.sliderEl.step = step === "any" || step == null ? "any" : step; return this; }
+      setLimits(min, max, step) { if (min != null) this.sliderEl.min = min; if (max != null) this.sliderEl.max = max; this.sliderEl.step = step === "any" || step == null ? "any" : step; this._show(); return this; }
       getValue() { return +this.sliderEl.value; }
-      setValue(v) { this.sliderEl.value = v; return this; }
+      setValue(v) { this.sliderEl.value = v; this._show(); return this; }
       getValuePretty() { const v = this.getValue(); if (this._fmt) { try { return String(this._fmt(v)); } catch (e) { console.error("[plugin] slider display format:", e); } } return String(v); }
       /* api-settings: a custom formatter for the value shown next to the slider */
-      setDisplayFormat(f) { this._fmt = typeof f === "function" ? f : null; return this; }
+      setDisplayFormat(f) { this._fmt = typeof f === "function" ? f : null; this._show(); return this; }
       setDynamicTooltip() { return this; }
       showTooltip() {}
       setInstant() { return this; }
@@ -448,12 +456,11 @@
           });
           break;
         case "slider": {
-          const lab = s.controlEl.createSpan({ cls: "setting-slider-value" });
           s.addSlider(x => {
             x.setLimits(c.min, c.max, c.step);
             if (typeof v0 === "number") x.setValue(v0);
             if (c.displayFormat) x.setDisplayFormat(c.displayFormat);
-            const show = () => { const p = x.getValuePretty(); lab.textContent = p; lab.hidden = p === ""; };
+            const show = () => { const p = x.getValuePretty(); x.valueEl.textContent = p; x.valueEl.hidden = p === ""; };
             show(); x.onChange(v => { show(); commit(v); });
           });
           break;
