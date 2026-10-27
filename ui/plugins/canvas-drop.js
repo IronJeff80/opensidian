@@ -282,7 +282,7 @@
     ping(c);
   }
   /* ---------------------------------------------- goal cv-dragin: a bookmark dragged from the bookmarks pane
-     The pane's mouse machine (main.js bmDragStart, R24.6 — no HTML5 drag, no DataTransfer) asks boardUnder() every
+     The pane's mouse machine (main.js bmDragStart, R24.6 — no HTML5 drag events, no drag payload object) asks boardUnder() every
      frame its pointer is outside the pane; over an editable board its decision is [bmdrop:cv], and the release
      calls dropBookmark() here directly. The pane's rows carry only {kind, depth, name}, so the entry itself is read
      from the vault's own .obsidian/bookmarks.json (READ ONLY: the file's bytes are never written by a drop) and
