@@ -5712,6 +5712,7 @@ async function lgFollow(src) {
   await rgFollow();                 // R9.6: right panel tracks the active note too
   const n = curOf(src);
   if (!n) return;
+  if (lgCanvasTab(src.tabs[src.active])) return;   // lg-canvas: a canvas is no centre — the graph keeps its last note
   for (const h of groups()) {
     const t = h.active >= 0 ? h.tabs[h.active] : null;
     if (!t || t.kind !== "lg" || t.linkId !== src.id || t.center === n) continue;
@@ -9274,7 +9275,8 @@ const CMDS = [
   ["workspace:previous-tab",   "Go to previous tab",                  ["ctrl+shift+tab", "ctrl+pageup"],   () => cmdCycleTab(-1)],
   ...[1, 2, 3, 4, 5, 6, 7, 8].map(n => ["workspace:goto-tab-" + n, "Go to tab #" + n, ["ctrl+" + n], () => cmdJumpTab(n)]),
   ["graph:open",               "Open graph view",                     ["ctrl+g"],               cmdGlobalGraph],
-  ["graph:open-local",         "Open local graph",                    ["ctrl+shift+g"],         () => cmdLocalGraph()],
+  ["graph:open-local",         "Open local graph",                    ["ctrl+shift+g"],         () => cmdLocalGraph(),
+    () => !lgNoGraph(fg())],   // lg-canvas: a canvas (or a local graph) has no note to centre on — the row is not offered
   ["editor:insert-link",       "Insert Markdown link",                ["ctrl+k"],               () => edEdit((v, a, b) => { const s = v.slice(a, b) || "link"; return [v.slice(0, a) + "[" + s + "]()" + v.slice(b), a + s.length + 3, a + s.length + 3]; })],
   ["editor:insert-wikilink",   "Add internal link",                   [],                       () => edEdit((v, a, b) => { const s = v.slice(a, b); return [v.slice(0, a) + "[[" + s + "]]" + v.slice(b), a + 2, a + 2 + s.length]; })],
   ["editor:insert-tag",        "Add tag",                             [],                       () => edEdit((v, a, b) => [v.slice(0, a) + "#" + v.slice(b), a + 1, a + 1])],
@@ -11223,12 +11225,22 @@ async function showLocalGraph(g, t) {  // t = the localgraph tab (kind:"lg")
   });
 }
 
+/* lg-canvas: a local graph is the neighbourhood of a NOTE. A canvas tab (a canvas plugin-view leaf, or a
+   tab named *.canvas) has no note behind it, so no local graph is opened for it — not from Ctrl+Shift+G,
+   the palette or the ribbon (#lgbtn) — and a linked local graph does not re-centre onto it (lgFollow). */
+function lgCanvasTab(t) {
+  return !!t && ((t.kind === "unk" && t.utype === "canvas") || (!t.kind && /\.canvas$/i.test(String(t.name || ""))));
+}
+function lgNoGraph(g) {                // true: the focused tab of g cannot be the centre of a local graph
+  const t = g && g.active >= 0 ? g.tabs[g.active] : null;
+  return !t || t.kind === "lg" || lgCanvasTab(t);
+}
 async function cmdLocalGraph() {       // R7.2: local graph of focused note -> new right split
   if (!state) return;
   const g = fg();
   const t0 = g.active >= 0 ? g.tabs[g.active] : null;
   const center = curOf(g);
-  if (!center || (t0 && t0.kind === "lg")) return;
+  if (!center || lgNoGraph(g)) return;
   lgT0 = perf.now();                   // perfhunt: graph_open kind:lg = click -> first sim frame (handed to the new group in startGraph)
   await flushSave(g);
   const t = { kind: "lg", name: "Graph of " + center.split("/").pop(),
