@@ -928,6 +928,10 @@
       static async render(app_, markdown, el, sourcePath, component) {
         const html = await K.inv("render", { content: String(markdown == null ? "" : markdown) });
         const t = document.createElement("div"); t.innerHTML = html;
+        // plug-val: only the blocks go in, not the newlines between them: stock hands back "happy" as ONE
+        // <p> child, and dataview unwraps a lone <p> (childNodes.length == 1) to render an inline field
+        // inside a Live Preview line; a trailing "\n" text node left the <p> block and broke the line
+        for (const n of [...t.childNodes]) if (n.nodeType === 3 && !/\S/.test(n.data)) n.remove();
         const added = [...t.childNodes];
         while (t.firstChild) el.appendChild(t.firstChild);
         await mdProcess(el, sourcePath || "", component instanceof Component ? component : new Component(), true, added);

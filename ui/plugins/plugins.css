@@ -207,3 +207,8 @@ body.os-has-plugin-status #main .status { bottom: 30px }
 :where(.os-pv) :where(.tree-item-self) :where(.clickable-icon) > :where(svg) { width: 14px; height: 14px }
 :where(.os-pv) :where(textarea, input[type="text"], input[type="search"]) { box-sizing: border-box; width: 100%; padding: 4px 8px; font: inherit; font-size: 13px;
   border: 1px solid var(--background-modifier-border); border-radius: 4px; background: var(--background-primary); color: var(--text-normal); resize: vertical }
+/* plug-val: a plain <table> a plugin renders into a note (dataview's CALENDAR month grid) is ruled
+   like a table in the note: a 1px grid on every cell, header row included. :where() keeps this at
+   element specificity, so a plugin's own table styles (dataview's TABLE view) still win. */
+:where(.block-language-dataview, .block-language-dataviewjs) :where(table:not(.table-view-table)) :is(th, td) {
+  border: 1px solid var(--border) }
