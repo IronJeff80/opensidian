@@ -1,32 +1,28 @@
 
-<img width="800" height="574" alt="GH" src="https://github.com/user-attachments/assets/fff70236-3976-4b87-b3e0-f1ec2aca1e10" />
-
+<img width="2348" height="1424" alt="image" src="https://github.com/user-attachments/assets/3c26f344-e8cd-452f-891a-8f95f5d9f5bd" />
 
 # Opensidian
 Open-source and non-profit under GPLv3, vault-compatible cross-platform markdown notes app. It's based on Rust + Tauri v2 and under heavy development. We're looking for Linux distribution maintainers. Not affiliated with or endorsed by Obsidian or Dynalist Inc.; "Obsidian" is their trademark. Opensidian is a clean-room functional clone: it reimplements Obsidian's behaviour from the outside and contains none of its code.
 
-## Features
-- live preview, source and reading modes
-- [[wikilinks]], backlinks, tags, graph view
-- tabs, splits, search, quick switcher, command palette, bookmarks
-- themes, fonts, hotkeys; open a vault with `opensidian <folder>`
-- drag an image (png, jpg, gif, webp) or a PDF from your file manager onto a note:
-  an image is **moved** into the vault (the original is removed only after the
-  vault copy is complete and on disk), a PDF is **copied** (the original stays,
-  as in Obsidian), and `![[name]]` is inserted where you dropped it. A name that
-  already exists gets a new one, never overwritten. A .pdf must really be a PDF (it starts with `%PDF-`); other file
-  types are refused and left where they are.
-
 ## Install
-Linux x86_64. Download one:
 
-| Download | Choose it if | Tested on (fresh install, 2026-10-24) |
+### Linux x86_64 — packages
+
+Download one from the [v0.8.1 release](https://github.com/jpzk/opensidian/releases/tag/v0.8.1):
+
+| Download | Choose it if | Tested on (fresh install, 2026-10-25) |
 |---|---|---|
 | [slim AppImage](https://github.com/jpzk/opensidian/releases/download/v0.8.1/opensidian-0.8.1-x86_64-slim.AppImage) | you want the smallest file and have WebKitGTK 4.1 | Fedora 44 (`sudo dnf install webkit2gtk4.1`), Ubuntu 26.04 LTS (`sudo apt install libwebkit2gtk-4.1-0`) |
 | [portable AppImage](https://github.com/jpzk/opensidian/releases/download/v0.8.1/opensidian-0.8.1-x86_64-portable.AppImage) | you want nothing to install: WebKit is bundled (needs only the X11/GL/font libraries every desktop has) | Fedora 44, Ubuntu 26.04 LTS |
 | [Flatpak](https://github.com/jpzk/opensidian/releases/download/v0.8.1/opensidian-0.8.1-x86_64.flatpak) | you want it sandboxed; pulls the GNOME 49 runtime from Flathub on first install | Fedora 44, Ubuntu 26.04 LTS (`flatpak` package installed) |
 | [RPM](https://github.com/jpzk/opensidian/releases/download/v0.8.1/opensidian-0.8.1-x86_64.rpm) | you run Fedora and want a system package with a menu entry and icon; dnf pulls WebKitGTK 4.1 for you | Fedora 44 (`sudo dnf install ./opensidian-0.8.1-x86_64.rpm`) |
 | [DEB](https://github.com/jpzk/opensidian/releases/download/v0.8.1/opensidian-0.8.1-x86_64.deb) | you run Debian or Ubuntu and want a system package with a menu entry and icon; apt pulls WebKitGTK 4.1 for you | Debian 13, Ubuntu 26.04 LTS (`sudo apt install ./opensidian-0.8.1-x86_64.deb`) |
+
+### Nix & NixOS
+
+```sh
+nix profile add github:jpzk/opensidian
+```
 
 ## Verify your download
 `SHA256SUMS` is signed with key `A6E6 9ED6 BC47 79F3 2817  2148 4CC1 AFDE 15B6 4EA3`:
@@ -70,6 +66,25 @@ Tested 2026-10-03 on fresh Ubuntu 26.04 LTS and Fedora 44 with Rust 1.98.0
    git clone https://github.com/jpzk/opensidian && cd opensidian/src-tauri
    cargo build --release --locked   # -> target/release/opensidian
    ```
+
+## Nix
+The repo ships a flake (Nix 2.4+). It pins nixpkgs unstable and builds with
+`--locked` against `src-tauri/Cargo.lock`, so the toolchain and every crate
+are pinned.
+
+```sh
+nix run .     # build and run
+nix build .   # -> result/bin/opensidian, with the desktop file installed
+nix develop   # dev shell: rust-analyzer, clippy, rustfmt,
+              # clippy, rustfmt and all native deps; then:
+              #   cd src-tauri && cargo test --locked
+```
+
+On NixOS, the `spawn::tests::switch_alive_probe_reads_proc` test fails:
+it hardcodes `/bin/true`, which does not exist there. The flock/landlock
+integration tests also need a wider sandbox than the Nix build sandbox
+grants, which is why the flake runs `cargo test` from the dev shell and
+not as a flake check.
 
 ## Licence
 GPL-3.0-or-later ([LICENSE](LICENSE)). Read [THIRD-PARTY.md](THIRD-PARTY.md) before redistributing.
