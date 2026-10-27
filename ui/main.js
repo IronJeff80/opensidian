@@ -1806,6 +1806,9 @@ function bmDragStart(e, ix) {
   document.addEventListener("dragstart", own, true);
   const sx = e.clientX, sy = e.clientY;
   const label = src.label ?? (src.kind === "g" ? src.name : src.name.split("/").pop());
+  // cv-dragin: the row as pressed (bmTree may repaint mid-drag), plus a group's painted file rows — CanvasDrop's
+  // fallback when .obsidian/bookmarks.json cannot be read
+  const srcRow = { kind: src.kind, name: src.name, files: src.kind === "g" ? bmTree.slice(ix + 1, bmSubEnd(ix)).filter(r => r.kind === "f").map(r => r.name) : [] };
   let ghost = null, line = null, hl = null, srcEl = null, zones = null, raf = 0, last = null;
   let spring = 0;                          // collapseall R5: the armed spring-load timer
   bmDrop = null;
@@ -1892,8 +1895,13 @@ function bmDragStart(e, ix) {
       // a first-child slot reached via a gap can still name a dragged group's
       // descendant as parent — same refusal as the row-band test above
       if (nd && nd.parent !== null && nd.parent >= z.exFrom && nd.parent < z.exTo) nd = null;
+    } else if (window.CanvasDrop && typeof window.CanvasDrop.boardUnder === "function") {
+      // goal cv-dragin: outside the pane, an editable canvas board under the pointer is a target —
+      // the release hands the bookmark to CanvasDrop.dropBookmark (no bmApply: bookmarks.json is untouched)
+      const cvb = window.CanvasDrop.boardUnder(ev.clientX, ev.clientY);
+      if (cvb) nd = { cv: cvb };
     }
-    const tok = nd == null ? "none" : (nd.grp != null ? "grp@" + nd.grp : "gap@" + (nd.parent === null ? "-" : nd.parent) + "." + nd.pos);
+    const tok = nd == null ? "none" : nd.cv ? "cv" : (nd.grp != null ? "grp@" + nd.grp : "gap@" + (nd.parent === null ? "-" : nd.parent) + "." + nd.pos);
     if (tok !== bmDropTok) {
       clearFb();
       disarm();                            // R5: a decision change restarts the hover clock
@@ -1901,7 +1909,7 @@ function bmDragStart(e, ix) {
         const key = z.rows[nd.grp].el.dataset.bmk;
         spring = setTimeout(() => springFire(key), BM_SPRING_MS);
       }
-      if (nd) {
+      if (nd && !nd.cv) {                  // cv-dragin: a board paints no pane feedback; the chip names the decision
         if (nd.grp != null) {
           hl = z.rows[nd.grp].el;
           hl.classList.add("bmdrop-into"); // measured row fill, no line (case 2)
@@ -1921,7 +1929,7 @@ function bmDragStart(e, ix) {
     }
   };
   const move = ev => { last = ev; if (!raf) raf = requestAnimationFrame(step); };
-  const up = async () => {
+  const up = async uev => {             // cv-dragin: the release point decides the board drop
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
     document.removeEventListener("selectstart", own, true);
@@ -1937,6 +1945,14 @@ function bmDragStart(e, ix) {
     if (!dragged) return;                  // below the threshold: a plain click, let it through
     bmEat = performance.now();
     if (!d) { updateTitle(); return; }     // no legal target: NOTHING is called — byte-level refusal
+    if (d.cv) {                            // goal cv-dragin: bookmark -> board = file card(s) at the release point
+      const ux = uev ? uev.clientX : last.clientX, uy = uev ? uev.clientY : last.clientY;
+      const cvb = window.CanvasDrop.boardUnder(ux, uy) || d.cv;
+      try { await window.CanvasDrop.dropBookmark(cvb, ix, srcRow, ux, uy); }
+      catch (err) { console.warn("[bm] canvas drop:", err); }
+      updateTitle();
+      return;
+    }
     await bmApply("bm_drag", { ix, parent: d.parent, pos: d.pos });
   };
   window.addEventListener("mousemove", move);
