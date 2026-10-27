@@ -47,6 +47,9 @@
 /* a declarative row/group whose visible() predicate is false carries [hidden] (api-ui.js sdApply); the display:flex
    above outranks the UA [hidden] rule, so it would stay on screen (templater: Excluded folders with the trigger off) */
 :where(#spage, .os-plugin-modal) :is(.setting-item, .setting-group)[hidden] { display: none }
+/* a settings sub-page (api-ui.js SettingPage): back button and title on one line above the page content */
+:where(#spage) .setting-page-titlebar { display: flex; align-items: center; gap: 8px; padding: 4px 0 12px }
+:where(#spage) .setting-page-title { font-size: 15px; font-weight: 600; color: var(--text-chrome) }
 :where(#spage, .os-plugin-modal) .setting-item-info { flex: 1 1 auto; min-width: 0 }
 :where(#spage, .os-plugin-modal) .setting-item-name { font-size: 14px; color: var(--text-chrome) }
 :where(#spage, .os-plugin-modal) .setting-item-description { font-size: 12px; color: var(--text-chrome-muted); margin-top: 2px }

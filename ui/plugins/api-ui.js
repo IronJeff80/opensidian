@@ -469,7 +469,13 @@
       if (!def || typeof def !== "object") return null;
       const s = new Setting(g.listEl);
       if (def.name != null) s.setName(def.name);
-      if (def.desc != null) s.setDesc(def.desc);
+      /* a DocumentFragment desc empties itself into the first render; keep its nodes so a re-render (back from a
+         sub-page, sdRender) moves the same nodes, listeners included, into the new row (templater documentation links) */
+      if (def.desc instanceof DocumentFragment) {
+        if (!def._descNodes || def.desc.childNodes.length) def._descNodes = Array.from(def.desc.childNodes);
+        const f = document.createDocumentFragment(); for (const n of def._descNodes) f.appendChild(n);
+        s.setDesc(f);
+      } else if (def.desc != null) s.setDesc(def.desc);
       const node = { el: s.settingEl, setting: s, def, visible: def.visible, disabled: def.control ? def.control.disabled : def.disabled };
       d.nodes.push(node);
       if (def.type === "page") {
@@ -562,7 +568,7 @@
         }
         if (!p.title) p.title = top.name == null ? "" : String(top.name);
         const back = new ExtraButtonComponent(p.titlebarEl);
-        back.setIcon("arrow-left").setTooltip("Back").onClick(() => { stack.pop(); sdRender(tab); });
+        back.setIcon("chevron-left").setTooltip("Back").onClick(() => { stack.pop(); sdRender(tab); });
         p.titlebarEl.prepend(back.extraSettingsEl);
         d.page = p;
         tab.containerEl.appendChild(p.rootEl);
