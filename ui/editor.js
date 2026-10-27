@@ -2234,6 +2234,11 @@ Ed.cbField = function (v, G, bust) {
       const w = Ed.el("div", "cm-preview-code-block cm-embed-block markdown-rendered");
       const el = Ed.el("div", "block-language-" + this.lang);
       w.appendChild(el);
+      // the widget ignores editor events (ignoreEvent): its wiki links follow here (dataview file links)
+      w.addEventListener("click", e => {
+        const a = e.target && e.target.closest && e.target.closest("a.wiki, a.internal-link");
+        if (a && w.contains(a) && typeof wikiClick === "function") wikiClick(e, a);
+      });
       const h = Ed.cbHook;
       if (h) try { w._cbOff = h.render(this.lang, this.src, el, this.path); } catch (e) { console.error("[plugin] code block " + this.lang + ":", e); }
       return w;

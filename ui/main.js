@@ -6817,7 +6817,7 @@ async function wikiClick(e, a) {
   e.preventDefault(); e.stopPropagation();
   const g = gOf(a);
   if (!g) return;
-  const n = a.dataset.note || curOf(g), an = a.dataset.anchor;   // R10: [[#H]] = this note
+  const n = wikiTarget(a) || curOf(g), an = a.dataset.anchor;   // R10: [[#H]] = this note
   if (await cvLinkOpen(n, an)) return;      // cvf-links CVR-A-096: [[X.canvas]] opens the canvas, never makes X.canvas.md
   if (a.classList.contains("wiki-unresolved")) await createNote(n);
   if (e.ctrlKey) {                            // R6.4: new tab, same group
@@ -6910,22 +6910,16 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   mswpMark("blines");
   for (const a of g.preview.querySelectorAll("a.tag"))
     a.onclick = e => { e.preventDefault(); tagSearch(a.dataset.tag); };
-  for (const a of g.preview.querySelectorAll("a.wiki"))
-    a.onclick = async e => {
-      e.preventDefault();
-      const g = gOf(a);                              // R20: event-time group (retained views move)
-      const n = a.dataset.note || curOf(g), an = a.dataset.anchor;  // R10: [[#H]] = this note
-      if (await cvLinkOpen(n, an)) return;          // cvf-links CVR-A-096: [[X.canvas]] opens the canvas
-      if (a.classList.contains("wiki-unresolved"))   // R3.5: click creates the note
-        await createNote(n);
-      if (e.ctrlKey) {                               // R6.4: open in NEW TAB, same group
-        await flushSave(g);
-        g.tabs.push(mkTab(n));
-        g.active = g.tabs.length - 1;
-        await loadActive(g);
-        if (an) await navAnchor(g, an);
-      } else navigate(g, n, an);
-    };
+  for (const a of g.preview.querySelectorAll("a.wiki")) a.onclick = e => pvWikiClick(a, e);
+  // plug-top5: links a plugin renders AFTER this wiring (code-block processors: dataview's file links)
+  // follow too — one delegated listener per preview element, only for links nobody wired
+  if (!P._pvWiki) {
+    P._pvWiki = true;
+    P.addEventListener("click", e => {
+      const a = e.target && e.target.closest && e.target.closest("a.wiki, a.internal-link");
+      if (a && !a.onclick && P.contains(a)) pvWikiClick(a, e);
+    });
+  }
   // plugin-views item 7: plugin code-block / post processors over the fresh html. Before the
   // observer is armed, so their synchronous output is part of the retained DOM; async writes
   // later mark it dirty (the next switch re-renders). Not awaited: a slow plugin never holds the switch.
@@ -6940,6 +6934,25 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   if (g.preview === P && g.editor.value === src)
     P._pvk = { src, notes: notesCache, imgs: imgsCache, slb: slbOn, lines: pvL, pp: PPOST ? PPOST.gen : 0 };
   mswpMark("wire");
+}
+
+// a wiki link click in the reading view, also for links a plugin rendered into it. plug-top5: a target
+// written with its .md extension ([[Projects/Beta.md]], dataview's file links) is that note
+function wikiTarget(a) { const n = a.dataset.note || a.dataset.href || ""; return /[^/]\.md$/.test(n) ? n.slice(0, -3) : n; }
+async function pvWikiClick(a, e) {
+  e.preventDefault();
+  const g = gOf(a) || fg();                      // R20: event-time group (retained views move)
+  const n = wikiTarget(a) || curOf(g), an = a.dataset.anchor;  // R10: [[#H]] = this note
+  if (await cvLinkOpen(n, an)) return;          // cvf-links CVR-A-096: [[X.canvas]] opens the canvas
+  if (a.classList.contains("wiki-unresolved"))   // R3.5: click creates the note
+    await createNote(n);
+  if (e.ctrlKey) {                               // R6.4: open in NEW TAB, same group
+    await flushSave(g);
+    g.tabs.push(mkTab(n));
+    g.active = g.tabs.length - 1;
+    await loadActive(g);
+    if (an) await navAnchor(g, an);
+  } else navigate(g, n, an);
 }
 
 function scheduleSave(g) {
