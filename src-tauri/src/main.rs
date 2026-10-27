@@ -4901,6 +4901,38 @@ fn bm_drag_in_tree(tree: &mut Vec<BmNode>, ix: usize, parent: Option<usize>, mut
     Ok(())
 }
 
+/* tab-bookmark — a TAB dropped on the bookmarks pane: a NEW file item at an
+   exact PAINTED slot, the drop vocabulary bm_drag_in_tree speaks (parent None
+   = top level, `pos` a painted slot among parent's children, translated by
+   bm_raw_slot so an Opaque sibling never shifts the landing by one). Unlike
+   bm_add_in (the group menu, which DUPLICATES per recon-bmactive F3), a drag
+   of a note that is already bookmarked anywhere in the tree is REFUSED: the
+   gesture means "remember this tab", and a second identical row adds nothing.
+   The Err returns before bm_apply writes, so the refusal is byte-level. */
+fn bm_add_at_in(tree: &mut Vec<BmNode>, parent: Option<usize>, pos: usize, name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("no note to bookmark".to_string());
+    }
+    let mut have = Vec::new();
+    bm_names(tree, &mut have);
+    if have.iter().any(|n| n == name) {
+        return Err("already bookmarked".to_string());
+    }
+    let items: &mut Vec<BmNode> = match parent {
+        None => tree,
+        Some(g) => {
+            let p = bm_path_of(tree, g).ok_or("no such group")?;
+            match bm_at_mut(tree, &p) {
+                Some(BmNode::Group { items, .. }) => items,
+                _ => return Err("target row is not a group".to_string()),
+            }
+        }
+    };
+    let raw = bm_raw_slot(items, pos); // past the end = append, opaques included
+    items.insert(raw, BmNode::file(name));
+    Ok(())
+}
+
 /* R9.8 — a bookmark IS a vault-relative name, so the note that changes its
    name takes its bookmark with it. Called from move_note_in and nowhere else:
    that is the one function that knows both ends, and it is the function BOTH
@@ -5070,6 +5102,12 @@ fn bm_add(v: State<Vault>, into: Option<usize>, name: String, title: Option<Stri
 #[tauri::command]
 fn bm_drag(v: State<Vault>, ix: usize, parent: Option<usize>, pos: usize) -> Result<Vec<BmRow>, String> {
     span_timed!("bm_drag", bm_apply(&v, |t| bm_drag_in_tree(t, ix, parent, pos)))
+}
+
+/* tab-bookmark — a tab dropped on the bookmarks pane (bm_add_at_in). */
+#[tauri::command]
+fn bm_add_at(v: State<Vault>, parent: Option<usize>, pos: usize, name: String) -> Result<Vec<BmRow>, String> {
+    span_timed!("bm_add_at", bm_apply(&v, |t| bm_add_at_in(t, parent, pos, &name)))
 }
 
 /* R11 watcher thread: every TICK_MS walk the vault (stat only), diff against
@@ -6231,7 +6269,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_notes, list_images, canvas_io, canvas_attach, paste_image, read_note, write_note, create_note, render, render_blocks, block_lines, render_view, highlight_blocks, graph, graph_local, graph_view, vault_get, pick_vault,
             create_vault, create_vault_dir, open_vault_window, switch_show, switch_ready, boot_notice, home_dir, list_dirs, list_folders, create_dir, backlinks, search,
-            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
+            list_bookmarks, toggle_bookmark, bookmark_rows, bm_group_new, bm_group_rename, bm_group_delete, bm_move, bm_add, bm_drag, bm_add_at, recent_vaults, rename_note, media_rename, media_read, move_note, update_links, delete_note, link_consent, set_link_consent, strict_line_breaks, set_strict_line_breaks, qs_new_name, readable_line_length, graph_settings, set_graph_settings, tags, tag_counts,
             get_sidebar_w, set_sidebar_w, log_spans, graph_renderer_pref, type_probe, nob_probe, psg_probe, vb_probe, smoke_css,
             read_workspace, write_workspace,
             outline, outgoing, backlinks_ctx, unlinked_mentions, link_mention, get_rside_tab, set_rside_tab, vault_id, ls_get, ls_set, get_theme, set_theme,
@@ -8240,6 +8278,72 @@ mod tests {
         assert_eq!(out.matches("\"title\"").count(), 3, "Work, Inner, W — no empty title: {out}");
         assert!(bm_add_in(&mut t, Some(0), "X", None).is_err(), "a file row is not a group");
         assert!(bm_add_in(&mut t, Some(1), "", None).is_err());
+    }
+
+    /// tab-bookmark — a tab dropped on the bookmarks pane: bm_add_at_in puts a
+    /// NEW file item at an exact PAINTED slot, on the Obsidian-written fixture
+    /// carrying unknown keys, proved byte-wise by string surgery (the one new
+    /// block spliced in, every other byte — zzUnknownFile, zzUnknownGroup, the
+    /// search entry, every ctime — the fixture's own; the new ctime is
+    /// normalised). Then the refusals: an already-bookmarked note (top level
+    /// AND nested) and a file row as parent return Err with the tree unchanged.
+    #[test]
+    fn bm_add_at_painted_slot_round_trips_byte_wise() {
+        let orig: &str =
+            include_str!("../tests/fixtures/bmcompat/obsidian-format-unknown-keys.bookmarks.json");
+        let ct = |s: &str| {
+            let mut o = String::new();
+            let mut it = s.split("\"ctime\": ");
+            o.push_str(it.next().unwrap());
+            for p in it { o.push_str("\"ctime\": N"); o.push_str(&p[p.find(|c: char| !c.is_ascii_digit()).unwrap()..]); }
+            o
+        };
+        let root = tmp_vault("bm-tabbm");
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        // 1. top level, painted slot 2 (Roadmap=0, Work=1, Untitled group=2):
+        //    lands before the painted Untitled group, i.e. AFTER the search
+        //    entry the pane never numbers — the raw-slot mapping on disk.
+        fs::write(root.join(BM_FILE), orig).unwrap();
+        let mut t = read_bm_tree(&root);
+        bm_add_at_in(&mut t, None, 2, "Alpha").unwrap();
+        write_bm_tree(&root, &t).unwrap();
+        let got = String::from_utf8(bm_bytes(&root)).unwrap();
+        let anchor = "    {\n      \"type\": \"group\",\n      \"ctime\": 1789851665418,";
+        assert_eq!(orig.matches(anchor).count(), 1, "surgery anchor: last group");
+        let block = "    {\n      \"type\": \"file\",\n      \"ctime\": 1,\n      \"path\": \"Alpha.md\"\n    },\n";
+        let want = orig.replacen(anchor, &format!("{block}{anchor}"), 1);
+        assert_eq!(ct(&got), ct(&want), "one block spliced at the slot, nothing else touched");
+        assert_eq!(
+            bm_rows_of(&t).iter().map(|r| format!("{}{}:{}", r.kind, r.depth, r.name)).collect::<Vec<_>>()[4],
+            "f0:Alpha"
+        );
+
+        // 2. onto the group row Work (painted row 1), pos 0 = PREPEND.
+        fs::write(root.join(BM_FILE), orig).unwrap();
+        let mut t = read_bm_tree(&root);
+        bm_add_at_in(&mut t, Some(1), 0, "Alpha").unwrap();
+        write_bm_tree(&root, &t).unwrap();
+        let got = String::from_utf8(bm_bytes(&root)).unwrap();
+        let open_old = "      \"items\": [\n        {\n          \"type\": \"file\",\n          \"ctime\": 1789851462235,";
+        let open_new = "      \"items\": [\n        {\n          \"type\": \"file\",\n          \"ctime\": 1,\n          \"path\": \"Alpha.md\"\n        },\n        {\n          \"type\": \"file\",\n          \"ctime\": 1789851462235,";
+        assert_eq!(orig.matches(open_old).count(), 1, "surgery anchor: Work's items open");
+        assert_eq!(ct(&got), ct(&orig.replacen(open_old, open_new, 1)), "prepended into the group");
+
+        // 3. a slot past the end appends after everything, opaques included
+        let mut t = parse_bm_tree(orig);
+        bm_add_at_in(&mut t, None, 99, "Alpha").unwrap();
+        assert!(matches!(t.last(), Some(BmNode::File { name, .. }) if name == "Alpha"));
+
+        // 4. refusals leave the tree (hence the bytes) untouched
+        let t0 = parse_bm_tree(orig);
+        let mut t = parse_bm_tree(orig);
+        assert_eq!(bm_add_at_in(&mut t, None, 0, "Projects/Roadmap"), Err("already bookmarked".to_string()));
+        assert_eq!(bm_add_at_in(&mut t, Some(1), 0, "Zettel/Atomic Notes"), Err("already bookmarked".to_string()));
+        assert!(bm_add_at_in(&mut t, Some(0), 0, "Beta").is_err(), "a file row is not a group");
+        assert!(bm_add_at_in(&mut t, None, 0, "").is_err());
+        assert_eq!(bm_emit(&t, &[]), bm_emit(&t0, &[]), "refused: nothing changed");
+        assert_eq!(bm_emit(&t0, &[]), orig, "fixture emits byte-identically");
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// the four structural operations, addressed by ROW INDEX (titles are not

@@ -29,6 +29,7 @@
    Census (main.js canvasTok, appended):
      [cvdrop:<copied>/<refused>]   the last attach on a board
      [cvdropf:<folder>|n=<cards added>|cap=<cap>]   the last folder drop (n=0 when refused)
+     [cvdropbm:<kind>|n=<cards added>|ref=<refused>|cap=<cap>]   goal cv-dragin: the last bookmark drop (kind file|heading|block|group|<type>)
      [cvdropmsg:<text>]            the last sentence this file showed (refusal / cap notice)
      [cvpaste:<type:size|none>|types=<clipboard types>|<vault path>]   goal cv-journeys: the last Ctrl+V the board handed to the catcher */
 (function () {
@@ -45,7 +46,7 @@
   const IMG = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"]);
   const HOST = window.__osPluginHost;   // captured at load: the loader seals the host before plugins run
   const app = HOST && HOST.app ? HOST.app : null, X = HOST && HOST.api ? HOST.api : null;
-  let last = { att: "", fold: "", msg: "", paste: "", ex: "" };
+  let last = { att: "", fold: "", msg: "", paste: "", ex: "", bm: "" };
   let ptr = null;                       // {x, y, w}: the last pointer position over a board wrapper
 
   const vis = e => !!e && e.isConnected && e.getClientRects().length > 0;
@@ -224,7 +225,11 @@
   }
   function placeRow(c, paths, p, size) {
     const sz = size || { width: CARD, height: CARD };
-    const ns = paths.map((f, i) => c.createFileNode({ file: f, pos: { x: p.x + i * PITCH, y: p.y }, size: sz, save: false }));
+    // an item is a vault path, or {file, subpath} (goal cv-dragin: a heading / block bookmark keeps its JSON Canvas subpath)
+    const ns = paths.map((f, i) => {
+      const it = typeof f === "string" ? { file: f } : f;
+      return c.createFileNode({ file: it.file, subpath: it.subpath || undefined, pos: { x: p.x + i * PITCH, y: p.y }, size: sz, save: false });
+    });
     toFront(c, ns);
     c.deselectAll();
     ns.forEach((n, i) => c.select(n, i > 0));
@@ -275,6 +280,97 @@
     placeRow(c, d.paths, anchor(p, size), size);
     last.ex = "file|" + size.width + "x" + size.height + (vdiag ? "|" + vdiag : ""); vdiag = "";
     ping(c);
+  }
+  /* ---------------------------------------------- goal cv-dragin: a bookmark dragged from the bookmarks pane
+     The pane's mouse machine (main.js bmDragStart, R24.6 — no HTML5 drag events, no drag payload object) asks boardUnder() every
+     frame its pointer is outside the pane; over an editable board its decision is [bmdrop:cv], and the release
+     calls dropBookmark() here directly. The pane's rows carry only {kind, depth, name}, so the entry itself is read
+     from the vault's own .obsidian/bookmarks.json (READ ONLY: the file's bytes are never written by a drop) and
+     the painted row is found by the backend's own paint rule (main.rs bm_node_of: a "file" whose path ends in .md
+     and a "group" with a string title and an items array are painted, in pre-order; anything else is carried
+     unpainted). Per bookmark:
+       file             -> one file card, placed exactly as an explorer file drop (anchor(), CV_DROP_TOPLEFT)
+       heading / block  -> the same card with JSON Canvas "subpath" (stock keeps "#Heading" / "#^block" on the
+                           bookmark; a "heading" / "block" typed entry is read the same way)
+       group            -> one card per file bookmark inside it, recursively in pane order, one row at the 445
+                           pitch like a folder drop; more than CAP files adds nothing and says so
+       search / url / anything else -> refused: no card (inside a group: skipped and counted)
+     One synchronous placeRow = one cv-history step; the new cards end selected.
+     Census: [cvdropbm:<kind>|n=<cards added>|ref=<refused entries>|cap=<cap>] */
+  function boardUnder(x, y) {
+    if (!app || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+    const c = boardAt(document.elementFromPoint(x, y));
+    return c && !ro(c) ? c : null;
+  }
+  const isPathNode = o => !!o && typeof o === "object" && typeof o.path === "string" && o.path !== "" &&
+    (o.type === "file" || o.type === "heading" || o.type === "block");
+  const painted = o => !!o && typeof o === "object" && (
+    (o.type === "file" && typeof o.path === "string" && o.path.endsWith(".md") && o.path.length > 3) ||
+    (o.type === "group" && typeof o.title === "string" && Array.isArray(o.items)));
+  function rawAt(items, ix) {           // the raw entry painted as row ix (pre-order over painted entries only)
+    let seen = 0, hit = null;
+    const walk = arr => {
+      for (const o of arr) {
+        if (!painted(o)) continue;
+        if (seen++ === ix) { hit = o; return true; }
+        if (o.type === "group" && walk(o.items)) return true;
+      }
+      return false;
+    };
+    walk(items);
+    return hit;
+  }
+  const subOf = o => (typeof o.subpath === "string" && o.subpath ? o.subpath : "");
+  const itemOf = o => { const s = subOf(o); return s ? { file: o.path, subpath: s } : { file: o.path }; };
+  async function rawBookmarks() {
+    try {
+      const a = app && app.vault && app.vault.adapter, dir = (app.vault.configDir || ".obsidian");
+      if (!a || typeof a.read !== "function") return null;
+      const j = JSON.parse(await a.read(dir + "/bookmarks.json"));
+      return j && Array.isArray(j.items) ? j.items : null;
+    } catch (_) { return null; }
+  }
+  // row = the painted row {kind, name} (main.js bmTree[ix]); without a readable file the row alone decides (no subpath)
+  async function dropBookmark(c, ix, row, x, y) {
+    if (!c || ro(c) || !row) return false;
+    const p = c.toCanvas(x, y);          // the point is taken at the release, before any await
+    const items = await rawBookmarks();
+    let o = items ? rawAt(items, ix) : null;
+    const rk = row.kind === "g" ? "group" : "file";
+    if (o && (o.type !== rk || (rk === "file" ? o.path !== row.name + ".md" : o.title !== row.name))) o = null;   // the file moved under us: trust the row
+    if (!o) o = rk === "group" ? { type: "group", title: row.name, items: (row.files || []).map(n => ({ type: "file", path: n + ".md" })) } : { type: "file", path: row.name + ".md" };
+    const label = String(o.title || o.path || row.name);
+    let kind, out = [], ref = 0;
+    if (o.type === "group") {
+      kind = "group";
+      const walk = arr => { for (const k of arr) { if (k && k.type === "group" && Array.isArray(k.items)) walk(k.items); else if (isPathNode(k)) out.push(itemOf(k)); else ref++; } };
+      walk(o.items);
+    } else if (isPathNode(o)) {
+      const s = subOf(o);
+      kind = !s ? "file" : s.startsWith("#^") ? "block" : "heading";
+      out = [itemOf(o)];
+    } else { kind = String(o.type || "unknown").replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 24); ref = 1; }
+    const tag = kind + "|n=";
+    if (!c.wrapperEl.isConnected || ro(c)) { last.bm = tag + "0|ref=" + ref + "|cap=" + CAP; return ping(c); }
+    if (!out.length) {
+      last.bm = tag + "0|ref=" + ref + "|cap=" + CAP;
+      say(c, "Canvas: the bookmark " + label + " has no file to add as a card");
+      return ping(c);
+    }
+    if (out.length > CAP) {
+      last.bm = tag + "0|ref=" + ref + "|cap=" + CAP;
+      say(c, "Canvas: " + label + " has " + out.length + " files, over the limit of " + CAP + " files per bookmark group drop");
+      return ping(c);
+    }
+    if (kind === "group") placeRow(c, out, anchor(p, { width: CARD, height: CARD }));
+    else {
+      const size = await oneSize(out[0].file);
+      if (!c.wrapperEl.isConnected || ro(c)) { last.bm = tag + "0|ref=" + ref + "|cap=" + CAP; return ping(c); }
+      placeRow(c, out, anchor(p, size), size);
+    }
+    last.bm = tag + out.length + "|ref=" + ref + "|cap=" + CAP;
+    ping(c);
+    return true;
   }
   function say(c, msg) {
     last.msg = msg;
@@ -576,11 +672,12 @@
     if (last.att) t += " [cvdrop:" + last.att + "]";
     if (last.ex) t += " [cvdropx:" + esc(last.ex) + "]";
     if (last.fold) t += " [cvdropf:" + last.fold.replace(/[[\]@\n]/g, "_") + "]";
+    if (last.bm) t += " [cvdropbm:" + last.bm + "]";
     if (last.paste) t += " [cvpaste:" + esc(last.paste.slice(0, 120)) + "]";
     if (last.msg) t += " [cvdropmsg:" + esc(last.msg.slice(0, 120)) + "]";
     return t;
   }
 
-  const api = { claim, attach, census, CAP, drop, pasteKey, mirror, TOPLEFT: CV_DROP_TOPLEFT, FOLDER_STOCK: CV_DROP_FOLDER_STOCK };
+  const api = { claim, attach, census, CAP, drop, pasteKey, mirror, boardUnder, dropBookmark, TOPLEFT: CV_DROP_TOPLEFT, FOLDER_STOCK: CV_DROP_FOLDER_STOCK };
   Object.defineProperty(window, "CanvasDrop", { configurable: true, enumerable: false, writable: false, value: Object.freeze(api) });
 })();

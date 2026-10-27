@@ -1794,6 +1794,78 @@ function bmSubEnd(ix) {                    // one past the last painted row of i
   while (j < bmTree.length && bmTree[j].depth > d) j++;
   return j;
 }
+/* tab-bookmark: bmdrag's ZONE CACHE, DECISION and FEEDBACK, shared by the two
+   drags that land on the bookmarks pane — a bookmark row (bmDragStart) and a
+   TAB (tabDragStart). One copy, so a tab gets exactly the gap lines and group
+   fills a row gets. exFrom/exTo = the dragged row's subtree, which is not a
+   target; a tab passes -1/-1 (it has no row) and src -1 (no slot it already
+   occupies). */
+function bmZones(exFrom, exTo) {           // rects cached ONCE per paint (R20, like treeDragStart)
+  const rows = [...document.querySelectorAll("#bmlist .bmrow")];
+  const par = bmTree.map((_, i) => bmParentOf(i));
+  const cix = bmTree.map((_, i) => { let n = 0; for (let k = 0; k < i; k++) if (par[k] === par[i]) n++; return n; });
+  return {
+    // collapseall: a folded row (.bmhide) keeps its slot so rows[i] stays bmTree[i],
+    // but it is not a target — vis=false, and hit tests skip it
+    rows: rows.map((el, i) => ({ el, i, r: el.getBoundingClientRect(), vis: !el.classList.contains("bmhide") })),
+    box: $("bmlist").getBoundingClientRect(),
+    par, cix,
+    rootLen: par.filter(p => p === null).length,
+    exFrom, exTo,
+  };
+}
+const bmInPane = (z, x, y) => x >= z.box.left && x <= z.box.right && y >= z.box.top && y <= z.box.bottom;
+function bmDecide(z, x, y, src) {          // -> {grp?, parent, pos, y} or null; the pointer is inside z.box
+  let nd = null;
+  let lastVis = null;                      // the last PAINTED row (a folded tail has no bottom)
+  for (const w of z.rows) if (w.vis) lastVis = w;
+  const gapAt = j => j >= z.rows.length
+    ? { parent: null, pos: z.rootLen, y: lastVis ? lastVis.r.bottom : z.box.top }
+    : { parent: z.par[j], pos: z.cix[j], y: z.rows[j].r.top };
+  let hit = null;
+  for (const w of z.rows) if (w.vis && y >= w.r.top && y < w.r.bottom) { hit = w; break; }
+  if (!hit) {
+    // pane background: the line SNAPS below the last row, root depth (case 3)
+    if (!lastVis || y >= lastVis.r.bottom) nd = gapAt(z.rows.length);
+  } else if (hit.i >= z.exFrom && hit.i < z.exTo) {
+    nd = null;                             // self or own descendant: NOTHING paints (case 6)
+  } else {
+    const band = y - hit.r.top;
+    const grp = bmTree[hit.i] && bmTree[hit.i].kind === "g";
+    if (band < 6) nd = gapAt(hit.i);                       // top band: the gap above
+    else if (grp && band < hit.r.height - 6) nd = { grp: hit.i, parent: hit.i, pos: 0, y: 0 };   // group middle: PREPEND (case 2)
+    // bottom band / file middle: the gap below. Below a COLLAPSED group that is
+    // after its whole (unpainted) subtree, never inside it (collapseall)
+    else nd = gapAt(hit.el.classList.contains("bmfold") ? bmSubEnd(hit.i) : hit.i + 1);
+  }
+  // the slot the row already occupies is not a move — treeDragStart's
+  // "the folder it is ALREADY in is not a destination", gap edition
+  if (src >= 0 && nd && nd.grp == null && nd.parent === z.par[src] && (nd.pos === z.cix[src] || nd.pos === z.cix[src] + 1)) nd = null;
+  // a first-child slot reached via a gap can still name a dragged group's
+  // descendant as parent — same refusal as the row-band test above
+  if (nd && nd.parent !== null && nd.parent >= z.exFrom && nd.parent < z.exTo) nd = null;
+  return nd;
+}
+const bmDecTok = nd => nd.grp != null ? "grp@" + nd.grp : "gap@" + (nd.parent === null ? "-" : nd.parent) + "." + nd.pos;
+function bmFbPaint(z, nd) {                // -> {line, hl}: the pane feedback for one decision
+  const fb = { line: null, hl: null };
+  if (nd.grp != null) {
+    fb.hl = z.rows[nd.grp].el;
+    fb.hl.classList.add("bmdrop-into");    // measured row fill, no line (case 2)
+  } else {
+    fb.line = document.createElement("div");
+    fb.line.id = "bmdropline";             // 3px accent line spanning the pane (cases 1/3)
+    fb.line.style.left = z.box.left + "px";
+    fb.line.style.width = z.box.width + "px";
+    fb.line.style.top = (nd.y - 1) + "px";
+    document.body.appendChild(fb.line);
+  }
+  return fb;
+}
+function bmFbClear(fb) {
+  if (fb.line) { fb.line.remove(); fb.line = null; }
+  if (fb.hl) { fb.hl.classList.remove("bmdrop-into"); fb.hl = null; }
+}
 function bmDragStart(e, ix) {
   if (e.button !== 0 || bmRenaming !== null) return;
   const src = bmTree[ix];
@@ -1806,32 +1878,21 @@ function bmDragStart(e, ix) {
   document.addEventListener("dragstart", own, true);
   const sx = e.clientX, sy = e.clientY;
   const label = src.label ?? (src.kind === "g" ? src.name : src.name.split("/").pop());
-  let ghost = null, line = null, hl = null, srcEl = null, zones = null, raf = 0, last = null;
+  // cv-dragin: the row as pressed (bmTree may repaint mid-drag), plus a group's painted file rows — CanvasDrop's
+  // fallback when .obsidian/bookmarks.json cannot be read
+  const srcRow = { kind: src.kind, name: src.name, files: src.kind === "g" ? bmTree.slice(ix + 1, bmSubEnd(ix)).filter(r => r.kind === "f").map(r => r.name) : [] };
+  let ghost = null, fb = { line: null, hl: null }, srcEl = null, zones = null, raf = 0, last = null;
   let spring = 0;                          // collapseall R5: the armed spring-load timer
   bmDrop = null;
-  const clearFb = () => {
-    if (line) { line.remove(); line = null; }
-    if (hl) { hl.classList.remove("bmdrop-into"); hl = null; }
-  };
+  const clearFb = () => bmFbClear(fb);
   const disarm = () => { if (spring) { clearTimeout(spring); spring = 0; } };
-  // rects cached ONCE per paint (R20, like treeDragStart), plus the parent/slot
-  // tables, so a gap names its exact slot without a per-frame model walk. Rebuilt
-  // only when a spring-load repaints the pane mid-drag.
+  // rects cached ONCE per paint (bmZones), plus the parent/slot tables, so a gap
+  // names its exact slot without a per-frame model walk. Rebuilt only when a
+  // spring-load repaints the pane mid-drag.
   const cacheZones = () => {
-    const rows = [...document.querySelectorAll("#bmlist .bmrow")];
-    const par = bmTree.map((_, i) => bmParentOf(i));
-    const cix = bmTree.map((_, i) => { let n = 0; for (let k = 0; k < i; k++) if (par[k] === par[i]) n++; return n; });
-    zones = {
-      // collapseall: a folded row (.bmhide) keeps its slot so rows[i] stays bmTree[i],
-      // but it is not a target — vis=false, and hit tests skip it
-      rows: rows.map((el, i) => ({ el, i, r: el.getBoundingClientRect(), vis: !el.classList.contains("bmhide") })),
-      box: $("bmlist").getBoundingClientRect(),
-      par, cix,
-      rootLen: par.filter(p => p === null).length,
-      exFrom: ix, exTo: bmSubEnd(ix),      // the dragged row and its descendants are not targets
-    };
+    zones = bmZones(ix, bmSubEnd(ix));     // the dragged row and its descendants are not targets
     if (srcEl) srcEl.classList.remove("bmdrop-src");
-    srcEl = rows[ix];
+    srcEl = zones.rows[ix] ? zones.rows[ix].el : null;
     if (srcEl) srcEl.classList.add("bmdrop-src");   // the dragged row keeps its fill (recon case 1)
   };
   const springFire = key => {
@@ -1862,38 +1923,16 @@ function bmDragStart(e, ix) {
     }
     ghost.style.transform = "translate3d(" + (ev.clientX + 10) + "px," + (ev.clientY + 12) + "px,0)";
     const z = zones;
-    let nd = null;                         // {grp, parent, pos, y}
-    let lastVis = null;                    // the last PAINTED row (a folded tail has no bottom)
-    for (const w of z.rows) if (w.vis) lastVis = w;
-    const gapAt = j => j >= z.rows.length
-      ? { parent: null, pos: z.rootLen, y: lastVis ? lastVis.r.bottom : z.box.top }
-      : { parent: z.par[j], pos: z.cix[j], y: z.rows[j].r.top };
-    if (ev.clientX >= z.box.left && ev.clientX <= z.box.right &&
-        ev.clientY >= z.box.top && ev.clientY <= z.box.bottom) {
-      let hit = null;
-      for (const w of z.rows) if (w.vis && ev.clientY >= w.r.top && ev.clientY < w.r.bottom) { hit = w; break; }
-      if (!hit) {
-        // pane background: the line SNAPS below the last row, root depth (case 3)
-        if (!lastVis || ev.clientY >= lastVis.r.bottom) nd = gapAt(z.rows.length);
-      } else if (hit.i >= z.exFrom && hit.i < z.exTo) {
-        nd = null;                         // self or own descendant: NOTHING paints (case 6)
-      } else {
-        const band = ev.clientY - hit.r.top;
-        const grp = bmTree[hit.i] && bmTree[hit.i].kind === "g";
-        if (band < 6) nd = gapAt(hit.i);                       // top band: the gap above
-        else if (grp && band < hit.r.height - 6) nd = { grp: hit.i, parent: hit.i, pos: 0, y: 0 };   // group middle: PREPEND (case 2)
-        // bottom band / file middle: the gap below. Below a COLLAPSED group that is
-        // after its whole (unpainted) subtree, never inside it (collapseall)
-        else nd = gapAt(hit.el.classList.contains("bmfold") ? bmSubEnd(hit.i) : hit.i + 1);
-      }
-      // the slot the row already occupies is not a move — treeDragStart's
-      // "the folder it is ALREADY in is not a destination", gap edition
-      if (nd && nd.grp == null && nd.parent === z.par[ix] && (nd.pos === z.cix[ix] || nd.pos === z.cix[ix] + 1)) nd = null;
-      // a first-child slot reached via a gap can still name a dragged group's
-      // descendant as parent — same refusal as the row-band test above
-      if (nd && nd.parent !== null && nd.parent >= z.exFrom && nd.parent < z.exTo) nd = null;
+    let nd = null;                         // {grp, parent, pos, y} | {cv}
+    if (bmInPane(z, ev.clientX, ev.clientY)) {
+      nd = bmDecide(z, ev.clientX, ev.clientY, ix);
+    } else if (window.CanvasDrop && typeof window.CanvasDrop.boardUnder === "function") {
+      // goal cv-dragin: outside the pane, an editable canvas board under the pointer is a target —
+      // the release hands the bookmark to CanvasDrop.dropBookmark (no bmApply: bookmarks.json is untouched)
+      const cvb = window.CanvasDrop.boardUnder(ev.clientX, ev.clientY);
+      if (cvb) nd = { cv: cvb };
     }
-    const tok = nd == null ? "none" : (nd.grp != null ? "grp@" + nd.grp : "gap@" + (nd.parent === null ? "-" : nd.parent) + "." + nd.pos);
+    const tok = nd == null ? "none" : nd.cv ? "cv" : bmDecTok(nd);
     if (tok !== bmDropTok) {
       clearFb();
       disarm();                            // R5: a decision change restarts the hover clock
@@ -1901,19 +1940,7 @@ function bmDragStart(e, ix) {
         const key = z.rows[nd.grp].el.dataset.bmk;
         spring = setTimeout(() => springFire(key), BM_SPRING_MS);
       }
-      if (nd) {
-        if (nd.grp != null) {
-          hl = z.rows[nd.grp].el;
-          hl.classList.add("bmdrop-into"); // measured row fill, no line (case 2)
-        } else {
-          line = document.createElement("div");
-          line.id = "bmdropline";          // 3px accent line spanning the pane (cases 1/3)
-          line.style.left = z.box.left + "px";
-          line.style.width = z.box.width + "px";
-          line.style.top = (nd.y - 1) + "px";
-          document.body.appendChild(line);
-        }
-      }
+      if (nd && !nd.cv) fb = bmFbPaint(z, nd);   // cv-dragin: a board paints no pane feedback; the chip names the decision
       bmDrop = nd;
       bmDropTok = tok;
       ghost.textContent = label + (nd ? " -> " + tok : "");   // the chip names the decision
@@ -1921,7 +1948,7 @@ function bmDragStart(e, ix) {
     }
   };
   const move = ev => { last = ev; if (!raf) raf = requestAnimationFrame(step); };
-  const up = async () => {
+  const up = async uev => {             // cv-dragin: the release point decides the board drop
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
     document.removeEventListener("selectstart", own, true);
@@ -1937,6 +1964,14 @@ function bmDragStart(e, ix) {
     if (!dragged) return;                  // below the threshold: a plain click, let it through
     bmEat = performance.now();
     if (!d) { updateTitle(); return; }     // no legal target: NOTHING is called — byte-level refusal
+    if (d.cv) {                            // goal cv-dragin: bookmark -> board = file card(s) at the release point
+      const ux = uev ? uev.clientX : last.clientX, uy = uev ? uev.clientY : last.clientY;
+      const cvb = window.CanvasDrop.boardUnder(ux, uy) || d.cv;
+      try { await window.CanvasDrop.dropBookmark(cvb, ix, srcRow, ux, uy); }
+      catch (err) { console.warn("[bm] canvas drop:", err); }
+      updateTitle();
+      return;
+    }
     await bmApply("bm_drag", { ix, parent: d.parent, pos: d.pos });
   };
   window.addEventListener("mousemove", move);
@@ -4026,6 +4061,7 @@ function utBuild() {             // pane/focus census in the window title (headl
               bmIndentTok() +                                       // R4X.6: the painted indent STEP in px
               bmRenTok() +                                          // R4X.8: an inline group rename is OPEN and not yet committed
               (bmDropTok ? " [bmdrop:" + bmDropTok.replace(/[[\]|]/g, "") + "]" : "") +   // bmdrag: the app-computed drop target, live only mid-drag
+              (tabBmTok ? " [tabbm:" + tabBmTok.replace(/[[\]|]/g, "") + "]" : "") +   // tab-bookmark: a TAB's decision over the pane, live only mid-drag
               (bmRows() === bmTree.length ? "" :                     // the smoke assertion must prove the PANE
                " [bmdesync:" + bmTree.length + "/" + bmRows() + "]") : "");   // repainted, not just the model
 
@@ -4951,16 +4987,38 @@ function renderTabs(g) {
        "split a tab group by dragging a tab to the bottom")
                                -> new col-split BELOW, carrying the tab.
        In the corner both apply: the nearer edge wins.
-   Source group emptied by the move collapses (same rule as closeTab). */
+   Source group emptied by the move collapses (same rule as closeTab).
+   tab-bookmark: the BOOKMARKS PANE (#bmlist, while it is showing) is one more
+   target. Over it the tab speaks bmdrag's vocabulary through the SAME code
+   (bmZones/bmDecide/bmFbPaint): gap@<parent>.<pos> line, grp@<ix> row fill =
+   prepend into the group, pane background = end of the top level. The release
+   is ONE bm_add_at (a new FILE bookmark at exactly that slot); the tab is not
+   moved, closed or reloaded. Census [tabbm:<tok>], published only on change.
+   Refused, with the reason on the chip and a say() line on release, and NO
+   backend call (bookmarks.json keeps its bytes):
+     no:dup    the note is already bookmarked — a drag adds no second row
+               (unlike bmactive F3, whose menu path duplicates on purpose)
+     no:canvas a canvas bookmark would be Opaque: written, never painted
+     no:graph / no:view  a graph or other non-note view is not a note */
 const TAB_EDGE = 40;
+let tabBmTok = "";                           // tab-bookmark: the live [tabbm:] decision ("" = not over the pane)
+function tabBmWhy(tab) {                     // -> null (bookmarkable) or {code, msg}
+  if (!tab) return { code: "view", msg: "nothing to bookmark" };
+  if (tab.kind === "unk" && tab.utype === "canvas") return { code: "canvas", msg: "Canvas bookmarks are not shown in this pane" };
+  if (tab.kind === "gg" || tab.kind === "lg") return { code: "graph", msg: "A graph view cannot be bookmarked by drag" };
+  if (tab.kind || !tab.name) return { code: "view", msg: "Only a note tab can be bookmarked by drag" };
+  if (bmCache.includes(tab.name)) return { code: "dup", msg: "\"" + tab.name.split("/").pop() + "\" is already bookmarked" };
+  return null;
+}
 function tabDragStart(e, g, i) {
   if (e.button !== 0 || e.target.closest(".x")) return;
   const sx = e.clientX, sy = e.clientY;
   let ghost = null, target = null, hl = null, zones = null, raf = 0, last = null, rsR = null;
+  let bmZ = null, bmFb = { line: null, hl: null }, bmWhy = null, bmTab = null, label = "";   // tab-bookmark
   const clearHl = () => {
     if (hl) { hl.classList.remove("drop-strip", "drop-edge", "drop-bottom"); hl = null; }
   };
-  const sameT = (a, b) => (a ? a.kind + a.g.id : "") === (b ? b.kind + b.g.id : "");
+  const sameT = (a, b) => (a ? a.kind + (a.g ? a.g.id : bmDecTok(a.d)) : "") === (b ? b.kind + (b.g ? b.g.id : bmDecTok(b.d)) : "");
   const step = () => {                       // R20: one span per FRAME; rects cached at drag start, classes only on target change
     raf = 0;
     const ev = last, mT0 = performance.now();
@@ -4968,9 +5026,16 @@ function tabDragStart(e, g, i) {
       if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) < 6) return;
       ghost = document.createElement("div");
       ghost.id = "tabghost";
-      ghost.textContent = g.tabs[i] ? g.tabs[i].name.split("/").pop() : "";
+      label = g.tabs[i] ? g.tabs[i].name.split("/").pop() : "";
+      ghost.textContent = label;
       document.body.appendChild(ghost);
       zones = groups().map(h => ({ g: h, pr: h.pane.getBoundingClientRect(), tb: h.tabsEl.getBoundingClientRect().bottom }));
+      // tab-bookmark: the bookmarks pane is a target only while it is SHOWING
+      // (sidebar open, Bookmarks the active side pane, #bmlist laid out)
+      const bl = $("bmlist");
+      bmZ = sidePane === "bm" && bl && bl.getClientRects().length ? bmZones(-1, -1) : null;
+      bmTab = g.tabs[i];
+      bmWhy = tabBmWhy(bmTab);
       // R20.3 (operator 2026-09-30, wsrestore): the right sidebar is content panes ONLY.
       // No tab is ever accepted there — a drop over #rside (its strip included) is
       // refused, the tab stays where it was. Explicit, not an accident of zones[].
@@ -4979,9 +5044,25 @@ function tabDragStart(e, g, i) {
     }
     ghost.style.transform = "translate3d(" + (ev.clientX + 10) + "px," + (ev.clientY + 12) + "px,0)";
     let nt = null;
+    // tab-bookmark: over the bookmarks pane the decision is bmdrag's (bmDecide),
+    // or a refusal named on the chip; the pane groups below are not consulted
+    const overBm = !!bmZ && bmInPane(bmZ, ev.clientX, ev.clientY);
+    let btok = "";
+    if (overBm) {
+      const d = bmWhy ? null : bmDecide(bmZ, ev.clientX, ev.clientY, -1);
+      btok = bmWhy ? "no:" + bmWhy.code : d ? bmDecTok(d) : "none";
+      if (d) nt = { kind: "bm", d };
+    }
+    if (btok !== tabBmTok) {                 // ONLY on a decision change — never per frame
+      bmFbClear(bmFb);
+      if (nt) bmFb = bmFbPaint(bmZ, nt.d);
+      tabBmTok = btok;
+      ghost.textContent = label + (!btok ? "" : bmWhy ? " — " + bmWhy.msg : " -> " + btok);
+      updateTitle();
+    }
     const overSide = rsR && ev.clientX >= rsR.left && ev.clientX <= rsR.right &&
                      ev.clientY >= rsR.top && ev.clientY <= rsR.bottom;
-    for (const z of overSide ? [] : zones) {
+    for (const z of overSide || overBm ? [] : zones) {
       const pr = z.pr;
       if (ev.clientX < pr.left || ev.clientX > pr.right ||
           ev.clientY < pr.top || ev.clientY > pr.bottom) continue;
@@ -4996,7 +5077,7 @@ function tabDragStart(e, g, i) {
     }
     if (!sameT(nt, target)) {
       clearHl();
-      if (nt) { hl = nt.kind === "strip" ? nt.g.tabsEl : nt.g.pane; hl.classList.add("drop-" + nt.kind); }
+      if (nt && nt.g) { hl = nt.kind === "strip" ? nt.g.tabsEl : nt.g.pane; hl.classList.add("drop-" + nt.kind); }
     }
     target = nt;
     otel.span("tab_drag_move", { groups: zones.length, target: target ? target.kind : "" }, performance.now() - mT0);
@@ -5015,10 +5096,19 @@ function tabDragStart(e, g, i) {
     window.removeEventListener("selectstart", noSel, true);
     if (raf) { cancelAnimationFrame(raf); raf = 0; if (last) step(); }
     const t = target;
+    const refused = ghost && tabBmTok.startsWith("no:") ? bmWhy : null;   // tab-bookmark: released on a refusal
     if (ghost) ghost.remove();
     clearHl();
+    bmFbClear(bmFb);
+    if (tabBmTok) { tabBmTok = ""; updateTitle(); }
     if (ghost) { const s = getSelection(); if (s && !s.isCollapsed) s.removeAllRanges(); }
+    if (refused) { say(refused.msg, "tabbm"); return; }   // NO backend call: bookmarks.json keeps its bytes
     if (!ghost || !t) return;                // plain click, or dropped nowhere
+    if (t.kind === "bm") {                   // tab-bookmark: ONE write; the tab stays where it is
+      await act("tab_bm", { grp: t.d.grp != null ? 1 : 0 }, () =>
+        bmApply("bm_add_at", { parent: t.d.parent, pos: t.d.pos, name: bmTab.name }));
+      return;
+    }
     await act("tab_drop", { kind: t.kind, groups: groups().length }, async () => {   // R20: pane/tab nodes MOVE, no layout rebuild
     await flushSave(g);
     const tab = g.tabs.splice(i, 1)[0];
@@ -5696,6 +5786,7 @@ async function lgFollow(src) {
   await rgFollow();                 // R9.6: right panel tracks the active note too
   const n = curOf(src);
   if (!n) return;
+  if (lgCanvasTab(src.tabs[src.active])) return;   // lg-canvas: a canvas is no centre — the graph keeps its last note
   for (const h of groups()) {
     const t = h.active >= 0 ? h.tabs[h.active] : null;
     if (!t || t.kind !== "lg" || t.linkId !== src.id || t.center === n) continue;
@@ -9258,7 +9349,8 @@ const CMDS = [
   ["workspace:previous-tab",   "Go to previous tab",                  ["ctrl+shift+tab", "ctrl+pageup"],   () => cmdCycleTab(-1)],
   ...[1, 2, 3, 4, 5, 6, 7, 8].map(n => ["workspace:goto-tab-" + n, "Go to tab #" + n, ["ctrl+" + n], () => cmdJumpTab(n)]),
   ["graph:open",               "Open graph view",                     ["ctrl+g"],               cmdGlobalGraph],
-  ["graph:open-local",         "Open local graph",                    ["ctrl+shift+g"],         () => cmdLocalGraph()],
+  ["graph:open-local",         "Open local graph",                    ["ctrl+shift+g"],         () => cmdLocalGraph(),
+    () => !lgNoGraph(fg())],   // lg-canvas: a canvas (or a local graph) has no note to centre on — the row is not offered
   ["editor:insert-link",       "Insert Markdown link",                ["ctrl+k"],               () => edEdit((v, a, b) => { const s = v.slice(a, b) || "link"; return [v.slice(0, a) + "[" + s + "]()" + v.slice(b), a + s.length + 3, a + s.length + 3]; })],
   ["editor:insert-wikilink",   "Add internal link",                   [],                       () => edEdit((v, a, b) => { const s = v.slice(a, b); return [v.slice(0, a) + "[[" + s + "]]" + v.slice(b), a + 2, a + 2 + s.length]; })],
   ["editor:insert-tag",        "Add tag",                             [],                       () => edEdit((v, a, b) => [v.slice(0, a) + "#" + v.slice(b), a + 1, a + 1])],
@@ -11207,12 +11299,22 @@ async function showLocalGraph(g, t) {  // t = the localgraph tab (kind:"lg")
   });
 }
 
+/* lg-canvas: a local graph is the neighbourhood of a NOTE. A canvas tab (a canvas plugin-view leaf, or a
+   tab named *.canvas) has no note behind it, so no local graph is opened for it — not from Ctrl+Shift+G,
+   the palette or the ribbon (#lgbtn) — and a linked local graph does not re-centre onto it (lgFollow). */
+function lgCanvasTab(t) {
+  return !!t && ((t.kind === "unk" && t.utype === "canvas") || (!t.kind && /\.canvas$/i.test(String(t.name || ""))));
+}
+function lgNoGraph(g) {                // true: the focused tab of g cannot be the centre of a local graph
+  const t = g && g.active >= 0 ? g.tabs[g.active] : null;
+  return !t || t.kind === "lg" || lgCanvasTab(t);
+}
 async function cmdLocalGraph() {       // R7.2: local graph of focused note -> new right split
   if (!state) return;
   const g = fg();
   const t0 = g.active >= 0 ? g.tabs[g.active] : null;
   const center = curOf(g);
-  if (!center || (t0 && t0.kind === "lg")) return;
+  if (!center || lgNoGraph(g)) return;
   lgT0 = perf.now();                   // perfhunt: graph_open kind:lg = click -> first sim frame (handed to the new group in startGraph)
   await flushSave(g);
   const t = { kind: "lg", name: "Graph of " + center.split("/").pop(),
