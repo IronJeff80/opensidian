@@ -72,6 +72,24 @@
       "download": P('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>'),
       "undo": P('<path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/>'),
       "go-to-file": P('<path d="M14 3H6a2 2 0 0 0-2 2v4M14 3v6h6M14 3l6 6v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-1"/><path d="M2 15h10M9 12l3 3-3 3"/>'),
+      // plug-top5: excalidraw's view header actions, side tool panel and menus
+      "save": P('<path d="M5 3h11l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M7 3v5h8V3M7 21v-7h10v7"/>'),
+      "presentation": P('<path d="M2 4h20M4 4v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4M12 16v5M8 21h8"/>'),
+      "maximize-2": P('<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>'),
+      "minimize-2": P('<path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/>'),
+      "circle-plus": P('<circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/>'),
+      "square-pen": P('<path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18 2l4 4-10 10H8v-4z"/>'),
+      "rotate-ccw": P('<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>'),
+      "monitor-play": P('<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4M10 7l5 3-5 3z"/>'),
+      "layout-dashboard": P('<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>'),
+      "file-code": P('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M10 13l-2 2 2 2M14 13l2 2-2 2"/>'),
+      "book-open-text": P('<path d="M2 4h6a4 4 0 0 1 4 4v13a3 3 0 0 0-3-3H2zM22 4h-6a4 4 0 0 0-4 4v13a3 3 0 0 1 3-3h7z"/><path d="M16 9h3M16 13h3M5 9h3M5 13h3"/>'),
+      "swatch-book": P('<path d="M11 17a4 4 0 0 1-8 0V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2z"/><path d="M16.7 13H19a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H7M11 8l2.3-2.3a2 2 0 0 1 2.8 0l2.8 2.8a2 2 0 0 1 0 2.8L9.9 20.2"/><circle cx="7" cy="17" r="1"/>'),
+      "locate-fixed": P('<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="3"/><path d="M2 12h3M19 12h3M12 2v3M12 19v3"/>'),
+      "hash": P('<path d="M4 9h16M4 15h16M10 3L8 21M16 3l-2 18"/>'),
+      "file-output": P('<path d="M4 7V4a2 2 0 0 1 2-2h8l6 6v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2"/><path d="M14 2v6h6M2 15h8M7 12l3 3-3 3"/>'),
+      "copy-plus": P('<rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2M15 12v6M12 15h6"/>'),
+      "clipboard-copy": P('<rect x="8" y="2" width="8" height="4" rx="1"/><path d="M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2M16 4h2a2 2 0 0 1 2 2v4M21 14H11M15 10l-4 4 4 4"/>'),
     };
     const custom = new Map();           // addIcon: name -> svg inner content (viewBox 0 0 100 100)
     const DEFAULT_ICON = P('<rect x="4" y="4" width="16" height="16" rx="3"/>');

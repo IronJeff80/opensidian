@@ -337,6 +337,8 @@
       setClass(c) { this.settingEl.addClass(c); return this; }
       setTooltip(t) { this.nameEl.title = t; return this; }
       setHeading() { this.settingEl.addClass("setting-item-heading"); return this; }
+      /* setVisibility(v): a false hides the whole row (excalidraw export dialog: "selected elements only" without a selection) */
+      setVisibility(v) { this.settingEl.style.display = v ? "" : "none"; return this; }
       /* setNavigable(cb): the row reads as a link to somewhere else — a chevron is the first control and a
          click anywhere on the row calls cb() with no arguments and this = the Setting; a second call
          replaces cb (stock 1.13.7, scratch oracle goal cp-settings-tab) */
