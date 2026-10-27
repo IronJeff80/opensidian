@@ -10,6 +10,8 @@
      list            every regular `*.canvas` file in the vault, vault-relative,
                      sorted; hidden components (.obsidian, .trash, ...) and
                      symlinks are never walked or listed
+     media           every regular audio / video file (MEDIA_EXTS), same walk, sorted (goal cv-journeys:
+                     the explorer rows and file model of the files a card plays)
      read  <path>    the file's text (UTF-8, at most CANVAS_MAX bytes)
      write <path>    atomic replace of an EXISTING canvas file
      create <path>   a NEW canvas file (EEXIST if anything is there); the
@@ -58,7 +60,7 @@ pub fn canvas_rel(op: &str, path: &str) -> Result<PathBuf, String> {
     Ok(rel)
 }
 
-fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, depth: usize) {
+fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, depth: usize, keep: fn(&str) -> bool) {
     if depth >= vaultfs::MAX_WALK_DEPTH {
         return;
     }
@@ -73,8 +75,8 @@ fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, depth: usize) {
         let Ok(t) = e.file_type() else { continue };
         let p = e.path();
         if t.is_dir() {
-            walk(&p, base, out, depth + 1);
-        } else if t.is_file() && n.ends_with(EXT) && n.len() > EXT.len() {
+            walk(&p, base, out, depth + 1, keep);
+        } else if t.is_file() && keep(n) {
             if let Ok(rel) = p.strip_prefix(base) {
                 if let Some(s) = rel.to_str() {
                     out.push(s.to_string());
@@ -84,13 +86,34 @@ fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, depth: usize) {
     }
 }
 
-pub fn list(root: &Path) -> Vec<String> {
+fn is_canvas(n: &str) -> bool {
+    n.ends_with(EXT) && n.len() > EXT.len()
+}
+
+/// goal cv-journeys: the audio / video types a file card plays (ui/plugins/canvas-cards.js AUD + VID). Images and
+/// PDFs are listed by list_images (index::IMG_EXTS + EMBED_ONLY_EXTS); these are in no other listing.
+pub const MEDIA_EXTS: [&str; 11] = ["mp3", "wav", "m4a", "ogg", "3gp", "flac", "mp4", "webm", "ogv", "mov", "mkv"];
+
+fn is_media(n: &str) -> bool {
+    n.rsplit_once('.').is_some_and(|(s, e)| !s.is_empty() && MEDIA_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+}
+
+fn list_by(root: &Path, keep: fn(&str) -> bool) -> Vec<String> {
     let mut out = Vec::new();
     if let Ok(c) = root.canonicalize() {
-        walk(&c, &c, &mut out, 0);
+        walk(&c, &c, &mut out, 0, keep);
     }
     out.sort();
     out
+}
+
+pub fn list(root: &Path) -> Vec<String> {
+    list_by(root, is_canvas)
+}
+
+/// every regular audio / video file in the vault (same walk: no hidden component, no symlink), sorted
+pub fn media(root: &Path) -> Vec<String> {
+    list_by(root, is_media)
 }
 
 fn exists(v: &Vault, rel: &Path) -> io::Result<bool> {
@@ -189,9 +212,20 @@ fn relink_text(text: &str, from: &str, to: &str) -> Option<String> {
     Some(out)
 }
 
+/// the empty JSON Canvas document: an object with no keys, or only an empty "nodes" and/or "edges" array
+fn is_empty_doc(b: &[u8]) -> bool {
+    match serde_json::from_slice::<Value>(b) {
+        Ok(Value::Object(m)) => m.iter().all(|(k, v)| (k == "nodes" || k == "edges") && v.as_array().is_some_and(|a| a.is_empty())),
+        _ => false,
+    }
+}
+
 pub fn op(root: &Path, op: &str, path: &str, data: Option<&str>) -> Result<Value, String> {
     if op == "list" {
         return Ok(json!(list(root)));
+    }
+    if op == "media" {
+        return Ok(json!(media(root)));
     }
     if op == "links" {
         // every canvas -> the vault paths its file cards point at (CV-141: a file card is a link of the canvas)
@@ -272,7 +306,10 @@ pub fn op(root: &Path, op: &str, path: &str, data: Option<&str>) -> Result<Value
             v.p_write(&rel, b, false).map(|_| Value::Null).map_err(e)
         }
         "create" => {
+            // a new canvas holding the empty document is made as an EMPTY file (0 bytes); the board writes {} when
+            // it is first left (CVR-A-004)
             let b = body()?;
+            let b: &[u8] = if is_empty_doc(b) { b"" } else { b };
             if exists(&v, &rel).map_err(e)? {
                 return Err(err(op, path, "EEXIST: file already exists"));
             }
@@ -300,6 +337,74 @@ pub fn op(root: &Path, op: &str, path: &str, data: Option<&str>) -> Result<Value
         }
         _ => Err(format!("ENOSYS: canvas op {op:?} does not exist")),
     }
+}
+
+
+/* canvas_attach: a NEW image file inside the vault, written from base64 bytes
+   (export as image, pasted / dropped images). The byte twin of `create` above,
+   and in the same class: vault-confined, never trust-gated, never an overwrite.
+
+     canvas_attach {path, dataB64} -> the vault-relative path written
+
+   path      vault-relative, through vaultfs::plugin_rel (no absolute / dot / NUL /
+             backslash / percent-encoded forms), no hidden component, a leaf
+             ending in one of ATTACH_EXT (case-insensitive); the parent folder
+             must exist; nothing may be there yet (a symlink included: O_EXCL)
+   dataB64   standard base64 (padding optional), at most ATTACH_MAX bytes decoded
+
+   Named errors (the code is the text before ':'): EINVAL (bad path, bad
+   extension, empty or non-base64 data), EPERM (hidden component, vault escape),
+   EEXIST (taken: the caller picks a free name), EFBIG (over ATTACH_MAX), ENOENT
+   (no parent folder). A failed write removes the partial file. */
+
+/// the largest file canvas_attach writes
+pub const ATTACH_MAX: u64 = 64 << 20;
+/// the leaf extensions canvas_attach accepts (lower case, compared case-insensitively)
+pub const ATTACH_EXT: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
+
+pub fn attach(root: &Path, path: &str, data_b64: &str) -> Result<String, String> {
+    use std::io::Write;
+    let op = "attach";
+    let rel = vaultfs::plugin_rel(path).map_err(|e| vaultfs::plugin_err(op, path, &e))?;
+    let comps: Vec<&std::ffi::OsStr> = rel.iter().collect();
+    let Some(leaf) = comps.last().and_then(|c| c.to_str()) else {
+        return Err(err(op, path, "EINVAL: not a file path"));
+    };
+    if comps.iter().any(|c| c.as_encoded_bytes().first() == Some(&b'.')) {
+        return Err(err(op, path, "EPERM: hidden path component"));
+    }
+    let ext = leaf.rsplit_once('.').map(|(s, x)| (s, x.to_ascii_lowercase()));
+    if !matches!(&ext, Some((s, x)) if !s.is_empty() && ATTACH_EXT.contains(&x.as_str())) {
+        return Err(err(op, path, "EINVAL: not an image file (png, jpg, jpeg, gif, webp)"));
+    }
+    if data_b64.is_empty() {
+        return Err(err(op, path, "EINVAL: empty data"));
+    }
+    if data_b64.len() as u64 > ATTACH_MAX.div_ceil(3) * 4 {
+        return Err(err(op, path, "EFBIG: image too large"));
+    }
+    let bytes = vaultfs::b64_decode(data_b64).ok_or_else(|| err(op, path, "EINVAL: data is not base64"))?;
+    if bytes.is_empty() {
+        return Err(err(op, path, "EINVAL: empty data"));
+    }
+    if bytes.len() as u64 > ATTACH_MAX {
+        return Err(err(op, path, "EFBIG: image too large"));
+    }
+    let e = |x: io::Error| vaultfs::plugin_err(op, path, &x);
+    let v = Vault::open(root).map_err(e)?;
+    let mut f = v.create_new(&rel, false).map_err(|x| {
+        if x.kind() == io::ErrorKind::AlreadyExists {
+            err(op, path, "EEXIST: file already exists")
+        } else {
+            e(x)
+        }
+    })?;
+    if let Err(x) = f.write_all(&bytes).and_then(|_| f.sync_all()) {
+        drop(f);
+        let _ = v.unlink(&rel);
+        return Err(e(x));
+    }
+    Ok(rel.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
@@ -333,10 +438,13 @@ mod tests {
         let (root, _) = fresh("create");
         fs::create_dir_all(root.join("sub")).unwrap();
         op(&root, "create", "sub/N.canvas", Some("{\"nodes\":[],\"edges\":[]}")).unwrap();
-        assert_eq!(fs::read_to_string(root.join("sub/N.canvas")).unwrap(), "{\"nodes\":[],\"edges\":[]}");
+        // the empty document is created as a 0-byte file (CVR-A-004)
+        assert_eq!(fs::read_to_string(root.join("sub/N.canvas")).unwrap(), "");
+        op(&root, "create", "sub/M.canvas", Some("{\"nodes\":[{\"id\":\"a\"}],\"edges\":[]}")).unwrap();
+        assert_eq!(fs::read_to_string(root.join("sub/M.canvas")).unwrap(), "{\"nodes\":[{\"id\":\"a\"}],\"edges\":[]}");
         let e = op(&root, "create", "sub/N.canvas", Some("{}")).unwrap_err();
         assert!(e.starts_with("EEXIST"), "{e}");
-        assert_eq!(fs::read_to_string(root.join("sub/N.canvas")).unwrap(), "{\"nodes\":[],\"edges\":[]}");
+        assert_eq!(fs::read_to_string(root.join("sub/N.canvas")).unwrap(), "");
         assert!(op(&root, "write", "Ghost.canvas", Some("{}")).is_err());
         assert!(!root.join("Ghost.canvas").exists());
         // the parent is not created
@@ -389,6 +497,19 @@ mod tests {
         fs::create_dir_all(root.join("dir.canvas")).unwrap();
         assert_eq!(list(&root), vec!["Z.canvas".to_string(), "b/c/Y.canvas".to_string()]);
         assert_eq!(op(&root, "list", "", None).unwrap(), json!(["Z.canvas", "b/c/Y.canvas"]));
+    }
+
+    #[test]
+    fn canvasfs_media_lists_audio_and_video_only() {
+        let (root, _) = fresh("media");
+        fs::create_dir_all(root.join("a/b")).unwrap();
+        fs::create_dir_all(root.join(".trash")).unwrap();
+        for p in ["s.mp3", "a/b/C.MP4", "a/x.png", "a/n.md", ".trash/t.mp3", "a/.h.mp4", ".mp3", "a/v.mp4.md", "B.canvas"] {
+            fs::write(root.join(p), "x").unwrap();
+        }
+        fs::create_dir_all(root.join("dir.webm")).unwrap();
+        assert_eq!(op(&root, "media", "", None).unwrap(), json!(["a/b/C.MP4", "s.mp3"]));
+        assert_eq!(list(&root), vec!["B.canvas".to_string()]);
     }
 
     #[test]
@@ -473,5 +594,81 @@ mod tests {
         fs::write(root.join("Bad.canvas"), "not json").unwrap();
         fs::write(root.join("E.canvas"), "{\"nodes\":[]}").unwrap();
         assert_eq!(op(&root, "links", "", None).unwrap(), json!({"S.canvas": ["Note.md"]}));
+    }
+
+    const PNG1: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 1, 2, 0xff];
+
+    #[test]
+    fn canvasfs_attach_writes_new_bytes_exactly() {
+        let (root, _) = fresh("attach");
+        fs::create_dir_all(root.join("sub")).unwrap();
+        let b = vaultfs::b64_encode(PNG1);
+        assert_eq!(attach(&root, "Board.png", &b).unwrap(), "Board.png");
+        assert_eq!(fs::read(root.join("Board.png")).unwrap(), PNG1);
+        for p in ["sub/a.JPG", "sub/b.jpeg", "c.gif", "d.webp", "Board 1.png"] {
+            assert_eq!(attach(&root, p, &b).unwrap(), p);
+            assert_eq!(fs::read(root.join(p)).unwrap(), PNG1, "{p}");
+        }
+        // padding is optional
+        assert!(attach(&root, "np.png", b.trim_end_matches('=')).is_ok());
+        assert_eq!(fs::read(root.join("np.png")).unwrap(), PNG1);
+    }
+
+    #[test]
+    fn canvasfs_attach_never_overwrites() {
+        let (root, _) = fresh("attach-ex");
+        fs::write(root.join("Board.png"), "keep").unwrap();
+        fs::create_dir_all(root.join("dir.png")).unwrap();
+        let b = vaultfs::b64_encode(PNG1);
+        assert!(attach(&root, "Board.png", &b).unwrap_err().starts_with("EEXIST"));
+        assert_eq!(fs::read_to_string(root.join("Board.png")).unwrap(), "keep");
+        assert!(attach(&root, "dir.png", &b).is_err());
+        assert!(root.join("dir.png").is_dir());
+        // the parent is not created
+        assert!(attach(&root, "nodir/x.png", &b).is_err());
+        assert!(!root.join("nodir").exists());
+    }
+
+    #[test]
+    fn canvasfs_attach_refuses_traversal_absolute_hidden_and_symlinks() {
+        let (root, out) = fresh("attach-esc");
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        fs::write(out.join("T.png"), "outside").unwrap();
+        symlink(out.join("T.png"), root.join("L.png")).unwrap();
+        symlink(out.join("Dangling.png"), root.join("D.png")).unwrap();
+        symlink(&out, root.join("d")).unwrap();
+        let b = vaultfs::b64_encode(PNG1);
+        for p in ["../outside/U.png", "a/../U.png", "/etc/U.png", out.join("U.png").to_str().unwrap(), "%2e%2e/U.png",
+                  "a\\U.png", "U.png\0", "", ".obsidian/U.png", ".U.png", "d/U.png", "d/T.png", "L.png", "D.png", "C:/U.png"] {
+            assert!(attach(&root, p, &b).is_err(), "attach {p:?}");
+        }
+        assert_eq!(fs::read_to_string(out.join("T.png")).unwrap(), "outside");
+        assert!(!out.join("U.png").exists());
+        assert!(!out.join("Dangling.png").exists());
+        assert!(!root.join(".obsidian/U.png").exists());
+        assert!(attach(&root, "../outside/U.png", &b).unwrap_err().starts_with("EPERM"));
+        assert!(attach(&root, ".obsidian/U.png", &b).unwrap_err().starts_with("EPERM"));
+    }
+
+    #[test]
+    fn canvasfs_attach_refuses_bad_ext_bad_base64_and_oversize() {
+        let (root, _) = fresh("attach-bad");
+        let b = vaultfs::b64_encode(PNG1);
+        for p in ["Note.md", "x.canvas", "x.svg", "x.png.md", "png", "x.", "x.pngx", "noext"] {
+            assert!(attach(&root, p, &b).unwrap_err().starts_with("EINVAL"), "ext {p:?}");
+            assert!(!root.join(p).exists(), "{p}");
+        }
+        for d in ["", "====", "not base64!", "QUJD\nREVG", "data:image/png;base64,QUJD"] {
+            assert!(attach(&root, "b.png", d).unwrap_err().starts_with("EINVAL"), "data {d:?}");
+        }
+        assert!(!root.join("b.png").exists());
+        let big = "A".repeat((ATTACH_MAX.div_ceil(3) * 4) as usize + 4);
+        assert!(attach(&root, "big.png", &big).unwrap_err().starts_with("EFBIG"));
+        // exactly over the decoded cap (4 chars -> 3 bytes; cap+3 bytes)
+        let over = "A".repeat(((ATTACH_MAX + 3) / 3 * 4) as usize);
+        assert!(over.len() as u64 <= ATTACH_MAX.div_ceil(3) * 4 + 4);
+        assert!(attach(&root, "big.png", &over).unwrap_err().starts_with("EFBIG"));
+        assert!(!root.join("big.png").exists());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
     }
 }

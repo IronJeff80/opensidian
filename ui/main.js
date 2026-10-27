@@ -13,6 +13,12 @@ const TAURI = window.__TAURI__;   // plugin-loader item 7: captured at load; ui/
 const PLG = window.__osPluginHost && __osPluginHost.app && __osPluginHost.api ? { app: __osPluginHost.app, X: __osPluginHost.api } : null;
 // the app's own note writes reach the plugin vault through this (api-vault host.noteWritten), captured before the seal
 const PLGNW = window.__osPluginHost && typeof __osPluginHost.noteWritten === "function" ? __osPluginHost.noteWritten : null;
+// goal cv-model: the plugin vault's FILE model alone (api-vault host.vaultModel: no window.app, no plugin runtime), captured before the seal for Canvas
+const PLGVM = window.__osPluginHost && typeof __osPluginHost.vaultModel === "function" ? __osPluginHost.vaultModel : null;
+// goal cv-journeys: re-list the model's image / PDF / audio / video files (api-vault host.vaultSync) when the explorer re-lists them
+const PLGVS = window.__osPluginHost && typeof __osPluginHost.vaultSync === "function" ? __osPluginHost.vaultSync : null;
+// goal cv-journeys: the app's own note rename reaches the file model (api-vault host.noteMoved: the watcher never reports it)
+const PLGNM = window.__osPluginHost && typeof __osPluginHost.noteMoved === "function" ? __osPluginHost.noteMoved : null;
 const inv = (c, a) => { const x = otel.ctx(); return TAURI.core.invoke(c, x ? Object.assign({ otel: x }, a) : a); };
 /* perf-spans shim over otel: mark(name, t0, extra) = a span that started at
    t0 and ends now; push(name, ms, extra) = an already-measured span (graph
@@ -342,8 +348,8 @@ function rEmpty(box, msg) {
 const CHEV = '<svg viewBox="0 0 10 10" fill="currentColor"><path d="M3 1l4 4-4 4z"/></svg>';
 async function rPanesRefresh() {
   if (!rightOpen) return;
-  const n = rNote();
-  rpNote = n || "-";                       // census [rpnote:] — the note the panes render
+  const n = rNote() || (rTab === "bl" ? cvTabPath(rTrack()) : null);   // cvf-links CVR-A-097: a canvas tab's backlinks
+  rpNote = n || "-";                      // census [rpnote:] — the note the panes render
   await pspan("rpane_refresh", { tab: rTab }, async () => {   // perfhunt: right pane re-render -> paint
     if (rTab === "bl") await rBacklinks(n);
     else if (rTab === "out") await rOutgoing(n);
@@ -359,7 +365,9 @@ async function rBacklinks(n) {
   const box = $("bllist"), head = $("blhead");
   box.textContent = ""; head.textContent = "";
   // cv-vault CV-141: + the canvases whose file cards point at this note (fetched alongside, one await)
-  const [bl, cvb] = n ? await Promise.all([inv("backlinks_ctx", { name: n }), cvBacklinks(n)]) : [[], []];
+  // cvf-links CVR-A-097: a CANVAS (n = its .canvas path) is backlinked by the notes linking / embedding it
+  const isCv = !!n && /\.canvas$/i.test(n);
+  const [bl, cvb] = !n ? [[], []] : isCv ? [await cvCanvasBacklinks(n), []] : await Promise.all([inv("backlinks_ctx", { name: n }), cvBacklinks(n)]);
   head.textContent = "Linked mentions"; rpInfo = "bl:" + (bl.length + cvb.length);
   const c = document.createElement("span");
   c.className = "scount"; c.textContent = bl.length + cvb.length; head.appendChild(c);
@@ -392,6 +400,7 @@ async function rBacklinks(n) {
     box.appendChild(row); box.appendChild(kids);
   }
   const UL_SHOW = 200;
+  if (isCv) { rpInfo = "bl:" + bl.length + "|ul:0"; return; }   // a canvas: linked mentions only
   // R10.5 Unlinked mentions: plain-text hits of this note's name in other
   // notes (collapsed like Obsidian); each row = the line with the hit marked +
   // a Link button that wraps it in [[ ]] on disk (the hit then migrates up
@@ -753,6 +762,7 @@ $("ldiv").onmousedown = e => {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
     if (w) inv("set_sidebar_w", { w }).catch(() => {});
+    updateTitle();                         // gh-icons #21: republish the sidebar geometry ([ghw:]) the drag changed
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
@@ -766,6 +776,7 @@ $("rdiv").onmousedown = e => {             // resizable divider (clamped 140-600
   const up = () => {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
+    updateTitle();                         // gh-icons #21: republish the sidebar geometry ([ghw:]) the drag changed
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
@@ -1030,11 +1041,11 @@ async function runSearch() {
     otel.paint(searchSp, { hits: 0 }); searchSp = null; return;
   }
   const st0 = searchT0 >= 0 ? searchT0 : perf.now(); searchT0 = -1;
-  const hits = await inv("search", { query: q });
+  const [hits, cvh] = await Promise.all([inv("search", { query: q }), cvSearch(q).catch(() => [])]);   // cvf-links CVR-A-101: + canvas text cards
   if (seq !== searchSeq) { otel.cancel(searchSp); return; }
-  searchCount = hits.length;
+  searchCount = hits.length + cvh.length;
   box.textContent = "";
-  if (!hits.length) {
+  if (!hits.length && !cvh.length) {
     const d = document.createElement("div");
     d.className = "sempty"; d.textContent = "No results.";
     box.appendChild(d);
@@ -1078,6 +1089,30 @@ async function runSearch() {
     row.onmousedown = ev => { if (ev.button === 1) ev.preventDefault(); };
     row.onauxclick = ev => { if (ev.button === 1) { ev.preventDefault(); scClick(ev, note, [one], one); } };
     box.appendChild(row);
+  }
+  // cvf-links CVR-A-101: canvases whose text cards match, after the notes; a row opens the canvas
+  for (const c of [...new Set(cvh.map(h => h.canvas))]) {
+    const mine = cvh.filter(h => h.canvas === c), grp = document.createElement("div");
+    grp.className = "sgroup"; grp.textContent = c;
+    const k = document.createElement("span");
+    k.className = "scount"; k.textContent = "(" + mine.length + ")";
+    grp.appendChild(k);
+    grp.onclick = () => openCanvas(c);
+    box.appendChild(grp);
+    for (const h of mine) {
+      const row = document.createElement("div");
+      row.className = "shit"; row.title = h.snippet;
+      const w = q.toLowerCase().split(/\s+/)[0], at = h.snippet.toLowerCase().indexOf(w);
+      if (at >= 0) {
+        row.append(h.snippet.slice(0, at));
+        const m = document.createElement("mark");
+        m.textContent = h.snippet.slice(at, at + w.length);
+        row.appendChild(m);
+        row.append(h.snippet.slice(at + w.length));
+      } else row.textContent = h.snippet;
+      row.onclick = () => openCanvas(c);
+      box.appendChild(row);
+    }
   }
   updateTitle();
   perf.mark("search", st0, { q_len: q.length, hits: hits.length });
@@ -2097,6 +2132,14 @@ function noteMenu(e, nm) {                 // right-click a tree note row
     item("Open in new window", null, "Single-window app: there is no second window to open into");   // REQ-16 EXCEPTION
     sep(); }
   mkItem(bmCache.includes(nm) ? "Remove bookmark" : "Bookmark", () => toggleBm(nm));
+  /* CVR-A-087: the row names the note, so its menu can rename it. The rename verb
+     addresses the focused tab's note (F2 / palette), so the row's note is shown
+     there first; the disk move and the link prompt stay cmdRename's. */
+  mkItem("Rename...", async () => {
+    await rowOpen(nm);
+    const g = fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
+    if (t && !t.kind && t.name === nm) cmdRename();
+  });
   /* R24.7: Delete lives HERE, on the explorer row, because that is where the
      user is when they decide a note is finished — and it opens a question, not
      a deletion. askDelete does no I/O of its own beyond counting the inbound
@@ -2243,6 +2286,7 @@ let saveErr = "";
    can never read it through a temporal-dead-zone. The drop code itself is in
    the R31 section further down. */
 let dropTok = "", dropT = null, dropAtTok = "";
+let pasteTok = "", pasteN = 0, pasteR = 0;   // gh-paste census (attachPaste), declared before updateTitle can run
 /* R24.6 explorer drag-to-move, declared here for the same reason as dropTok:
    updateTitle() reads both and runs from load-time code ABOVE the explorer
    section, where a `let` in its own section would be a temporal-dead-zone
@@ -3756,6 +3800,7 @@ function utBuild() {             // pane/focus census in the window title (headl
   // and "a drop whose banner faded" must not look the same to a probe.
   if (dropTok) md += " [drop:" + dropTok.replace(/[[\]|]/g, "") + "]";
   if (dropAtTok) md += " [dropat:" + dropAtTok + "]";   // osdrop: where the last REAL drop put the caret
+  if (pasteTok || pasteN || pasteR) md += " [paste:" + pasteN + "/" + pasteR + "|" + pasteTok + "]";   // gh-paste: images pasted / refused | the last clipboard's types
   // R24.6 explorer drag-to-move: [dragt:<dest or - >:<the chip's own text>] while
   // a drag is up, [mv:<old>><new>/<files linking in>] for the last completed move.
   if (dragTok) md += " [dragt:" + dragTok.replace(/[[\]|]/g, "").slice(0, 120) + "]";
@@ -3823,6 +3868,11 @@ function utBuild() {             // pane/focus census in the window title (headl
         const r = cvEl.getBoundingClientRect();
         gpx += " [gcv:" + fkind + ":" + Math.round(r.left) + "," + Math.round(r.top) +
                "," + Math.round(r.width) + "," + Math.round(r.height) + "]";
+        // gh-graphdpr: [gdpr:<kind>:<dpr>:<css w>x<css h>:<label/2D backing w>x<h>:<gl css w>x<h>:<gl backing w>x<h>]
+        // a phase asserts backing == round(css x dpr) on BOTH canvases ("-" = no GL canvas shown)
+        const gd = fgr.graphDpr ? fgr.graphDpr() : null, gc = fgr.glcv && !fgr.glcv.hidden ? fgr.glcv : null;
+        if (gd) gpx += " [gdpr:" + fkind + ":" + gd.dpr + ":" + gd.cssW + "x" + gd.cssH + ":" + cvEl.width + "x" + cvEl.height +
+               ":" + (gc ? gc.clientWidth + "x" + gc.clientHeight + ":" + gc.width + "x" + gc.height : "-:-") + "]";
       }
     }
   }
@@ -4254,6 +4304,16 @@ const ICON_CHK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" str
   ' stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5L13 5"/></svg>';
 const ICON_PIN = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"' +
   ' stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h4l-.6 4.2 2.6 2.4H3.9l2.7-2.4z"/><path d="M8 8.6V14"/></svg>';
+/* gh-icons: linked-tab mark — two interlocking rounded links, drawn for this app */
+const ICON_LINK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"' +
+  ' stroke-linecap="round" stroke-linejoin="round"><path d="M7 9.2a2.6 2.6 0 0 0 3.7 0l2.3-2.3a2.6 2.6 0 0 0-3.7-3.7l-.9.9"/><path d="M9 6.8a2.6 2.6 0 0 0-3.7 0L3 9.1a2.6 2.6 0 0 0 3.7 3.7l.9-.9"/></svg>';
+/* gh-icons #20: small monochrome glyphs for icon-only buttons that used to carry a text pictograph.
+   class "gi" (style.css) sizes them inline at 12px so the button box does not move. */
+const GI_SVG = d => '<svg class="gi" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' + d + "</svg>";
+const ICON_X = GI_SVG('<path d="M4 4l8 8M12 4l-8 8"/>');
+const ICON_XCIRC = GI_SVG('<circle cx="8" cy="8" r="6"/><path d="M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4"/>');
+const ICON_UP = GI_SVG('<path d="M4 10l4-4 4 4"/>');
+const ICON_DOWN = GI_SVG('<path d="M4 6l4 4 4-4"/>');
 /* The close verbs, R38.3-R38.6. EVERY one of them goes through the existing
    flush-then-close path (closeTab -> flushSave), and each also flushes ONCE up
    front because the doomed set may contain the tab whose buffer is pending
@@ -4861,7 +4921,10 @@ function renderTabs(g) {
     // Obsidian paints it (shots/m3-pinned-tabbar.png). It is a marker element, not
     // text, so [tabs:]/[note:] and every label assertion are unchanged.
     if (tab.pinned) { const p = document.createElement("span"); p.className = "pin"; p.innerHTML = ICON_PIN; d.appendChild(p); }
-    ttl.textContent = (chain ? "\u{1F517} " : "") + tab.name.split("/").pop();
+    // gh-icons #18/#20: the linked-tab mark is a monochrome svg marker element in front of the
+    // label (like the pin), not a colour emoji in the label text
+    if (chain) { const k = document.createElement("span"); k.className = "lk"; k.innerHTML = ICON_LINK; d.appendChild(k); }
+    ttl.textContent = tab.name.split("/").pop();
     const x = document.createElement("span");
     x.className = "x";
     // ux-1: inline svg cross — the ✕ glyph tofu'd under webkit2gtk
@@ -5253,7 +5316,14 @@ async function renameThenAsk0(old, nn, sp) {
   try { blast = await inv("move_note", { old, new: nn }); }
   catch (err) { say(String(err && err.message || err)); updateTitle(); return false; }
   await applyRename(old, nn);
-  const links = blast && blast.links || 0, files = blast && blast.files || 0;
+  let links = blast && blast.links || 0, files = blast && blast.files || 0;
+  // goal cv-journeys: a canvas whose FILE cards name the note links to it (CV-141 canvas_io links) — it counts in
+  // the radius like a note does, so a note that only a board points at still gets the question, and the consented
+  // half (runUpdateLinks0) relinks the cards. Without it a board kept "Note.md" after the rename (J12).
+  try {
+    const cl = await inv("canvas_io", { op: "links", path: "" }), from = old + ".md";
+    for (const k of Object.keys(cl || {})) if (Array.isArray(cl[k]) && cl[k].includes(from)) { files++; links++; }
+  } catch (_) {}
   sp.attrs.links = links; sp.attrs.files = files;
   if (!files) { updateTitle(); return true; }   // R34.3: nothing links in -> NO modal, ever
   let consent = false;
@@ -5544,6 +5614,7 @@ async function loadActive(g) {
     if (PVHOST && PVHOST.mount(g, t)) {   // plugin-views: its type is registered -> the plugin's view is the tab
       if (g.unkEl) g.unkEl.hidden = true;
       renderTabs(g); treeHighlight(); rgFollow();
+      if (t.utype === "canvas") { updateStatus(g); setTimeout(() => { if (g.tabs[g.active] === t) { updateStatus(g); rgFollow(); } }, 400); }   // cvf-links CVR-A-097: a canvas shows its backlink count (async; again once its view has a path)
       return;
     }
     if (!g.unkEl) {
@@ -6205,12 +6276,12 @@ async function lsLoad() {
   }
 }
 
-function buildTree(folders, notes, canvases) {
-  const root = { dirs: new Map(), notes: [], canvases: [] };
+function buildTree(folders, notes, canvases, others) {
+  const root = { dirs: new Map(), notes: [], canvases: [], others: [] };
   const dirAt = path => {
     let n = root;
     for (const part of path.split("/")) {
-      if (!n.dirs.has(part)) n.dirs.set(part, { dirs: new Map(), notes: [], canvases: [] });
+      if (!n.dirs.has(part)) n.dirs.set(part, { dirs: new Map(), notes: [], canvases: [], others: [] });
       n = n.dirs.get(part);
     }
     return n;
@@ -6223,6 +6294,10 @@ function buildTree(folders, notes, canvases) {
   for (const p of canvases || []) {        // goal canvas-core: "sub/Board.canvas", listed beside the notes
     const i = p.lastIndexOf("/");
     (i < 0 ? root : dirAt(p.slice(0, i))).canvases.push(p);
+  }
+  for (const p of others || []) {          // goal cv-journeys: images, PDFs, audio, video — the files a canvas card shows
+    const i = p.lastIndexOf("/");
+    (i < 0 ? root : dirAt(p.slice(0, i))).others.push(p);
   }
   return root;
 }
@@ -6273,18 +6348,20 @@ function renderNode(node, prefix, depth, out) {
   /* goal canvas-core: .canvas files sort in among the notes by their name without the extension
      (the notes keep exactly their old order; a tie puts the note first); a canvas row opens the canvas view, carries data-canvas
      (never data-note: no note verb addresses it) and a CANVAS tag after its name */
-  const files = [...node.notes.map(n => [n, 0]), ...(node.canvases || []).map(p => [p, 1])]
-    .map(([n, c]) => [n, c, c ? n.replace(/\.canvas$/i, "") : n])
+  // goal cv-journeys: the other files (kind 2) sort in the same way, by their name without the extension
+  const files = [...node.notes.map(n => [n, 0]), ...(node.canvases || []).map(p => [p, 1]), ...(node.others || []).map(p => [p, 2])]
+    .map(([n, c]) => [n, c, c === 1 ? n.replace(/\.canvas$/i, "") : c === 2 ? n.replace(/\.[^./]+$/, "") : n])
     .sort((a, b) => a[2] < b[2] ? -1 : a[2] > b[2] ? 1 : a[1] - b[1]);
   for (const [nm, isCanvas] of files) {
-    if (isCanvas) { out.appendChild(canvasRow(nm, depth)); continue; }
+    if (isCanvas === 1) { out.appendChild(canvasRow(nm, depth)); continue; }
+    if (isCanvas === 2) { out.appendChild(fileRow(nm, depth)); continue; }
     const row = document.createElement("div");
     row.className = "trow note";                // .active: treeHighlight()
     row.innerHTML = treeGuides(depth) + '<span class="tc"></span>' +
       '<span class="tn"></span>';
     row.querySelector(".tn").textContent = nm.split("/").pop();
     row.dataset.note = nm;
-    row.onclick = e => { if (treeClickEaten()) return; rowOpen(nm, e); };     // opentab REQ-1/3/5/7: replace in place; ctrl = new tab
+    row.onclick = e => { if (treeClickEaten()) return; if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); treeAnchor = wsPathOut(nm); rowOpen(nm, e); };     // opentab REQ-1/3/5/7: replace in place; ctrl = new tab; cv-journeys: shift = range select
     row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); rowOpen(nm, e); } };   // opentab REQ-6: middle = new tab
     row.oncontextmenu = e => noteMenu(e, nm);   // R9.4: bookmark toggle
     row.addEventListener("mousedown", e => treeDragStart(e, nm));   // R24.6: drag onto a folder row = move
@@ -6293,15 +6370,33 @@ function renderNode(node, prefix, depth, out) {
   }
 }
 
+/* goal cv-journeys: an image / PDF / audio / video row. Stock lists every file type it supports in the explorer,
+   named without its extension and tagged with it (PNG, PDF, MP3, ...). Here the row is a DRAG SOURCE for a board
+   (the file card) and nothing else: it carries data-file (never data-note: no note verb addresses it), opens no
+   view (the app has none for these types) and is no move source (R24.6 moves notes). */
+function fileRow(p, depth) {
+  const row = document.createElement("div");
+  row.className = "trow file";
+  row.innerHTML = treeGuides(depth) + '<span class="tc"></span><span class="tn"></span><span class="ttag"></span>';
+  const base = p.split("/").pop(), d = base.lastIndexOf(".");
+  row.querySelector(".tn").textContent = d > 0 ? base.slice(0, d) : base;   // names never hit innerHTML
+  row.querySelector(".ttag").textContent = d > 0 ? base.slice(d + 1).toUpperCase() : "";
+  row.dataset.file = p;
+  row.addEventListener("mousedown", e => treeDragStart(e, p, "file"));
+  row.onclick = e => { if (treeClickEaten()) return; if (e.shiftKey && !e.ctrlKey && !e.metaKey) return treeRange(row); treeSelClear(); treeAnchor = p; };   // shift = range select; it opens no view
+  return row;
+}
+
 function canvasRow(p, depth) {
   const row = document.createElement("div");
   row.className = "trow cvfile";   // NOT "canvas": that is the board element's class (plugins.css .canvas = absolute)
   row.innerHTML = treeGuides(depth) + '<span class="tc"></span><span class="tn"></span><span class="ttag">CANVAS</span>';
   row.querySelector(".tn").textContent = p.split("/").pop().replace(/\.canvas$/i, "");   // names never hit innerHTML
   row.dataset.canvas = p;
-  row.onclick = () => openCanvas(p);
+  row.onclick = () => { if (treeClickEaten()) return; treeSelClear(); treeAnchor = p; openCanvas(p); };   // CVR-A-090: the click a drag ends with is not an open; a board row is a range anchor, never a shift target
   row.onauxclick = e => { if (e.button === 1) { e.preventDefault(); openCanvas(p); } };
   row.oncontextmenu = e => canvasFileMenu(e, p);
+  row.addEventListener("mousedown", e => treeDragStart(e, p));   // CVR-A-090: drag onto a folder row = move (cvMoveTo)
   return row;
 }
 
@@ -6335,6 +6430,38 @@ function treeClickEaten() {              // a completed drag must not also open/
   treeEat = 0;                           // one click only, and stale marks expire by time:
   return !!t && performance.now() - t < 400;   // a drop on a FOLDER row generates no row click
 }
+/* goal cv-journeys: explorer multi-select, as stock 1.13.7 does it (measured black-box, docs/negctl-cv-journeys):
+   Ctrl+click still opens a new tab (opentab), SHIFT+click selects the RANGE of file rows from the active file's
+   row (the anchor; none = the clicked row) to the clicked row and opens nothing; any plain click or a navigation
+   clears it. A drag that starts on a selected row carries the whole selection (dragManager.dragFiles) — a board
+   lays one file card per file. Folder rows are never selected. */
+let treeSel = [];                        // vault paths, in row order
+let treeAnchor = null;                   // the last row plainly clicked (stock: the file it opened = the active file)
+const treeRowPath = r => r.dataset.note != null ? wsPathOut(r.dataset.note) : r.dataset.canvas != null ? r.dataset.canvas : r.dataset.file != null ? r.dataset.file : null;
+function treeSelClear() {
+  if (!treeSel.length) return;
+  treeSel = [];
+  for (const r of document.querySelectorAll("#tree .trow.is-selected")) { r.classList.remove("is-selected"); delete r.dataset.selp; }
+}
+function treeRange(row) {
+  if (!document.getElementById("tree-sel-css")) {   // the row style (stock: .is-selected, the selection tint)
+    const st = document.createElement("style"); st.id = "tree-sel-css";
+    st.textContent = "#tree .trow.is-selected { background: var(--nav-item-background-selected, var(--text-selection)) }";
+    document.head.appendChild(st);
+  }
+  const rows = [...document.querySelectorAll("#tree .trow.note, #tree .trow.cvfile, #tree .trow.file")].filter(r => r.getClientRects().length > 0);
+  let af = null;
+  try { af = PLG && PLG.app.workspace.getActiveFile && PLG.app.workspace.getActiveFile(); } catch (_) {}
+  const ap = af ? af.path : (cur() ? wsPathOut(cur()) : null);
+  let a = treeAnchor != null ? rows.findIndex(r => treeRowPath(r) === treeAnchor) : -1;   // a board view is no FileView here: getActiveFile misses it
+  if (a < 0) a = rows.findIndex(r => treeRowPath(r) === ap);
+  const b = rows.indexOf(row);
+  if (b < 0) return;
+  if (a < 0) a = b;
+  treeSelClear();
+  for (const r of rows.slice(Math.min(a, b), Math.max(a, b) + 1)) { const p = treeRowPath(r); if (p == null) continue; r.classList.add("is-selected"); r.dataset.selp = p; treeSel.push(p); }
+  updateTitle();                         // census [tsel:]
+}
 /* top5-func: the explorer drag and the plugins. Stock drags a note with an HTML5
    drag whose payload is app.dragManager.draggable for as long as the drag is up
    (Excalidraw reads draggable.type/.title/.files in its dragover/drop). This
@@ -6346,15 +6473,28 @@ function treeClickEaten() {              // a completed drag must not also open/
    HTML5 contract) gets the drop — anything else is the old "dropped on
    nothing", and the app's own panes never see a synthetic DOM drag. */
 let treePlgDrag = null;
-function treePlgDragStart(nm, dir) {         // cv-drop: dir = a folder row (dragFolder payload)
+function treePlgDragStart(nm, kind) {        // cv-drop: kind true = a folder row (dragFolder payload); cv-journeys: "file" = a file row (nm is its vault path)
   if (!PLG || !PLG.app.dragManager) return null;
-  const f = PLG.app.vault.getAbstractFileByPath(dir ? nm : wsPathOut(nm));
+  const dir = kind === true;
+  const f = PLG.app.vault.getAbstractFileByPath(dir || kind === "file" ? nm : wsPathOut(nm));
   if (!(f instanceof (dir ? PLG.X.TFolder : PLG.X.TFile))) return null;
   let dt;
   try { dt = new DataTransfer(); } catch (_) { return null; }
   const dm = PLG.app.dragManager;
   let data;
   try { data = dir ? dm.dragFolder({ dataTransfer: dt }, f, "file-explorer") : dm.dragFile({ dataTransfer: dt }, f, "file-explorer"); } catch (_) { return null; }
+  dm.draggable = data;
+  return { dt, data, end() { if (dm.draggable === data) dm.draggable = null; } };
+}
+function treePlgDragFiles(paths) {          // cv-journeys: a multi-row selection -> dragManager.dragFiles (every path a TFile, else no plugin payload)
+  if (!PLG || !PLG.app.dragManager) return null;
+  const fs = paths.map(p => PLG.app.vault.getAbstractFileByPath(p));
+  if (!fs.length || fs.some(f => !(f instanceof PLG.X.TFile))) return null;
+  let dt;
+  try { dt = new DataTransfer(); } catch (_) { return null; }
+  const dm = PLG.app.dragManager;
+  let data;
+  try { data = dm.dragFiles({ dataTransfer: dt }, fs, "file-explorer"); } catch (_) { return null; }
   dm.draggable = data;
   return { dt, data, end() { if (dm.draggable === data) dm.draggable = null; } };
 }
@@ -6377,7 +6517,7 @@ function treePlgDrop(pd, ev) {
   } catch (e) { console.warn("[tree] plugin drop:", e); return false; }
   finally { pd.end(); }
 }
-function treeDragStart(e, nm, dir) {
+function treeDragStart(e, nm, dir) {         // dir: true = a folder row, "file" = a file row (cv-journeys), else a note
   if (e.button !== 0) return;
   // top5-func: the press is this machine's, not WebKit's. Without this the travel selected text
   // across the panes, and the NEXT press on that selection started a native text drag that
@@ -6388,7 +6528,7 @@ function treeDragStart(e, nm, dir) {
   const sx = e.clientX, sy = e.clientY;
   const base = nm.split("/").pop();
   const par = nm.includes("/") ? nm.slice(0, nm.lastIndexOf("/")) : "";
-  let ghost = null, target = null, hl = null, zones = null, raf = 0, last = null;
+  let ghost = null, target = null, hl = null, zones = null, raf = 0, last = null, multi = null;
   const clearHl = () => { if (hl) { hl.classList.remove("drop-into"); hl = null; } };
   const step = () => {
     raf = 0;
@@ -6397,10 +6537,12 @@ function treeDragStart(e, nm, dir) {
       if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) < 6) return;
       ghost = document.createElement("div");
       ghost.id = "tabghost";
-      ghost.textContent = base;
+      // cv-journeys: a drag from a row of a multi-row selection carries the selection (no move: zones go)
+      multi = treeSel.length > 1 && treeSel.includes(dir === "file" ? nm : dir === true ? null : wsPathOut(nm)) ? treeSel.slice() : null;
+      ghost.textContent = multi ? multi.length + " files" : base;
       document.body.appendChild(ghost);
-      dragTok = "-:" + base;             // a drag is UP with no destination yet
-      treePlgDrag = treePlgDragStart(nm, dir);
+      dragTok = "-:" + ghost.textContent;   // a drag is UP with no destination yet
+      treePlgDrag = multi ? treePlgDragFiles(multi) : treePlgDragStart(nm, dir);
       updateTitle();
       // rects cached ONCE (R20): a per-frame getBoundingClientRect over every
       // folder row is a layout read per mousemove on a 500-row explorer.
@@ -6409,7 +6551,7 @@ function treeDragStart(e, nm, dir) {
         .map(el => ({ el, f: el.dataset.folder, r: el.getBoundingClientRect() }))
         .filter(z => z.r.height > 0 && z.f != null);
       zones.push({ el: $("tree"), f: "", r: $("tree").getBoundingClientRect() });   // the vault ROOT
-      if (dir) zones = [];               // cv-drop: a folder is no move source (R24.5) — only a plugin view takes it
+      if (dir || multi) zones = [];      // cv-drop: a folder is no move source (R24.5) — only a plugin view takes it; nor is a selection
     }
     ghost.style.transform = "translate3d(" + (ev.clientX + 10) + "px," + (ev.clientY + 12) + "px,0)";
     let nt = null;
@@ -6446,10 +6588,11 @@ function treeDragStart(e, nm, dir) {
     const pd = treePlgDrag; treePlgDrag = null;
     if (ghost && !t && pd && treePlgDrop(pd, ev)) { treeEat = 1; updateTitle(); return; }   // a plugin view took it
     if (pd) pd.end();
-    if (dir) { if (ghost) treeEat = performance.now(); updateTitle(); return; }   // cv-drop: a folder dropped on nothing moves nothing
+    if (dir || multi) { if (ghost) treeEat = performance.now(); updateTitle(); return; }   // cv-drop: a folder (or a selection) dropped on nothing moves nothing
     if (!ghost || !t) { updateTitle(); return; }   // plain click, or dropped on nothing
     treeEat = 1;                                   // the mouseup's click is not an "open this note"
-    await moveNoteTo(nm, t.f);
+    if (/\.canvas$/i.test(nm)) await cvMoveTo(nm, t.f);   // CVR-A-090: a canvas row moves through canvas_io
+    else await moveNoteTo(nm, t.f);
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
@@ -6487,14 +6630,37 @@ async function moveNoteTo(nm, folder) {
 // .active highlight. R20: treeHighlight() is the zero-IPC half (tab switch /
 // focus change); refreshTree() re-lists the vault (watcher, create, rename).
 let treeSig = "", treeRows = new Map(), treeActive = null;
+/* goal cvf-filecards CVR-B-037 (seam, coordinator grant 2026-10-26; cvf-media reuses it): a canvas file card that is the
+   lone selection makes ITS file the active file while its board tab is the one showing — the explorer highlights its
+   row and the status bar counts its backlinks. setCanvasActiveFile(vault path | null); the board hands it back with null.
+   Bound to the tab it was set from, so a closed / switched-away board never leaves a stale active file behind. */
+let cvAct = null;                        // { name: note name (no .md), tab }
+const cvActName = () => { const g = state && fg(); const t = g && g.active >= 0 ? g.tabs[g.active] : null; return cvAct && t && cvAct.tab === t ? cvAct.name : null; };
+function setCanvasActiveFile(p) {
+  const g = state && fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
+  cvAct = p && t ? { name: wsPathIn(String(p)), tab: t } : null;
+  treeHighlight();
+  if (!g) return;
+  if (cvAct) {
+    const nm = cvAct.name;
+    g.stWc.hidden = g.stCc.hidden = true;      // a board has no words of its own: the line is the card note's backlinks
+    inv("backlinks", { name: nm }).then(bl => {
+      if (cvActName() !== nm) return;
+      g.stBl.textContent = bl.length + (bl.length === 1 ? " backlink" : " backlinks");
+      g.status.hidden = false;
+    }).catch(() => {});
+  } else if (t && t.kind === "unk") g.status.hidden = true;   // back to the board: no status line (loadActive)
+}
 function treeHighlight() {
-  const r = treeRows.get(cur()) || null;
+  const r = treeRows.get(cvActName() || cur()) || null;
   if (r === treeActive) return;
+  treeSelClear();                        // cv-journeys: a navigation ends a multi-row selection (stock)
   if (treeActive) treeActive.classList.remove("active");
   if (r) r.classList.add("active");
   treeActive = r;
 }
 async function refreshTree() {
+  const mediaP = inv("canvas_io", { op: "media", path: "" }).catch(() => []);   // goal cv-journeys: audio / video rows, in parallel
   const [folders, notes, imgs] =
     await Promise.all([inv("list_folders"), inv("list_notes"), inv("list_images")]);
   notesCache = notes;
@@ -6503,12 +6669,17 @@ async function refreshTree() {
   // goal canvas-core: .canvas files are listed only while the Canvas core plugin has the extension
   // registered (off = no view opens them, as a file type nothing handles is not listed)
   let canvases = [];
+  cvLinkDirty();                                        // cvf-links: the canvas link model re-reads after a tree change
   if (CANVAS && CANVAS.isRegistered()) { try { canvases = await inv("canvas_io", { op: "list", path: "" }); } catch (_) { canvases = []; } }
-  const sig = folders.join("\n") + "\0" + notes.join("\n") + "\0" + canvases.join("\n");
+  // goal cv-journeys: images + PDFs (list_images) and audio / video (canvas_io media) are listed too, as stock does
+  const media = await mediaP;
+  const others = [...(imgs || []), ...(media || [])];
+  const sig = folders.join("\n") + "\0" + notes.join("\n") + "\0" + canvases.join("\n") + "\0" + others.join("\n");
   if (sig === treeSig && tree.childElementCount) { treeHighlight(); return; }
-  treeSig = sig; treeRows = new Map(); treeActive = null;
+  if (PLGVS && others.join("\n") !== treeSig.split("\0")[3]) await PLGVS();   // a new image (a paste, a drop) is a TFile before its card paints
+  treeSig = sig; treeRows = new Map(); treeActive = null; treeSel = [];
   tree.innerHTML = "";
-  renderNode(buildTree(folders, notes, canvases), "", 0, tree);
+  renderNode(buildTree(folders, notes, canvases, others), "", 0, tree);
   treeHighlight();
 }
 
@@ -6549,6 +6720,7 @@ async function wikiClick(e, a) {
   const g = gOf(a);
   if (!g) return;
   const n = a.dataset.note || curOf(g), an = a.dataset.anchor;   // R10: [[#H]] = this note
+  if (await cvLinkOpen(n, an)) return;      // cvf-links CVR-A-096: [[X.canvas]] opens the canvas, never makes X.canvas.md
   if (a.classList.contains("wiki-unresolved")) await createNote(n);
   if (e.ctrlKey) {                            // R6.4: new tab, same group
     await flushSave(g);
@@ -6645,6 +6817,7 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
       e.preventDefault();
       const g = gOf(a);                              // R20: event-time group (retained views move)
       const n = a.dataset.note || curOf(g), an = a.dataset.anchor;  // R10: [[#H]] = this note
+      if (await cvLinkOpen(n, an)) return;          // cvf-links CVR-A-096: [[X.canvas]] opens the canvas
       if (a.classList.contains("wiki-unresolved"))   // R3.5: click creates the note
         await createNote(n);
       if (e.ctrlKey) {                               // R6.4: open in NEW TAB, same group
@@ -6706,14 +6879,28 @@ function scheduleSave(g) {
 
 /* ---------- status bar (R2.7, per group) ---------- */
 async function updateStatus(g) {
+  const t0 = g.active >= 0 ? g.tabs[g.active] : null, cvp = cvTabPath(t0);
+  if (t0 && t0.kind === "unk" && !g.graphOn) {   // cvf-links CVR-A-097: a canvas tab's status bar = its backlink count
+    if (!cvp) { g.status.hidden = true; return; }    // another plugin view (or a canvas not opened yet): no status
+    g.stWc.style.display = g.stCc.style.display = "none";
+    const k = (await cvCanvasBacklinks(cvp)).reduce((s, b) => s + b.n, 0);
+    if (g.tabs[g.active] !== t0) return;
+    g.stBl.textContent = k + (k === 1 ? " backlink" : " backlinks");
+    g.status.hidden = false;
+    return;
+  }
+  g.stWc.style.display = g.stCc.style.display = "";
   const n = curOf(g);
   if (!n || g.graphOn) { g.status.hidden = true; return; }
+  g.stWc.hidden = g.stCc.hidden = false;      // cvf-filecards: a board card note hid them (setCanvasActiveFile)
   const v = g.editor.value;
   const w = (v.match(/\S+/g) || []).length;
   g.stWc.textContent = w + (w === 1 ? " word" : " words");
   g.stCc.textContent = v.length + (v.length === 1 ? " char" : " chars");
-  const bl = await inv("backlinks", { name: n });
-  g.stBl.textContent = bl.length + (bl.length === 1 ? " backlink" : " backlinks");
+  // cvf-links CVR-A-099/100: the count is the linked MENTIONS (a source's link lines) + the canvases' links
+  const [bl, cvb] = await Promise.all([inv("backlinks_ctx", { name: n }), cvBacklinks(n)]);
+  const k = bl.reduce((s, b) => s + Math.max(1, b.lines.length), 0) + cvb.reduce((s, c) => s + c.cards, 0);
+  g.stBl.textContent = k + (k === 1 ? " backlink" : " backlinks");
   g.status.hidden = false;
 }
 
@@ -6912,7 +7099,7 @@ function mruTouch(name) {
   if (i >= 0) mruList.splice(i, 1);
   mruList.unshift(name);
 }
-function qsItems() {                 // switcher source: MRU first, rest a-z
+function qsItems() {                 // switcher source: MRU first, rest a-z, then the vault's canvases
   const rest = notesCache.filter(n => !mruList.includes(n)).sort();
   return [...mruList.filter(n => notesCache.includes(n)), ...rest].map(n => ({
     label: n, hint: "",
@@ -6923,8 +7110,67 @@ function qsItems() {                 // switcher source: MRU first, rest a-z
         await loadActive(g);
       } else await openInTab(n);
     },
-  }));
+  })).concat(qsCanvases.map(p => ({  // CVR-A-067: a .canvas row is the board's vault path; Enter opens the board, never a note
+    label: p, hint: "", canvas: true,
+    run: async () => { await openCanvas(p); },
+  })));
 }
+/* CVR-A-067: the canvases the switcher offers, read when it opens (canvas_io list; empty while the Canvas
+   core plugin is off, as the explorer lists none then). */
+let qsCanvases = [];
+async function qsCanvasList() {
+  if (!CANVAS || !CANVAS.isRegistered()) return [];
+  try { return (await inv("canvas_io", { op: "list", path: "" })).slice().sort(); } catch (_) { return []; }
+}
+const qslSafe = s => String(s).replace(/[|\]\[]/g, "_");
+CENSUS.push(() => modalKind === "qs" ? " [qsl:" + mdItems.map(it => qslSafe(it.label)).join("|") + "]" : "");   // cvf-explorer CVR-A-067: the switcher's offered rows, in order
+CENSUS.push(() => " [tabt:" + groups().map(g => [...g.tabsEl.querySelectorAll(".tab .t")].map(e => e.textContent.replace(/[[\]|;]/g, "")).join(";")).join("|") + "]");   // cvf-explorer CVR-A-086: the painted tab titles, per pane (";" between tabs, "|" between panes)
+/* gh-icons census BEGIN — phase ghicons (#18 #20 #21). Read-only DOM probe, published every refresh.
+   [ghe:<n>[:<root>/<text>;...]] = text nodes carrying an emoji / pictograph code point
+   (U+1F300-1FAFF, U+2600-27BF, U+1F000-1F2FF) inside an ICON surface: ribbon, sidebar tab
+   headers + toolbars, tab bars (tab headers + view-header actions), status bar, open menus,
+   canvas controls/toolbars/menus, every button. <root> = the surface (id, or first class,
+   + data-menu for a tagged menu) so a phase can exclude an exact label, never a range.
+   [ghlk:<pane>.<tab>=<svg|emoji|->:<title>;...|...] = each tab's link mark: svg = a .lk marker
+   holding an <svg>, emoji = a pictograph in the painted title, - = neither.
+   [ghw:L=<left>,<right>:<x>+<w>,...|R=...] = the sidebar boxes and their tab-header buttons
+   (#21), [ghdv:l=<x>,<y>|r=<x>,<y>] = the resize dividers' centres (a driver drags them). */
+const GH_EMO = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F000}-\u{1F2FF}]/u;
+const GH_SURF = "#ribbon, #stabs, #rtabs, #bar, #bmbar, #sbar, #hkclear, .tabbar, .ctxmenu, .canvas-controls, " +
+  ".canvas-selection-toolbar, .canvas-selection-palette, .canvas-card-menu, .canvas-settings-menu, " +
+  ".canvas-edge-toolbar, .canvas-edge-menu, button, [role=button], [role=menuitem]";
+const ghClean = s => Array.from(s.replace(/[[\]|;]/g, " ").replace(/\s+/g, " ").trim()).slice(0, 40).join("");
+const ghRoot = r => (r.id || (r.classList && r.classList[0]) || r.tagName.toLowerCase()) + (r.dataset && r.dataset.menu ? "." + r.dataset.menu : "");
+CENSUS.push(() => {
+  const seen = new Set(), bad = [];
+  for (const r of document.querySelectorAll(GH_SURF)) {
+    const w = document.createTreeWalker(r, NodeFilter.SHOW_TEXT);
+    for (let n = w.nextNode(); n; n = w.nextNode()) {
+      if (seen.has(n)) continue;
+      seen.add(n);
+      if (GH_EMO.test(n.nodeValue)) bad.push(ghRoot(r) + "/" + ghClean(n.nodeValue));
+    }
+  }
+  const lk = groups().map((g, i) => [...g.tabsEl.querySelectorAll(".tab")].map((d, j) => {
+    const t = d.querySelector(".t"), txt = t ? t.textContent : "";
+    const st = d.querySelector(".lk svg") ? "svg" : GH_EMO.test(txt) ? "emoji" : "-";
+    return (i + 1) + "." + (j + 1) + "=" + st + ":" + ghClean(txt);
+  }).join(";")).join("|");
+  const side = (k, s, h) => {
+    const e = document.getElementById(s), b = e && e.getBoundingClientRect();
+    if (!e || e.hidden || !b.width) return "";
+    return k + "=" + Math.round(b.left) + "," + Math.round(b.right) + ":" + [...document.querySelectorAll("#" + h + " .stab")]
+      .map(x => { const r = x.getBoundingClientRect(); return Math.round(r.left) + "+" + Math.round(r.width); }).join(",");
+  };
+  const dv = (k, id) => {
+    const e = document.getElementById(id), b = e && e.getBoundingClientRect();
+    return e && !e.hidden && b.width ? k + "=" + Math.round(b.left + b.width / 2) + "," + Math.round(b.top + b.height / 2) : "";
+  };
+  return " [ghe:" + bad.length + (bad.length ? ":" + bad.join(";") : "") + "] [ghlk:" + lk + "]" +
+    " [ghw:" + [side("L", "side", "stabs"), side("R", "rside", "rtabs")].filter(Boolean).join("|") + "]" +
+    " [ghdv:" + [dv("l", "ldiv"), dv("r", "rdiv")].filter(Boolean).join("|") + "]";
+});
+/* gh-icons census END */
 /* listtoggle A3 (found by the gate phase, not by reading): the palette input
    TAKES the DOM selection, so a palette command that reads the editor
    selection (Ed.sel) found none and was a silent no-op — "Toggle bullet list"
@@ -7135,8 +7381,10 @@ $("minput").onkeydown = async e => {
   }
 };
 $("modal").onmousedown = e => { if (e.target === $("modal")) closeModal(); };
-function cmdQuickSwitch() {
-  modalKind === "qs" ? closeModal() : qsModal.open();   // through the prototype: a plugin may wrap open
+async function cmdQuickSwitch() {
+  if (modalKind === "qs") return closeModal();
+  qsCanvases = await qsCanvasList();   // CVR-A-067: canvases are switcher rows too
+  if (modalKind !== "qs") qsModal.open();   // through the prototype: a plugin may wrap open
 }
 /* cp-hover-editor: the core-plugin hooks plugins read through app.internalPlugins.plugins, shapes recorded
    black-box from stock 1.13.7 (harness api-probes.d/hover.js, part hover).
@@ -7148,8 +7396,9 @@ class QuickSwitcherModal {
     this.app = app; this.inputEl = $("minput"); this.instructionsEl = $("mfoot");
     this.scope = PLG ? new PLG.X.Scope() : null;
     const tfile = n => { const f = PLG && PLG.app.vault.getAbstractFileByPath(wsPathOut(n)); return PLG && f instanceof PLG.X.TFile ? f : null; };
+    const tfileP = p => { const f = PLG && PLG.app.vault.getAbstractFileByPath(p); return PLG && f instanceof PLG.X.TFile ? f : null; };   // a canvas row is a path
     this.chooser = {
-      get values() { return mdSrc === qsItems ? mdItems.map(it => ({ type: "file", file: tfile(it.label) })) : null; },
+      get values() { return mdSrc === qsItems ? mdItems.map(it => ({ type: "file", file: it.canvas ? tfileP(it.label) : tfile(it.label) })) : null; },
       get selectedItem() { return mdSel; },
     };
   }
@@ -7230,8 +7479,9 @@ let CANVAS = null;
         X: PLG.X, app: PLG.app, config: ip.config,
         io: (op, path, data) => inv("canvas_io", data == null ? { op, path } : { op, path, data }),
         readNote: p => inv("read_note", { name: String(p).replace(/\.md$/i, "") }),
+        model: PLGVM,
         notify: m => say(m, "canvas"),
-        changed: () => updateTitle(),
+        changed: () => { cvLinkDirty(); updateTitle(); },   // cvf-links: the canvas link model re-reads
         pref: {
           get() { try { const v = localStorage.getItem(KEY); return v == null ? null : v === "1"; } catch (_) { return null; } },
           set(on) { try { localStorage.setItem(KEY, on ? "1" : "0"); } catch (_) {} },
@@ -7254,7 +7504,7 @@ var cvRibbonBtn = (() => {   // var: canvasTok may run before this line
   b.setAttribute("aria-label", "Create new canvas");
   b.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="6" rx="1"/><rect x="14" y="13" width="7" height="8" rx="1"/><path d="M10 6h4a3 3 0 0 1 3 3v4"/></svg>';
   b.hidden = true;
-  b.addEventListener("click", () => cmdNewCanvas(cvActiveFolder()));
+  b.addEventListener("click", () => cmdNewCanvas(cvNewCanvasFolder()));
   rb.appendChild(b);
   return b;
 })();
@@ -7278,10 +7528,18 @@ function cvActiveFolder() {
   } catch (_) {}
   return "";
 }
+/* goal cvf-board CVR-C-103: Create new canvas lands where Settings > Canvas > Default location says
+   (<vault>/.obsidian/canvas.json via settings.js __osCanvasCfg): vault root, a named folder, else the active folder */
+function cvNewCanvasFolder() {
+  const cf = window.__osCanvasCfg, loc = cf ? cf.get("newFileLocation") : "";
+  if (loc === "root") return "";
+  if (loc === "folder") return String(cf.get("newFileFolderPath") || "").replace(/^\/+|\/+$/g, "");
+  return cvActiveFolder();   // "current" (stock name; settings.js maps an older "same" to it)
+}
 // open a .canvas file in a canvas tab of the focused group (the view type must be registered: core plugin on)
-async function openCanvas(path) {
+async function openCanvas(path, how) {     // how: "split" -> a new pane to the right (CVR-A-083 Open to the right)
   if (!CANVAS || !CANVAS.isRegistered()) { say("Canvas is turned off (Settings › Community plugins › Core plugins)", "canvas"); return null; }
-  const leaf = PLG.app.workspace.getLeaf("tab");
+  const leaf = how === "split" ? PLG.app.workspace.getLeaf("split", "vertical") : PLG.app.workspace.getLeaf("tab");
   await leaf.setViewState({ type: "canvas", state: { file: path }, active: true });
   return leaf;
 }
@@ -7299,39 +7557,113 @@ async function cmdNewCanvas(folder) {
     try { await inv("canvas_io", { op: "create", path: p, data: body }); }
     catch (e) { if (/EEXIST/.test(String(e && e.message || e))) continue; say(String(e && e.message || e), "canvas"); return null; }
     await refreshTree();
-    await openCanvas(p);
+    /* goal cvf-create CVR-A-002: the new board takes the CURRENT tab (the active note / board goes), unless that
+       tab is pinned. The leaf shim opens a typed view beside its tab, so the old tab is saved first and closed
+       after the board is up. CVR-A-005: then its header title is focused and selected for a rename. */
+    const g = fg(), t0 = g && g.active >= 0 ? g.tabs[g.active] : null;
+    if (t0 && !t0.pinned) { try { await flushSave(g); } catch (_) {} }
+    const leaf = await openCanvas(p);
+    if (t0 && !t0.pinned && leaf) {
+      const i = g.tabs.indexOf(t0);
+      if (i >= 0 && g.tabs[g.active] !== t0) { try { await closeTab(g, i, "user-close", "canvas-new", true); } catch (e) { console.error("[canvas] replace tab:", e); } }
+    }
+    try { const v = leaf && leaf.view; if (v && v.editTitle) v.editTitle(); } catch (_) {}
     return p;
   }
   say("Could not find a free name for the new canvas", "canvas");
   return null;
 }
-function canvasFileMenu(e, p) {             // right-click a .canvas row in the explorer
+function canvasFileMenu(e, p) {             // right-click a .canvas row in the explorer (CVR-A-083: the file menu, six groups)
   e.preventDefault();
   e.stopPropagation();
   closeMenu();
   const m = document.createElement("div");
   m.className = "ctxmenu";
   const { item, sep } = bmMenuItems(m);
-  item("Open in new tab", () => openCanvas(p));
+  const here = p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "";
+  item("Open in new tab",    () => openCanvas(p));
+  item("Open to the right",  () => openCanvas(p, "split"));
+  item("Open in new window", null, "Single-window app: there is no second window to open into");
   sep();
-  item("New canvas", () => cmdNewCanvas(p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : ""));
+  item("Make a copy", () => cvCopy(p));
+  const mv = document.createElement("div");
+  mv.textContent = "Move file to...";
+  m.appendChild(mv);
+  mv.onmousedown = ev => ev.stopPropagation();
+  mv.onclick = async () => {                // the menu stays open and becomes the folder list (the note menu's in-place picker)
+    let fl = [];
+    try { fl = await inv("list_folders"); } catch (_) { fl = []; }
+    m.innerHTML = "";
+    if (here) item("(vault root)", () => cvMoveTo(p, ""));
+    for (const f of fl) if (f !== here) item(f, () => cvMoveTo(p, f));
+    if (!m.children.length) item("(no other folder)", null, "The vault has no other folder");
+    setTimeout(() => clampMenu(m), 0);
+    updateTitle();
+  };
+  item("Bookmark", null, "Bookmarks hold note names (.obsidian/bookmarks.json, R9.4); a canvas is not a note");
+  sep();
+  item("Copy path", null, "Missing subsystem: a programmatic clipboard write (clipboard access exists only inside real copy/paste events, ui/editor.js)");
+  sep();
+  item("Open version history", null, "Missing subsystem: file history — no revisions are kept");
+  sep();
+  item("Open in default app", null, "Missing subsystem: a file-path opener — open_external takes a URL, not a vault path");
+  item("Show in system explorer", null, "Missing subsystem: a file-manager handler");
   sep();
   item("Rename...", () => cvRename(p));     // cv-vault CV-147
   item("Delete", () => cvDelete(p));       // cv-vault CV-148
   m.dataset.mt = "canvas:" + p.replace(/[|\]]/g, "");
   placeMenu(m, e.clientX, e.clientY);
 }
+/* CVR-A-083 Make a copy: "<name> 1.canvas" (the next free number) beside the original, the same bytes,
+   created O_EXCL through canvas_io, then opened. */
+async function cvCopy(p) {
+  let body;
+  try { body = await inv("canvas_io", { op: "read", path: p }); } catch (err) { say(String(err && err.message || err), "canvas"); return null; }
+  const base = p.replace(/\.canvas$/i, "");
+  for (let i = 1; i < 100; i++) {
+    const np = base + " " + i + ".canvas";
+    try { await inv("canvas_io", { op: "create", path: np, data: body }); }
+    catch (err) { if (/EEXIST/.test(String(err && err.message || err))) continue; say(String(err && err.message || err), "canvas"); return null; }
+    await refreshTree();
+    await openCanvas(np);
+    return np;
+  }
+  say("Could not find a free name for the copy", "canvas");
+  return null;
+}
+/* CVR-A-083 Move file to: canvas_io rename into <folder>/ (same file name; never over an existing entry).
+   Every open tab on the canvas stays and follows it to the new path (cvRetarget). */
+async function cvMoveTo(p, folder) {
+  const np = (folder ? String(folder).replace(/\/+$/, "") + "/" : "") + p.split("/").pop();
+  if (np === p) return null;
+  return (await cvRetarget(p, np)) ? np : null;
+}
 /* goal cv-vault CV-147/148: rename and delete a canvas from its explorer row. Rename reuses the rename prompt
    (#rnbox, [modal:rn]) with the name minus ".canvas", same folder; delete reuses the confirmation (#delbox,
-   [modal:del]) and moves the file to .trash (canvas_io trash). An open canvas tab on the file is closed first
-   (its pending save lands), and after a rename the canvas reopens under its new path. */
+   [modal:del]) and moves the file to .trash (canvas_io trash). An open canvas tab on the file is closed before a
+   delete (its pending save lands); a rename keeps every tab and points it at the new path (cvRetarget, CVR-A-086). */
 const cvLeavesOf = p => { try { return PLG.app.workspace.getLeavesOfType("canvas").filter(l => l.view && l.view.path === p); } catch (_) { return []; } };
 async function cvCloseLeaves(p) {
   const ls = cvLeavesOf(p);
   for (const l of ls) { try { if (l.view.flush) await l.view.flush(); } catch (_) {} try { await l.detach(); } catch (_) {} }
   return ls.length;
 }
+/* CVR-A-086: rename / move a canvas through canvas_io and keep every tab on it: each leaf lands its pending save
+   first, then after the rename it is pointed at the new path in place (CanvasView.setState loads it), so the tab
+   count stays and every tab retitles. A failed rename leaves the leaves where they were. */
+async function cvRetarget(old, np) {
+  const ls = cvLeavesOf(old);
+  for (const l of ls) { try { if (l.view.flush) await l.view.flush(true); } catch (_) {} }
+  try { await inv("canvas_io", { op: "rename", path: old, data: np }); }
+  catch (err) { say(String(err && err.message || err), "canvas"); await refreshTree(); return false; }
+  await refreshTree();
+  for (const l of ls) { try { await l.setViewState({ type: "canvas", state: Object.assign({}, l.view.getState(), { file: np }) }); } catch (err) { console.error("[canvas] retarget:", err); } }
+  for (const h of groups()) renderTabs(h);
+  updateTitle();
+  return true;
+}
 let cvRenamePending = null;
+window.__osCvRetarget = (old, np) => cvRetarget(old, np);   // goal cvf-create CVR-A-005/018: the canvas header title renames through here
 function cvRename(p) {
   const inp = $("rninput");
   cvRenamePending = p;
@@ -7355,26 +7687,172 @@ $("rnbox").addEventListener("keydown", async e => {     // capture on the box: r
   const dir = old.includes("/") ? old.slice(0, old.lastIndexOf("/") + 1) : "";
   const np = dir + nn + ".canvas";
   if (np === old) return;
-  const reopen = await cvCloseLeaves(old);
-  try { await inv("canvas_io", { op: "rename", path: old, data: np }); }
-  catch (err) { say(String(err && err.message || err), "canvas"); await refreshTree(); if (reopen) await openCanvas(old); return; }
-  await refreshTree();
-  if (reopen) await openCanvas(np);
-  updateTitle();
+  await cvRetarget(old, np);
 }, true);
 function cvDelete(p) {
   openDelete(p, 0, 0);
   delPending.canvas = true;
 }
-/* goal cv-vault CV-141: a file card is a link of its canvas, so the backlinks of a note list every canvas with a
-   file card on it (canvas_io links: {canvas: [targets]}). Never throws: off / failed -> no canvas rows. */
+/* goal cvf-links: a canvas in the link graph. The vault's canvases are read through canvas_io (list + read) into
+   ONE model: per canvas its file cards (a link to that file) and the [[wikilinks]] of its text cards (a link each,
+   the card text is the snippet). Backlinks, the status-bar count, search and the global graph all read it. Cached
+   briefly and dropped on a tree refresh / canvas change, so a burst of panes reads the vault's canvases once. */
+var cvLM = null, cvLMt = 0;   // var: a pane may ask before this line runs
+var CV_LM_MAX = 500, CV_LM_TTL = 3000;
+function cvLinkDirty() { cvLM = null; }
+function cvLinkModel() {
+  if (!CANVAS || !CANVAS.isRegistered()) return Promise.resolve([]);
+  const now = Date.now();
+  if (cvLM && now - cvLMt < CV_LM_TTL) return cvLM;
+  cvLMt = now;
+  const p = (async () => {
+    let all = [];
+    try { all = (await inv("canvas_io", { op: "list", path: "" })) || []; } catch (_) { return []; }
+    const docs = await Promise.all(all.slice(0, CV_LM_MAX).map(c => inv("canvas_io", { op: "read", path: c }).then(s => JSON.parse(s), () => null).catch(() => null)));
+    return all.slice(0, CV_LM_MAX).map((c, i) => {
+      const d = docs[i], ns = d && Array.isArray(d.nodes) ? d.nodes.filter(n => n && typeof n === "object") : [];
+      const refs = [], texts = [];
+      for (const n of ns) {
+        if (n.type === "file" && typeof n.file === "string") refs.push({ to: n.file, file: true, text: n.file });
+        else if (n.type === "text" && typeof n.text === "string") {
+          texts.push(n.text);
+          for (const m of n.text.matchAll(/\[\[([^\]\n]+?)\]\]/g)) refs.push({ to: m[1], file: false, text: n.text });
+        }
+      }
+      return { canvas: c, refs, texts };
+    });
+  })();
+  cvLM = p;
+  p.catch(() => { if (cvLM === p) cvLM = null; });
+  return p;
+}
+/* a canvas ref -> the note it names (notesCache name, no .md), or null. A file card names a vault path exactly;
+   a text-card [[link]] resolves like a note link: exact name, else the shortest note whose basename matches. */
+function cvRefNote(to, file) {
+  let t = String(to || "");
+  if (file) { if (!/\.md$/i.test(t)) return null; }
+  else t = t.split("|")[0].split("#")[0].trim();
+  t = t.replace(/\.md$/i, "");
+  if (!t) return null;
+  if (notesCache.includes(t)) return t;
+  if (file) return null;
+  const lc = t.toLowerCase();
+  const c = notesCache.filter(x => x.toLowerCase() === lc || (!lc.includes("/") && x.toLowerCase().endsWith("/" + lc)));
+  c.sort((a, b) => a.length - b.length || a.localeCompare(b));
+  return c[0] || null;
+}
+/* a [[link]] target -> the canvas path it names among `list`, or null: the vault path, else (no folder given)
+   the shortest canvas with that file name. Case-insensitive, anchors and aliases dropped. */
+function cvRefCanvas(to, list) {
+  const t = String(to || "").split("|")[0].split("#")[0].trim().toLowerCase();
+  if (!/\.canvas$/.test(t)) return null;
+  const ex = list.find(c => c.toLowerCase() === t);
+  if (ex) return ex;
+  if (t.includes("/")) return null;
+  const c = list.filter(x => x.toLowerCase().split("/").pop() === t).sort((a, b) => a.length - b.length || a.localeCompare(b));
+  return c[0] || null;
+}
+async function cvFindCanvas(n) { return cvRefCanvas(n, (await cvLinkModel()).map(c => c.canvas)); }
+/* notes linking a canvas: [{note, canvas, ln, text}] one per link. Only notes that mention "canvas" at all can
+   (search narrows them), each read once. */
+async function cvNoteCanvasLinks() {
+  const list = (await cvLinkModel()).map(c => c.canvas);
+  if (!list.length) return [];
+  let hits = [];
+  try { hits = (await inv("search", { query: "canvas" })) || []; } catch (_) { return []; }
+  const notes = [...new Set(hits.map(h => h.note))].slice(0, 300);
+  const bodies = await Promise.all(notes.map(n => inv("read_note", { name: n }).catch(() => "")));
+  const out = [];
+  notes.forEach((n, i) => String(bodies[i] || "").split("\n").forEach((l, ln) => {
+    for (const m of l.matchAll(/!?\[\[([^\]\n]+?)\]\]/g)) { const c = cvRefCanvas(m[1], list); if (c) out.push({ note: n, canvas: c, ln, text: l.trim().slice(0, 200) }); }
+  }));
+  return out;
+}
+/* the backlinks of a CANVAS: the notes linking it, one entry per note with its link lines (backlinks_ctx shape) */
+async function cvCanvasBacklinks(p) {
+  const by = new Map();
+  for (const l of await cvNoteCanvasLinks()) {
+    if (l.canvas !== p) continue;
+    const b = by.get(l.note) || { note: l.note, lines: [], n: 0 };
+    if (!b.lines.length || b.lines[b.lines.length - 1][0] !== l.ln) b.lines.push([l.ln, l.text]);
+    b.n++; by.set(l.note, b);
+  }
+  return [...by.values()].sort((a, b) => a.note.localeCompare(b.note));
+}
+/* the canvas a tab shows (a canvas plugin-view tab), or null */
+function cvTabPath(t) {
+  if (!t || t.kind !== "unk" || t.utype !== "canvas" || !PLG) return null;
+  try {
+    const v = PLG.app.workspace.getLeavesOfType("canvas").find(l => l && l._t === t);
+    if (v && v.view && v.view.path) return v.view.path;
+  } catch (_) {}
+  try { const f = t.raw && t.raw.state && t.raw.state.state && t.raw.state.state.file; if (f) return String(f); } catch (_) {}
+  return null;
+}
+/* a [[X.canvas]] link / embed click: open the canvas (never create X.canvas.md). true if handled. */
+async function cvLinkOpen(n, an) {
+  if (an || !/\.canvas$/i.test(String(n || "")) || !CANVAS || !CANVAS.isRegistered()) return false;
+  const p = await cvFindCanvas(n);
+  if (!p) return false;
+  await cvOpenHere(p);
+  return true;
+}
+async function cvOpenHere(p) {   // the link's own leaf (stock: a plain click navigates in place; views.js openTyped swaps the note tab for the canvas)
+  const leaf = PLG.app.workspace.getLeaf(false);
+  if (leaf) await leaf.setViewState({ type: "canvas", state: { file: p }, active: true });
+  else await openCanvas(p);
+}
+/* goal cvf-links CVR-A-101: canvas text cards in global search. Plain terms only (all must occur in one card,
+   case-insensitive); a query with operators / quotes is the note grammar's alone. [{canvas, snippet}] */
+async function cvSearch(q) {
+  q = String(q || "").trim();
+  if (!q || /[:"()\[\]]|(^|\s)-|\bOR\b/.test(q)) return [];
+  const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
+  const out = [];
+  for (const c of await cvLinkModel())
+    for (const t of c.texts) {
+      const lc = t.toLowerCase();
+      if (!terms.every(w => lc.includes(w))) continue;
+      const line = t.split("\n").find(l => l.toLowerCase().includes(terms[0])) || t;
+      out.push({ canvas: c.canvas, snippet: line.trim().slice(0, 200) });
+    }
+  return out;
+}
+/* goal cvf-links CVR-A-102: the global graph's feed + the canvases: one node per canvas (named with its
+   extension), a link per file card / text-card [[link]] to a note, and one per note link to a canvas */
+async function cvGraphFeed(p) {
+  const [gr, m, nl] = await Promise.all([p, cvLinkModel(), cvNoteCanvasLinks()]);
+  if (!m.length || !gr || !Array.isArray(gr.nodes) || !Array.isArray(gr.edges)) return gr;
+  const nodes = gr.nodes.slice(), edges = gr.edges.slice(), col = Array.isArray(gr.col) ? gr.col.slice() : gr.col;
+  const ix = new Map(nodes.map((nd, i) => [nd.name, i]));
+  const add = name => {
+    if (!ix.has(name)) { ix.set(name, nodes.length); nodes.push({ name, resolved: true }); if (Array.isArray(col)) col.push(-1); }
+    else { const i = ix.get(name); if (!nodes[i].resolved) nodes[i] = { name, resolved: true }; }
+    return ix.get(name);
+  };
+  const seen = new Set(edges.map(([a, b]) => a + ">" + b));
+  const link = (a, b) => { if (a !== b && !seen.has(a + ">" + b)) { seen.add(a + ">" + b); edges.push([a, b]); } };
+  for (const c of m) {
+    const a = add(c.canvas);
+    for (const r of c.refs) { const t = cvRefNote(r.to, r.file); if (t && ix.has(t)) link(a, ix.get(t)); }
+  }
+  for (const l of nl) if (ix.has(l.note) && ix.has(l.canvas)) link(ix.get(l.note), ix.get(l.canvas));
+  return Object.assign({}, gr, { nodes, edges, col });
+}
+/* goal cv-vault CV-141 + cvf-links CVR-A-099/100: the canvases with a file card on this note or a text card
+   linking it. [{canvas, cards: <links>, lines: [<snippet>]}] — a file card's snippet is its path, a text
+   card's its text. Never throws: off / failed -> no canvas rows. */
 async function cvBacklinks(n) {
   if (!CANVAS || !CANVAS.isRegistered() || !n) return [];
-  let m = {};
-  try { m = await inv("canvas_io", { op: "links", path: "" }) || {}; } catch (_) { return []; }
   const want = String(n).replace(/\.md$/i, "");
-  return Object.keys(m).filter(cv => (m[cv] || []).some(f => String(f).replace(/\.md$/i, "") === want && /\.md$/i.test(String(f))))
-    .map(cv => ({ canvas: cv, cards: m[cv].filter(f => String(f).replace(/\.md$/i, "") === want).length })).sort((a, b) => a.canvas.localeCompare(b.canvas));
+  let m = [];
+  try { m = await cvLinkModel(); } catch (_) { return []; }
+  const out = [];
+  for (const c of m) {
+    const hits = c.refs.filter(r => cvRefNote(r.to, r.file) === want);
+    if (hits.length) out.push({ canvas: c.canvas, cards: hits.length, lines: hits.map(r => String(r.text).replace(/\s+/g, " ").trim().slice(0, 200)) });
+  }
+  return out.sort((a, b) => a.canvas.localeCompare(b.canvas));
 }
 /* goal cv-vault CV-139/140: a canvas embedded in a note. The renderer leaves `![[X.canvas]]` as "!" + a wiki
    link; the reading view swaps that pair for span.cv-embed[data-canvas] and paints the canvas as SHAPES ONLY —
@@ -7393,11 +7871,17 @@ function cvEmbedFill(root) {
     s.title = a.dataset.note;
     s.setAttribute("role", "link");
     a.replaceWith(s);
-    s.onclick = e => { e.preventDefault(); e.stopPropagation(); if (s.dataset.path) openCanvas(s.dataset.path); };
+    s.onclick = e => { e.preventDefault(); e.stopPropagation(); if (s.dataset.path) cvOpenHere(s.dataset.path); };
     cvEmbedPaint(s, a);
   }
 }
-async function cvEmbedPaint(s, link) {
+async function cvEmbedPaint(s, link) {   // link: the reading view's a.wiki to restore; null = a live-preview span (editor.js), kept text-free
+  if (!link && !s._cvEmb) {
+    s._cvEmb = true;
+    s.style.cssText = "display:block;height:260px;margin:.5em 0;border:1px solid var(--background-modifier-border);border-radius:8px;cursor:pointer;overflow:hidden";
+    s.title = s.dataset.canvas; s.setAttribute("role", "link"); s.contentEditable = "false";
+    s.addEventListener("mousedown", e => { if (e.button === 0 && s.dataset.path) { e.preventDefault(); e.stopPropagation(); cvOpenHere(s.dataset.path); } });
+  }
   const want = s.dataset.canvas;
   let p = null, doc = null;
   try {
@@ -7406,7 +7890,7 @@ async function cvEmbedPaint(s, link) {
     if (p) doc = JSON.parse(await inv("canvas_io", { op: "read", path: p }));
   } catch (_) { doc = null; }
   if (!s.isConnected) return;
-  if (!p || !doc || !Array.isArray(doc.nodes)) { s.replaceWith(document.createTextNode("!"), link); return; }
+  if (!p || !doc || !Array.isArray(doc.nodes)) { if (link) s.replaceWith(document.createTextNode("!"), link); else { s.dataset.miss = want; s.style.height = "2em"; } return; }
   s.dataset.path = p;
   const num = v => (typeof v === "number" && isFinite(v) ? v : 0);
   const ns = doc.nodes.filter(n => n && typeof n === "object");
@@ -7442,26 +7926,61 @@ async function cvEmbedPaint(s, link) {
   s.appendChild(svg);
   updateTitle();
 }
+/* cvf-links CVR-A-095: the live-preview widget is a CLONE of the parsed span (editor.js Leaf.toDOM), which drops
+   the listener and was never painted (the parsed original is not in the document). Paint each clone as CM6 mounts it. */
+const cvEmbObs = new MutationObserver(ms => {
+  for (const m of ms) for (const n of m.addedNodes) {
+    if (n.nodeType !== 1) continue;
+    const L = n.classList.contains("cv-embed") ? [n] : [...n.getElementsByClassName("cv-embed")];
+    for (const s of L) if (!s._cvEmb && s.closest(".cm-editor")) cvEmbedPaint(s, null);
+  }
+});
+if (document.body) cvEmbObs.observe(document.body, { childList: true, subtree: true });
+else document.addEventListener("DOMContentLoaded", () => cvEmbObs.observe(document.body, { childList: true, subtree: true }));
 /* census [cvemb:<path>@x,y|r=<rects>|p=<paths>|txt=<chars>] — the first painted canvas embed of the focused note view */
+/* census [gfl:gg@<group id>=<a>><b>;...] — the links the focused global graph draws, by node name (up to 80) */
+function cvGflTok() {
+  const g = state && fg(), t = g && g.active >= 0 ? g.tabs[g.active] : null;
+  if (!t || t.kind !== "gg" || !g.graphOn || !g.graphLinks) return "";
+  const L = g.graphLinks();
+  if (L.length > 80) return " [gfl:gg@" + g.id + "=" + L.length + "]";
+  return " [gfl:gg@" + g.id + "=" + L.map(([a, b]) => String(a).replace(/[[\];>|]/g, "_") + ">" + String(b).replace(/[[\];>|]/g, "_")).join(";") + "]";
+}
 function cvEmbTok() {
   const g = state && fg();
   if (!g || !g.preview) return "";
-  const e = [...g.preview.querySelectorAll("span.cv-embed[data-path]")].find(x => x.getClientRects().length > 0 && x.querySelector("svg"));
+  const e = [...g.preview.querySelectorAll("span.cv-embed[data-path]"), ...(g.lp ? g.lp.querySelectorAll("span.cv-embed[data-path]") : [])].find(x => x.getClientRects().length > 0 && x.querySelector("svg"));
   if (!e) return "";
   const r = e.getBoundingClientRect();
   return " [cvemb:" + e.dataset.path.replace(/[[\]|@]/g, "_") + "@" + Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2) +
          "|r=" + e.querySelectorAll("rect").length + "|p=" + e.querySelectorAll("path").length + "|txt=" + e.textContent.length + "]";
 }
-function cvBacklinkRows(box, cvb) {
+function cvBacklinkRows(box, cvb) {   // one row per canvas + one line per link (a file card / a text card's [[link]])
   for (const b of cvb) {
     const row = document.createElement("div");
-    row.className = "blnote"; row.dataset.ol = "bt:" + b.canvas;
-    row.innerHTML = '<span class="tc"></span><span class="bln"></span><span class="scount"></span>';
+    row.className = "blnote open"; row.dataset.ol = "bt:" + b.canvas;
+    row.innerHTML = '<span class="tc">' + CHEV + '</span><span class="bln"></span><span class="scount"></span>';
     row.querySelector(".bln").textContent = b.canvas;
     row.querySelector(".scount").textContent = b.cards;
-    row.title = "file card in " + b.canvas;
+    row.title = b.canvas;
+    const kids = document.createElement("div");
+    for (const text of b.lines || []) {
+      const d = document.createElement("div");
+      d.className = "blline"; d.dataset.ol = "bl:" + b.canvas;
+      String(text).split(/(\[\[[^\]]*\]\])/).forEach((part, i) => {
+        const el = i % 2 ? document.createElement("mark") : document.createTextNode(part);
+        if (i % 2) el.textContent = part;
+        d.appendChild(el);
+      });
+      d.onclick = () => openCanvas(b.canvas);
+      kids.appendChild(d);
+    }
+    row.querySelector(".tc").onclick = e => {
+      e.stopPropagation();
+      row.classList.toggle("open"); kids.hidden = !row.classList.contains("open");
+    };
     row.onclick = () => openCanvas(b.canvas);
-    box.appendChild(row);
+    box.appendChild(row); box.appendChild(kids);
   }
 }
 async function cvTrash(p) {
@@ -7489,6 +8008,7 @@ function canvasTok() {
   if (rows.length && dirs.length) t += " [cvdir:" + dirs.map(r => esc(r.dataset.folder) + "@" + c(r)).join("|") + "]";
   if (vis(cvRibbonBtn)) t += " [ribbon:canvas@" + c(cvRibbonBtn) + "]";   // cv-vault CV-108
   t += cvEmbTok();                                                       // cv-vault CV-139
+  t += cvGflTok();                                                       // cvf-links CVR-A-102
   let v = null;
   try { v = PLG.app.workspace.getLeavesOfType("canvas").map(l => l.view).find(x => x && vis(x.containerEl)) || null; } catch (_) {}
   if (!v) return t;
@@ -7527,7 +8047,84 @@ function canvasTok() {
   if (window.__osCanvasFiles) try { t += window.__osCanvasFiles.census(v); } catch (_) {}
   // goal cv-perf: [cvperf:vis=|total=|eupd=|emin=|emax=|moves=] painted cards and the last drag's edge re-paths (ui/plugins/canvas-perf.js)
   if (window.CanvasPerf) try { t += window.CanvasPerf.census(v); } catch (_) {}
+  // goal cvf-textedit: [cvted:<id>|ed=|sel=|cm=|bd=|mono=|h1=|cl=|l1=|l2=] each text card in edit or selected (at most 4):
+  // edit mode, the is-selected class, a CM6 editor, body / line-1 font px, monospace body, caret line, lines 1-2 as painted;
+  // [cvsug:n=<rows>|<first row>|foot=<0|1>@x,y] a visible link suggester (ui/plugins/canvas-cards.js)
+  try {
+    const VW = window.__osModules && window.__osModules["@codemirror/view"];
+    const fpx = x => parseFloat(getComputedStyle(x).fontSize) || 0;
+    const txt = x => esc(String(x.textContent || "").replace(/​/g, "")).replace(/\s+/g, " ").trim().slice(0, 40);
+    let k = 0;
+    for (const n of v.canvas.nodes.values()) {
+      if (k >= 4 || !n.data || n.data.type !== "text" || !vis(n.containerEl)) continue;
+      const ed = !!n.isEditing, sel = n.containerEl.classList.contains("is-selected");
+      if (!ed && !sel) continue;
+      k++;
+      const cme = ed ? n.contentEl.querySelector(".cm-editor") : null;
+      let s = " [cvted:" + esc(n.id) + "|ed=" + (ed ? 1 : 0) + "|sel=" + (sel ? 1 : 0) + "|cm=" + (cme ? 1 : 0);
+      if (cme) {
+        const cc = cme.querySelector(".cm-content") || cme, ls = [...cme.querySelectorAll(".cm-line")];
+        const big = l => { let m = fpx(l); for (const x of l.querySelectorAll("*")) if (String(x.textContent).trim()) m = Math.max(m, fpx(x)); return Math.round(m); };
+        let cl = 0, fo = 0;
+        try { const w = VW.EditorView.findFromDOM(cme); cl = w.state.doc.lineAt(w.state.selection.main.head).number; fo = w.hasFocus ? 1 : 0; } catch (_) {}
+        const ae = document.activeElement, aen = ae ? esc(String(ae.tagName || "").toLowerCase() + "." + String(ae.className || "").split(/\s+/)[0]).slice(0, 30) : "";
+        s += "|bd=" + Math.round(fpx(cc)) + "|mono=" + (/mono/i.test(getComputedStyle(cc).fontFamily) ? 1 : 0) + "|h1=" + (ls[0] ? big(ls[0]) : 0) +
+             "|cl=" + cl + "|l1=" + (ls[0] ? txt(ls[0]) : "") + "|l2=" + (ls[1] ? txt(ls[1]) : "") + "|fo=" + fo + "|ae=" + aen;
+      }
+      t += s + "]";
+    }
+    const sg = [...document.querySelectorAll(".canvas-link-suggest")].find(vis);
+    if (sg) {
+      const it = [...sg.querySelectorAll(".canvas-link-suggest-item")].filter(vis);
+      t += " [cvsug:n=" + it.length + "|" + (it[0] ? txt(it[0].querySelector(".canvas-link-suggest-title") || it[0]) : "") +
+           "|foot=" + (vis(sg.querySelector(".canvas-link-suggest-foot")) ? 1 : 0) + "@" + c(sg) + "]";
+    }
+  } catch (_) {}
+  // goal cvf-media: [cvm:<id>|k=|lbl=|...] [cvmb:] [cvmpdf:] [cvmpick:swap|...] file cards (ui/plugins/canvas-media.js)
+  if (window.CanvasMedia) try { t += window.CanvasMedia.census(v); } catch (_) {}
+  // goal cvf-filecards: [cvfact:tree=<the explorer's active row: note path .md | board path | ->|bl=<status-bar backlinks text | ->]
+  try {
+    const ar = document.querySelector("#tree .trow.active");
+    const an = ar ? (ar.dataset.note != null ? ar.dataset.note + ".md" : ar.dataset.canvas || ar.dataset.file || "-") : "-";
+    const g = fg(), bl = g && g.status && !g.status.hidden && g.stBl ? String(g.stBl.textContent || "").trim() : "";
+    t += " [cvfact:tree=" + esc(an) + "|bl=" + esc(bl || "-") + "]";
+  } catch (_) {}
   return t;
+}
+/* goal cvf-create CVR-A-009 (coordinator ruling 03:00Z): the full folder menu in stock order. Off until the operator's
+   go on phase canvasui step 4 (asserts the single-item menu); flipping it on is this one line. Rows without a backend
+   (no folder rename/delete/copy/move command, no clipboard write, no file-manager handler, no bases) are listed
+   disabled with the reason, as the other explorer menus do. */
+const CV_FOLDERMENU_FULL = true;
+function folderMenuFull(item, sep, f) {
+  const dir = String(f || "").replace(/^\/+|\/+$/g, "");
+  item("New note", async () => {
+    if (!state) return;
+    const g = fg();
+    await flushSave(g);
+    let name = (dir ? dir + "/" : "") + "Untitled", r = await createNote(name);
+    for (let i = 1; r === "exists" && i < 100; i++) { name = (dir ? dir + "/" : "") + "Untitled " + i; r = await createNote(name); }
+    if (r !== "ok") return;
+    await refreshTree();
+    g.tabs.push(mkTab(name));
+    g.active = g.tabs.length - 1;
+    await loadActive(g);
+  });
+  item("New folder", () => { $("fnew").hidden = false; $("fname").value = dir ? dir + "/" : ""; $("fname").focus(); });
+  item("New canvas", () => cmdNewCanvas(f));
+  item("New base", null, "Missing subsystem: bases (.base files) are not implemented");
+  sep();
+  item("Make a copy", null, "Missing subsystem: no folder copy command in the backend");
+  item("Move folder to...", null, "Missing subsystem: no folder move command in the backend");
+  item("Search in folder", null, "Missing subsystem: the search pane has no path: scope from a menu");
+  sep();
+  item("Bookmark", null, "Bookmarks hold note names (.obsidian/bookmarks.json, R9.4); a folder is not a note");
+  item("Copy path", null, "Missing subsystem: a programmatic clipboard write (clipboard access exists only inside real copy/paste events, ui/editor.js)");
+  sep();
+  item("Show in system explorer", null, "Missing subsystem: a file-manager handler");
+  sep();
+  item("Rename...", null, "Missing subsystem: no folder rename command in the backend");
+  item("Delete", null, "Missing subsystem: no folder delete command in the backend");
 }
 function folderMenu(e, f) {                 // right-click an explorer folder row: New canvas in that folder
   if (!CANVAS || !CANVAS.isRegistered()) return;   // no row to offer -> the browser's own (suppressed) menu stays as before
@@ -7536,8 +8133,9 @@ function folderMenu(e, f) {                 // right-click an explorer folder ro
   closeMenu();
   const m = document.createElement("div");
   m.className = "ctxmenu";
-  const { item } = bmMenuItems(m);
-  item("New canvas", () => cmdNewCanvas(f));
+  const { item, sep } = bmMenuItems(m);
+  if (CV_FOLDERMENU_FULL) folderMenuFull(item, sep, f);
+  else item("New canvas", () => cmdNewCanvas(f));
   m.dataset.mt = "folder:" + String(f).replace(/[|\]]/g, "");
   placeMenu(m, e.clientX, e.clientY);
 }
@@ -7706,6 +8304,69 @@ async function attachDrop(paths, at) {
   dropTok = a.copied.length + "/" + a.refused.length;
   dropSay(a.refused.concat(a.kept || []).join("\n"));
   updateTitle();
+}
+/* ---------- gh-paste (GitHub #19): paste an image -------------------------
+   Stock 1.13.7: Ctrl+V of a screenshot saves it as "Pasted image <ts>.png" in
+   the attachment folder and inserts ![[…]] at the cursor (harness
+   docs/gh-paste/README.md). Called from the editor's CM6 paste handler
+   (ui/editor.js) BEFORE CM6's own text paste: it claims the event only when
+   the clipboard carries a PNG file and no text, so every text paste stays
+   CM6's. Like attachDrop this half only moves bytes and places text — name,
+   folder, link form and every refusal come from paste_image -> pasteimg.rs.
+   Census [paste:<n ok>/<n refused>|<clipboard types>[/file][/acb:<types>]]. */
+function b64Bytes(u8) {
+  let s = "";
+  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+function attachPaste(g, e) {
+  const dt = e && e.clipboardData;
+  if (!dt) return false;
+  const types = Array.from(dt.types || []);
+  let f = null;
+  try {
+    for (const it of Array.from(dt.items || [])) if (it.kind === "file" && it.type === "image/png") { f = it.getAsFile(); if (f) break; }
+    if (!f) f = Array.from(dt.files || []).find(x => x.type === "image/png") || null;
+  } catch (_) {}
+  pasteTok = (types.join("+").replace(/[[\]|\s]/g, "") || "-") + (f ? "/file" : "");
+  // text wins: WebKitGTK may list NO types for an X selection offered only as
+  // UTF8_STRING yet still answer getData (canvas-drop.js), so ask, never trust types
+  let tx = "";
+  if (!f) try { tx = String(dt.getData("text/plain") || dt.getData("text/uri-list") || ""); } catch (_) {}
+  if (!f && (tx || types.includes("text/plain") || types.includes("text/html"))) { updateTitle(); return false; }
+  /* no file and no text: WebKitGTK hands a clipboard IMAGE to the page with an
+     EMPTY clipboardData (canvas-drop.js, measured). The async Clipboard API,
+     asked while this paste gesture is live, returns the image as a Blob. */
+  let acb = null;
+  if (!f) {
+    try { acb = navigator.clipboard && typeof navigator.clipboard.read === "function" ? navigator.clipboard.read() : null; } catch (_) { acb = null; }
+    if (!acb) { pasteTok += "/noacb"; updateTitle(); return false; }
+  }
+  e.preventDefault();
+  const t = g && g.active >= 0 ? g.tabs[g.active] : null;
+  if (!t || t.kind || t.mode === "reading") { pasteR++; updateTitle(); return true; }
+  const d = new Date();
+  const tm = { y: d.getFullYear(), mo: d.getMonth() + 1, d: d.getDate(), h: d.getHours(), mi: d.getMinutes(),
+    s: d.getSeconds(), ms: d.getMilliseconds(), off: -d.getTimezoneOffset(), epoch_ms: d.getTime() };
+  const got = f ? Promise.resolve(f) : acb.then(async items => {
+    const all = [];
+    for (const it of items || []) for (const ty of it.types || []) { all.push(ty); if (ty === "image/png") return it.getType(ty); }
+    pasteTok += "/acb:" + (all.join("+").replace(/[[\]|\s]/g, "") || "-");   // stock pastes PNG only (README): a jpeg-only clipboard pastes nothing
+    return null;
+  }, err => { pasteTok += "/acberr:" + ((err && err.name) || "?"); return null; });
+  // two pastes in the same second must reach Rust in order (stock's " 1" suffix): one chain
+  attachPaste.q = (attachPaste.q || Promise.resolve()).then(async () => {
+    const b = await got;
+    if (!b) return updateTitle();
+    let a;
+    try { a = await inv("paste_image", { note: t.name, mime: "image/png", data: b64Bytes(new Uint8Array(await b.arrayBuffer())), tm }); }
+    catch (err) { pasteR++; dropSay(errStr(err)); return updateTitle(); }
+    pasteN++;
+    await refreshTree();     // R29.11: the LP image list must know the file before the embed renders
+    if (fg() === g && g.tabs[g.active] === t) edEdit((v, s, e2) => [v.slice(0, s) + a.text + v.slice(e2), s + a.text.length, s + a.text.length]);
+    updateTitle();
+  });
+  return true;
 }
 /* R31.7 "Insert attachment" — the keyboard road to the SAME attach a drop
    takes. It exists for two reasons, in this order: an OS drop is unreachable
@@ -8554,6 +9215,10 @@ async function undoCloseTab() {
   updateTitle();
   return true;
 }
+/* goal cvf-board2 CVR-A-093 (DEFERRED, pending operator go): stock Obsidian drops "Create new canvas" from the
+   palette while the Canvas core plugin is off. Until the go, false keeps the row present and refusing (old phase
+   canvasui step 5); the follow-up goal flips only this flag. Ribbon + explorer hiding do not depend on it. */
+const CV_PALETTE_HIDE_OFF = true;
 const CMDS = [
   ["app:open-settings",        "Open settings",                       ["ctrl+,"],               () => cmdSettings()],
   // R14: the theme switch is a registry entry like any other — no bespoke
@@ -8580,7 +9245,7 @@ const CMDS = [
   ["file-explorer:new-file",   "Create new note",                     ["ctrl+n"],               cmdNewNote],
   ["file-explorer:new-file-in-new-pane", "Create note to the right",  ["ctrl+shift+n"],         async () => { await splitWith(fg(), "row", null); await cmdNewNote(); }],
   ["file-explorer:new-folder", "Create new folder",                   [],                       () => { $("fnew").hidden = false; $("fname").value = ""; $("fname").focus(); }],
-  ["canvas:new-file",          "Create new canvas",                   [],                       () => cmdNewCanvas(cvActiveFolder())],
+  ["canvas:new-file",          "Canvas: Create new canvas",           [],                       () => cmdNewCanvas(cvNewCanvasFolder()), CV_PALETTE_HIDE_OFF ? () => !!(CANVAS && CANVAS.isRegistered()) : null],
   // goal cv-files CV-149 (REDUCED): there is no empty-tab surface (zero tabs = a blank pane), so the
   // "New canvas" action of an empty workspace is a palette row offered only while no tab is open
   ["canvas:new-file-no-tab",   "New canvas",                          [],                       () => cmdNewCanvas(""),
@@ -8728,6 +9393,7 @@ function cmdPalette() {
    consented link rewrite are renameThenAsk's (R24.3), the same tail the inline
    title uses, then tabs/hist/mru follow the name */
 async function applyRename(old, nn) {   // post-rename bookkeeping (F2 / cmdRename, the R34 title rename, and R24.6's drag-move)
+  if (PLGNM) try { PLGNM(old, nn); } catch (e) { console.error("[plugin] noteMoved:", e); }   // cv-journeys: before the tree refresh repaints a board
   for (const h of groups()) for (const tb of h.tabs) {
     if (tb.kind) continue;
     if (tb.name === old) { tb.name = nn; if (tb.view) setInlineTitle(tb.view, nn); }   // #20: the rendered title follows the FILE, in every retained view
@@ -8735,6 +9401,21 @@ async function applyRename(old, nn) {   // post-rename bookkeeping (F2 / cmdRena
   }
   const mi = mruList.indexOf(old);
   if (mi >= 0) mruList[mi] = nn;
+  /* CVR-A-089: a note MOVED to another folder (same name, new path — the explorer
+     drag, "Move file to") takes the canvas file cards that name it along at once,
+     with no prompt: a card holds a vault path, and the old one now names nothing.
+     A RENAME (new basename) still relinks the cards only on the R34 consent
+     (runUpdateLinks0, CV-143). */
+  const bn = s => s.split("/").pop();
+  if (bn(old) === bn(nn) && window.__osCanvasFiles) {
+    /* the board's file model hears only the watcher, and an app move is an own write the watcher
+       reports as nothing: without this the relinked card names a path the model has never seen
+       and the reopened board paints it missing. LATER: a host rename hook in api-vault (the old
+       entry lingers until then). */
+    if (PLGNW) try { PLGNW(nn, true); } catch (e) { console.error("[plugin] noteWritten:", e); }
+    try { await window.__osCanvasFiles.relink(old, nn, { inv, app: PLG && PLG.app }); }
+    catch (err) { say("Canvas file cards not updated — " + String(err && err.message || err)); }
+  }
   for (const h of groups()) renderTabs(h);
   await refreshTree();
   /* R9.8: the note's name changed, so the rust side rewrote its entry in
@@ -9442,6 +10123,14 @@ async function startGraph(g, cfg) {
   g.graphOn = true; g.graphSettled = false;
   if (!g.perfT0 && lgT0) g.perfT0 = lgT0;   // perfhunt: a local graph is opened from its SOURCE group; the split hands the click time over
   lgT0 = 0;
+  // cvf-links CVR-A-102: the GLOBAL graph's node feed carries the canvases (cvGraphFeed); a canvas node opens the canvas
+  if (cfg.fetch === gcFetchGg && CANVAS && CANVAS.isRegistered()) {
+    const f0 = cfg.fetch, c0 = cfg.onClick;
+    cfg = Object.assign({}, cfg, {
+      fetch: () => cvGraphFeed(f0()),
+      onClick: (n, e) => (/\.canvas$/i.test(String(n)) && !notesCache.includes(n) ? openCanvas(n) : c0(n, e)),
+    });
+  }
   const openT0 = g.perfT0 || perf.now();   // perf: graph_open_settle = open -> kinetic energy below eps
   const sgMs = perf.now() - openT0;     // graphperf: click -> startGraph (0 unless a click time was handed over); v0.6.1 started the lg settle clock HERE, so [sg] lets the A/B compare like with like
   hideAc();
@@ -9449,7 +10138,20 @@ async function startGraph(g, cfg) {
   g.editor.style.display = "none"; g.preview.style.display = "none";
   g.lp.style.display = "none";
   const cv = g.graph; cv.hidden = false;
-  cv.width = cv.clientWidth; cv.height = cv.clientHeight;
+  // gh-graphdpr (GitHub #23 "pixelated graphs"): the backing store was clientWidth x clientHeight,
+  // i.e. CSS px, so at devicePixelRatio 2 the browser upscaled a 1x bitmap (blurred labels and discs).
+  // Now backing = round(css x dpr) for BOTH canvases (labels/2D here, WebGL via glr.draw); the view
+  // (view.scale/tx/ty, toWorld, hit-testing) stays in CSS px and dpr is applied only at draw time,
+  // so zoom re-renders at full resolution. cssW/cssH = the CSS size; at dpr 1 nothing changes.
+  let dpr = 1, cssW = 0, cssH = 0;
+  const fitDpr = () => {               // true = the backing store changed (caller redraws)
+    dpr = window.devicePixelRatio || 1; cssW = cv.clientWidth; cssH = cv.clientHeight;
+    const bw = Math.round(cssW * dpr), bh = Math.round(cssH * dpr);
+    if (cv.width === bw && cv.height === bh) return false;
+    cv.width = bw; cv.height = bh; return true;
+  };
+  fitDpr();
+  g.graphDpr = () => ({ dpr, cssW, cssH });   // census [gdpr:]
   const fetchP = cfg.fetch(), prefP = graphRendererPref();   // backend works while the renderer comes up
   const gcP = cfg.scope ? Promise.resolve(cfg.scope()) : null;   // graph-controls scope: graph.json (read beside the fetch) or the lg tab's options
   const ctx = cv.getContext("2d");
@@ -9589,7 +10291,7 @@ async function startGraph(g, cfg) {
   // cv.onwheel is the ONLY writer of view.scale besides the two ggkeep restores (the tab's own
   // last view on a switch back, and graph.json scale snapped to a notch on a fresh open); no fit/reset button or key sets it,
   // and the local graph shares this startGraph, so the recon §1 bound there covers every view.
-  const view = { scale: 1, tx: cv.width / 2, ty: cv.height / 2, notch: 0, ax: null, ay: null, wx: 0, wy: 0 };
+  const view = { scale: 1, tx: cssW / 2, ty: cssH / 2, notch: 0, ax: null, ay: null, wx: 0, wy: 0 };
   const GZ_OUT = 47, GZ_IN = -20, GZ_MIN = 1 / 128, GZ_MAX = 8;   // the wheel lattice, see cv.onwheel
   const notchScale = n => n === 0 ? 1 : Math.min(GZ_MAX, Math.max(GZ_MIN, Math.pow(0.9, n)));
   // Obsidian force defaults (R16.1) and the gains that turn a slider value into
@@ -9988,13 +10690,14 @@ async function startGraph(g, cfg) {
   function draw() {
     const dT0 = perf.now();
     const P = palette();               // one token read per frame, none per node
+    if ((window.devicePixelRatio || 1) !== dpr) fitDpr();   // gh-graphdpr: dpr changed (monitor / zoom) without a resize
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     // background: the 2D path PAINTS --graph-bg (a transparent canvas would show the pane behind it,
     // which happens to be the same token today and is not a contract); over WebGL the 2D canvas only
     // carries labels, so it stays clear and the GL clear colour below is the one that paints.
     if (glr) ctx.clearRect(0, 0, cv.width, cv.height);
     else { ctx.globalAlpha = 1; ctx.fillStyle = P.bg; ctx.fillRect(0, 0, cv.width, cv.height); }
-    ctx.setTransform(view.scale, 0, 0, view.scale, view.tx, view.ty);
+    ctx.setTransform(view.scale * dpr, 0, 0, view.scale * dpr, view.tx * dpr, view.ty * dpr);   // gh-graphdpr: CSS-px view -> device-px backing
     // hover: hovered node + its edges/neighbors lit accent, rest faded
     const litE = ([i, j]) => hov < 0 || i === hov || j === hov;
     const litN = i => hov < 0 || i === hov || adj[hov].has(i);
@@ -10044,7 +10747,7 @@ async function startGraph(g, cfg) {
     const groups = new Map();         // key -> { col, a, res, dr, idx: [] }
     const GS = g.gcScope ? g.gcScope.st.groups : null;   // graphctx GC19: p.col = first matching colour group (graph_view)
     // world-space cull: nodes outside the viewport are not drawn (R16.4 overflow)
-    const [wx0, wy0] = toWorld(0, 0), [wx1, wy1] = toWorld(cv.width, cv.height), pad = 40 / view.scale;
+    const [wx0, wy0] = toWorld(0, 0), [wx1, wy1] = toWorld(cssW, cssH), pad = 40 / view.scale;
     for (let i = 0; i < N.length; i++) {
       const p = N[i], isC = cn !== null && p.n === cn;
       if (i >= shown) continue;
@@ -10071,12 +10774,18 @@ async function startGraph(g, cfg) {
         const c = RGB[gp.col], ring = gp.res ? 0 : 1.5;
         for (const i of gp.idx) {
           const p = N[i], o = nc * 8;
-          nArr[o] = p.x; nArr[o + 1] = p.y; nArr[o + 2] = (p.r + gp.dr) * NS + ring / 2; nArr[o + 3] = ring;   // 2D strokes straddle the radius
+          nArr[o] = p.x; nArr[o + 1] = p.y; nArr[o + 2] = (p.r + gp.dr) * NS + ring / 2; nArr[o + 3] = ring * dpr;   // ring width is device px in the shader (gh-graphdpr); 2D strokes straddle the radius
           nArr[o + 4] = c[0]; nArr[o + 5] = c[1]; nArr[o + 6] = c[2]; nArr[o + 7] = gp.a; nc++;
         }
         if (labels) { ctx.globalAlpha = gp.a * la; ctx.fillStyle = gp.col; for (const i of gp.idx) { const p = N[i]; ctx.fillText(p.n, p.x, p.y - (p.r + gp.dr) * NS - 4); } }
       }
-      glr.draw(cv.width, cv.height, view, nArr, nc, eArr, ec, RGB[P.bg], D.line);   // bg: the clear colour, from the token like every other colour here
+      // gh-graphdpr: .graphgl is absolutely positioned with no CSS size, so a canvas shows at its
+      // INTRINSIC size = its backing in CSS px; once the backing is css x dpr that is dpr x too big
+      // (measured: GDK_SCALE=2 -> GL canvas 894x1336 CSS over a 447x668 pane). Pin its CSS box to the 2D one.
+      const gst = g.glcv && g.glcv.style, gw = cssW + "px", gh = cssH + "px";
+      if (gst && (gst.width !== gw || gst.height !== gh)) { gst.width = gw; gst.height = gh; }
+      glr.draw(cv.width, cv.height, dpr === 1 ? view : { scale: view.scale * dpr, tx: view.tx * dpr, ty: view.ty * dpr },   // gh-graphdpr: device px
+        nArr, nc, eArr, ec, RGB[P.bg], D.line * dpr);   // bg: the clear colour, from the token like every other colour here
     } else for (const gp of groups.values()) {
       ctx.globalAlpha = gp.a; ctx.beginPath();
       for (const i of gp.idx) { const p = N[i], r = (p.r + gp.dr) * NS; ctx.moveTo(p.x + r, p.y); ctx.arc(p.x, p.y, r, 0, 7); }
@@ -10241,6 +10950,7 @@ async function startGraph(g, cfg) {
     gcUnbind(g);
   }
   g.graphEdges = () => gr.edges.length;   // census [gfe:] (GC15 changes the link count, not the node set)
+  g.graphLinks = () => gr.edges.map(([i, j]) => [gr.nodes[i], gr.nodes[j]]).filter(([a, b]) => a && b).map(([a, b]) => [a.name, b.name]);   // census [gfl:] (cvf-links)
   g.graphNodes = () => {              // census: node screen coords (window px) for the graphnav smoke
     const r = cv.getBoundingClientRect();
     return N.map(p => ({ n: p.n, kind: p.kind, col: p.col, x: Math.round(r.left + p.x * view.scale + view.tx), y: Math.round(r.top + p.y * view.scale + view.ty) }));
@@ -10251,10 +10961,19 @@ async function startGraph(g, cfg) {
   if (window.ResizeObserver) {
     const ro = g.ro = new ResizeObserver(() => {
       if (cv.hidden || !g.graphOn || g.simGen !== gen) { ro.disconnect(); return; }
-      if (cv.width === cv.clientWidth && cv.height === cv.clientHeight) return;
-      cv.width = cv.clientWidth; cv.height = cv.clientHeight; redraw();
+      if (fitDpr()) redraw();          // gh-graphdpr: backing = round(css x dpr)
     });
     ro.observe(cv);
+  }
+  // gh-graphdpr: a dpr change with no CSS resize (window moved to another monitor, GDK scale)
+  // fires no ResizeObserver — watch the resolution media query, re-fit, redraw
+  if (window.matchMedia) {
+    const dprWatch = () => {
+      const mq = matchMedia("(resolution: " + dpr + "dppx)");
+      const on = () => { mq.removeEventListener("change", on); if (cv.hidden || !g.graphOn || g.simGen !== gen) return; fitDpr(); redraw(); dprWatch(); };
+      mq.addEventListener("change", on);
+    };
+    dprWatch();
   }
   // wheel: cursor-anchored zoom, 0.9 per notch out / 1/0.9 in (R16.5);
   // scale is derived from a notch counter so 3 out + 3 in is EXACTLY 1.00
@@ -11191,7 +11910,7 @@ function showSettingsPage(id) {
   const inp = document.createElement("input");
   inp.id = "hkfilter"; inp.placeholder = "Filter..."; inp.spellcheck = false; inp.autocomplete = "off";
   inp.oninput = renderHk;
-  const clr = document.createElement("span"); clr.id = "hkclear"; clr.textContent = "⊗"; clr.title = "Clear";
+  const clr = document.createElement("span"); clr.id = "hkclear"; clr.innerHTML = ICON_XCIRC; clr.title = "Clear";
   clr.onclick = () => { inp.value = ""; renderHk(); inp.focus(); };
   bar.append(inp, clr);
   const chips = document.createElement("div"); chips.id = "hkchips";
@@ -11445,7 +12164,7 @@ function renderThemeCtl() {
 function openThemeMenu(anchor) {
   closeMenu();
   const m = document.createElement("div");
-  m.className = "ctxmenu";
+  m.className = "ctxmenu"; m.dataset.menu = "themes";   // gh-icons ruling 1: its check/cross prefixes are label glyphs (ghicons excludes exactly this menu)
   const mk = (txt, on) => {
     const it = document.createElement("div");
     it.textContent = txt;
@@ -11469,7 +12188,7 @@ function openThemeMenu(anchor) {
 function openSnipMenu(anchor) {
   closeMenu();
   const m = document.createElement("div");
-  m.className = "ctxmenu";
+  m.className = "ctxmenu"; m.dataset.menu = "snippets";   // gh-icons ruling 1: its check prefix is a label glyph (ghicons excludes exactly this menu)
   if (!vaultSnips.length) {
     // absent snippets/ is Obsidian's silent normal (T0): an empty menu entry,
     // deliberately not a notice and not a directory-creating button (yet)
@@ -12191,9 +12910,9 @@ function fBar(g) {                     // the bar's DOM, built once per pane
     '<div class="findrow">' +
       '<input class="findq" type="text" spellcheck="false" autocomplete="off" placeholder="Find">' +
       '<span class="findcount"></span>' +
-      '<button class="findprev" title="Previous match (Shift+Enter)">↑</button>' +
-      '<button class="findnext" title="Next match (Enter)">↓</button>' +
-      '<button class="findclose" title="Close (Escape)">✕</button>' +
+      '<button class="findprev" title="Previous match (Shift+Enter)">' + ICON_UP + '</button>' +
+      '<button class="findnext" title="Next match (Enter)">' + ICON_DOWN + '</button>' +
+      '<button class="findclose" title="Close (Escape)">' + ICON_X + '</button>' +
     '</div>' +
     /* R26.15: the replace row is the SAME bar with a second row revealed, not a
        second widget — that is what makes R26.16 ("replace inherits the find

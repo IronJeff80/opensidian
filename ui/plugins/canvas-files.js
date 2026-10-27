@@ -12,6 +12,9 @@
                         cvEmbedPaint: one rect per node, one path per edge) — read from the file,
                         so a card on its own canvas is depth 1, never a recursion; a double press
                         opens the canvas in a canvas tab
+     note file card     (goal cvf-filecards) the note painted as the reading view (X.MarkdownRenderer), a
+                        heading / block subpath narrowing it; the label is the note name (a subpath a
+                        breadcrumb), any other file its full name; cards of a note repaint when it changes
      text card editing  the note editor (app.embedRegistry md embed -> showEditor(), a CM6
                         EmbedEditor), created on edit and destroyed on stop: one editor at a time
      link card menu     "Copy URL" / "Change URL" added to cv-menus' card menu through its
@@ -27,7 +30,7 @@
    path of CanvasView.loadPath) and whose census(view) main.js canvasTok() appends. */
 (function () {
   "use strict";
-  const ST = { app: null, X: null, prompt: null, copyN: 0, copyOk: 0, hooked: null };
+  const ST = { app: null, X: null, prompt: null, copyN: 0, copyOk: 0, hooked: null, vhooked: null };
   const mk = (tag, cls, parent) => { const e = document.createElement(tag); if (cls) e.className = cls; if (parent) parent.appendChild(e); return e; };
   const isObj = v => v !== null && typeof v === "object" && !Array.isArray(v);
   const extOf = p => { const n = String(p || "").split("/").pop(); const d = n.lastIndexOf("."); return d > 0 ? n.slice(d + 1).toLowerCase() : ""; };
@@ -43,6 +46,7 @@
     ".canvas-node-container > .canvas-file-canvas { display: block; width: 100%; height: 100%; box-sizing: border-box; padding: 6px }\n" +
     ".canvas-node-container > .cvf-text-editor { width: 100%; height: 100%; box-sizing: border-box; padding: 4px 8px }\n" +
     ".cvf-text-editor .cm-editor { height: 100%; outline: none }\n" +
+    ".canvas-file-embed > .cvf-note { padding: 0 12px; white-space: normal; word-break: break-word }\n" +
     ".canvas-error .cvf-ro-btn { margin-top: 10px; cursor: pointer }\n" +
     ".canvas-error.cvf-ro { position: absolute; left: 8px; top: 8px; margin: 0; padding: 6px 10px; z-index: 3; max-width: 60%;" +
     " background: var(--background-primary, #1e1e1e) }\n" +
@@ -53,19 +57,237 @@
     if (ctx && ctx.app) ST.app = ctx.app;
     if (ctx && ctx.X) ST.X = ctx.X;
     hookMenus();
+    hookVault();
+  }
+
+  // a note changed on disk (an inline edit in another card, the note's own tab): every card of it repaints
+  function hookVault() {
+    const app = ST.app;
+    if (!app || !app.vault || typeof app.vault.on !== "function" || ST.vhooked === app) return;
+    ST.vhooked = app;
+    app.vault.on("modify", f => {
+      const path = f && f.path;
+      if (!path) return;
+      let leaves = [];
+      try { leaves = app.workspace.getLeavesOfType("canvas"); } catch (_) { leaves = []; }
+      for (const l of leaves) {
+        const c = l.view && l.view.canvas;
+        if (c) for (const n of c.nodes.values()) if (n.data.type === "file" && n.data.file === path && n._cvf && n._cvf.kind === "note" && !n.isEditing) try { n.renderContent(); } catch (e) { console.error(e); }
+      }
+    });
   }
 
   /* ------------------------------------------------ file cards */
   // true = painted here; false = not ours (canvas-cards.js / canvas.js paint it)
   function file(node, ctx) {
     remember(ctx);
+    if (window.CanvasMedia && !ctx._cvm && window.CanvasMedia.file(node, ctx, file)) return true;   // goal cvf-media: media / missing / canvas / PDF toolbar (canvas-media.js)
     const p = String(node.data.file || ""), ext = ctx.file && ctx.file.extension ? String(ctx.file.extension).toLowerCase() : extOf(p);
     node._cvfSeq = (node._cvfSeq || 0) + 1;
     node._cvf = null; node._cvfWhy = ""; node._cvfErr = "";
+    if (p) label(node, p, ext);
+    const MR = ctx.X && ctx.X.MarkdownRenderer;
+    if (ext === "md" && ctx.file && ctx.app && ctx.app.vault && MR && typeof MR.render === "function") return note(node, ctx, p);
     if (ext === "pdf" && EdG() && invG()) return pdf(node, ctx, p);
     if (ext === "canvas" && ctx.file && G("cvEmbedPaint")) return nested(node, ctx, p);
     if (ext === "pdf" || ext === "canvas") node._cvfWhy = (ext === "pdf" ? (EdG() ? "" : "ed") + (invG() ? "" : "inv") : (ctx.file ? "" : "file") + (G("cvEmbedPaint") ? "" : "paint")) || "?";   // census: why the card fell through
     return false;
+  }
+
+
+  /* ------------------------------------------------ note file cards (goal cvf-filecards)
+     A note card paints the note the way the reading view does (X.MarkdownRenderer, the renderer text
+     cards use), not its source. A subpath narrows it first: "#H" (or "#H#Sub") keeps that heading's
+     section up to the next heading of the same or a higher level; "#^id" keeps the block that carries
+     the id (its paragraph, or the list item / line), the marker itself dropped. */
+  const reEsc = s => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const HD = /^ {0,3}(#{1,6})[ \t]+(.*?)[ \t#]*$/;
+  function section(src, sub) {
+    const parts = String(sub || "").split("#").map(s => s.trim()).filter(Boolean);
+    if (!parts.length) return src;
+    const lines = String(src).split("\n");
+    if (parts[0].startsWith("^")) {
+      const id = parts[0].slice(1), re = new RegExp("(^|\\s)\\^" + reEsc(id) + "\\s*$");
+      const i = lines.findIndex(l => re.test(l));
+      if (i < 0) return null;
+      if (lines[i].trim() === "^" + id) {            // the id on its own line names the block above it
+        let b = i - 1; while (b >= 0 && !lines[b].trim()) b--;
+        if (b < 0) return null;
+        let a = b; while (a > 0 && lines[a - 1].trim() && !HD.test(lines[a - 1])) a--;
+        return lines.slice(a, b + 1).join("\n");
+      }
+      if (/^\s*([-*+]|\d+[.)])\s/.test(lines[i]) || HD.test(lines[i])) return lines[i].replace(re, "");
+      let a = i, b = i;
+      while (a > 0 && lines[a - 1].trim() && !HD.test(lines[a - 1])) a--;
+      while (b < lines.length - 1 && lines[b + 1].trim() && !HD.test(lines[b + 1])) b++;
+      const blk = lines.slice(a, b + 1); blk[i - a] = blk[i - a].replace(re, "");
+      return blk.join("\n");
+    }
+    let lo = 0, hi = lines.length, fence = false;
+    const heads = [];
+    lines.forEach((l, k) => { if (/^\s*(```|~~~)/.test(l)) fence = !fence; else if (!fence) { const m = HD.exec(l); if (m) heads.push({ k, lv: m[1].length, t: m[2].trim() }); } });
+    const norm = s => s.replace(/\s+/g, " ").toLowerCase();
+    for (const p of parts) {
+      const h = heads.find(x => x.k >= lo && x.k < hi && norm(x.t) === norm(p));
+      if (!h) return null;
+      const nx = heads.find(x => x.k > h.k && x.lv <= h.lv);
+      lo = h.k; hi = Math.min(hi, nx ? nx.k : lines.length);
+    }
+    return lines.slice(lo, hi).join("\n").replace(/\s+$/, "");
+  }
+  const stripFm = t => /^---\r?\n/.test(t) ? t.replace(/^---\r?\n[\s\S]*?\r?\n---[ \t]*(\r?\n|$)/, "") : t;
+
+  // the label above a file card: a note is its name without .md (a subpath a breadcrumb), any other file its full name
+  function label(node, p, ext) {
+    const nm = p.split("/").pop();
+    let t = ext === "md" ? nm.replace(/\.md$/i, "") : nm;
+    const parts = String(node.data.subpath || "").split("#").map(s => s.trim()).filter(Boolean);
+    if (parts.length) t += " › " + parts.join(" › ");
+    if (node.labelEl.textContent !== t) node.labelEl.textContent = t;
+  }
+
+  /* The card keeps the note embed (app.embedRegistry md, node.child) that the board API and the
+     inline editor work through (canvas.js FileNode: isEditable / startEditing / writeBack read
+     child.text and child.data); only its painter is ours: loadFile reads the note, narrows it to the
+     subpath, sets child.data / child.text the way the embed does, and paints the reading view. */
+  function note(node, ctx, p) {
+    const seq = node._cvfSeq, app = ctx.app, f = ctx.file, MR = ctx.X.MarkdownRenderer;
+    const cc = window.__osCanvasCards;               // its wiring (wheel scroll of a selected card, census refresh); false for a note
+    if (cc) try { cc.file(node, ctx); } catch (_) {}
+    node._cc = { kind: "note" };
+    node._cvf = { kind: "note", out: null, md: "none" };
+    noteWire(node, ctx);
+    const reg = app.embedRegistry;
+    const mdc = reg && reg.embedByExtension && Object.prototype.hasOwnProperty.call(reg.embedByExtension, "md") ? reg.embedByExtension.md : null;
+    const host = mk("div", "canvas-file-embed", node.contentEl);
+    let child = null;
+    if (typeof mdc === "function") {
+      try { child = mdc({ app, containerEl: host, linktext: p, sourcePath: (node.canvas && node.canvas.path) || "", depth: 1, showInline: true }, f, node.data.subpath || ""); }
+      catch (e) { console.error("[canvas] note card embed:", e); child = null; }
+    }
+    const paint = () => Promise.resolve().then(() => app.vault.cachedRead(f)).then(txt => {
+      if (node._cvfSeq !== seq || node._gone) return;
+      txt = String(txt);
+      const sub = node.data.subpath || "";
+      const src = sub ? section(txt, sub) : stripFm(txt);
+      if (child) { child.data = txt; child.text = sub ? (src == null ? "" : src) : txt; if ("subpathNotFound" in child) child.subpathNotFound = src == null; }
+      if (node.isEditing) return;
+      for (const o of [...host.querySelectorAll(":scope > .markdown-embed-content, :scope > .canvas-node-placeholder, :scope > .markdown-embed-link")]) o.remove();
+      if (src == null) {
+        mk("div", "canvas-node-placeholder", host).textContent = "Unable to find “" + sub.replace(/^#/, "") + "” in " + p.split("/").pop().replace(/\.md$/i, "");
+        node._cvf.out = null; node._cvf.md = "none"; ping(ctx); return;
+      }
+      const out = mk("div", "markdown-embed-content markdown-rendered cvf-note");
+      return Promise.resolve(MR.render(app, src, out, p, child || node)).then(() => {
+        if (node._cvfSeq !== seq || node._gone || node.isEditing) return;
+        for (const o of [...host.querySelectorAll(":scope > .markdown-embed-content")]) o.remove();
+        host.appendChild(out);
+        node._cvf.out = out; node._cvf.md = "rendered";
+        ping(ctx);
+      });
+    }).catch(e => {
+      console.error("[canvas] note card:", e);
+      if (node._cvfSeq !== seq || node._gone || node.isEditing) return;
+      host.textContent = ""; mk("div", "canvas-node-placeholder", host).textContent = p + " — could not be read";
+      node._cvf.md = "none"; node._cvfErr = String(e && e.message || e).slice(0, 60); ping(ctx);
+    });
+    if (child) {
+      Object.defineProperty(child, "editor", { configurable: true, get() { return typeof node.editorApi === "function" ? node.editorApi() : null; } });
+      child.showPreview = () => node.stopEditing();
+      child.loadFile = paint;                        // canvas.js reloads the embed after an edit: it repaints here
+      node.child = child;
+      node.addChild(child);
+    }
+    paint();
+    return true;
+  }
+
+  /* CVR-B-037: while exactly one note card is selected its note is the active file — the explorer highlights it and the
+     status bar counts its backlinks (main.js setCanvasActiveFile); any other selection hands the active file back to
+     the board. Settled once per task: select() clears, then adds. */
+  let actT = null, actOn = false;
+  function actSoon(c) {
+    if (actT) return;
+    actT = Promise.resolve().then(() => {
+      actT = null;
+      const set = G("setCanvasActiveFile");
+      if (!set) return;
+      const s = c && c.selection ? [...c.selection] : [];
+      const n = s.length === 1 ? s[0] : null;
+      const p = n && !n._gone && n._cvf && n._cvf.kind === "note" && n.data && typeof n.data.file === "string" ? n.data.file : null;
+      if (!p && !actOn) return;
+      actOn = !!p;
+      try { set(p); } catch (e) { console.error("[canvas] active file:", e); }
+    });
+  }
+
+  // once per note card: the inline editor takes the focus (caret at the double-click point), a link in the
+  // selected card opens its target, the label opens the note (double click: this tab, Ctrl/Cmd-click: a new tab)
+  function noteWire(node, ctx) {
+    node._cvfCtx = ctx;
+    if (node._cvfNW) return;
+    node._cvfNW = true;
+    const sel = () => !!(node.canvas && node.canvas.selection && node.canvas.selection.has(node));
+    const isNote = () => node._cvf && node._cvf.kind === "note";
+    const src = () => (node.canvas && node.canvas.path) || "";
+    const lt = () => String(node.data.file || "") + (node.data.subpath ? (String(node.data.subpath).startsWith("#") ? "" : "#") + node.data.subpath : "");
+    const open = how => { const app = node._cvfCtx && node._cvfCtx.app; if (app && app.workspace) app.workspace.openLinkText(lt(), src(), how).catch(e => console.error("[canvas] open note:", e)); };
+    node._cvfOpen = open;                            // the board-level double press (below) opens the note from the label
+    if (typeof node.setSelected === "function") {    // CVR-B-037: a lone selected note card is the active file (main.js seam)
+      const bs = node.setSelected;
+      node.setSelected = function () { const r = bs.apply(this, arguments); actSoon(this.canvas); return r; };
+      const bd = node.detach;                        // a removed card leaves the selection without setSelected
+      if (typeof bd === "function") node.detach = function () { const c = this.canvas, r = bd.apply(this, arguments); actSoon(c); return r; };
+    }
+    if (typeof node.startEditing === "function") {
+      const base = node.startEditing;
+      node.startEditing = function () {
+        const was = this.isEditing;
+        const r = base.apply(this, arguments);
+        if (!isNote() || was || !this.isEditing) return r;
+        const at = node._cvfDbl; node._cvfDbl = null;
+        setTimeout(() => {
+          const em = this.child && this.child.editMode, cm = em && em.cm;
+          if (!cm || !this.isEditing) return;
+          try {
+            cm.focus();
+            let pos = at && typeof cm.posAtCoords === "function" ? cm.posAtCoords({ x: at[0], y: at[1] }) : null;
+            if (pos == null) pos = cm.state.doc.length;
+            cm.dispatch({ selection: { anchor: pos } });
+          } catch (_) {}
+          ping(node._cvfCtx);
+        }, 0);
+        return r;
+      };
+    }
+    const box = node.containerEl;
+    box.addEventListener("focusout", e => {          // the focus left the card (the board, another card): the edit ends
+      if (!isNote() || !node.isEditing || (e.relatedTarget && box.contains(e.relatedTarget))) return;
+      setTimeout(() => { if (node.isEditing && !box.contains(document.activeElement)) try { node.stopEditing(); } catch (err) { console.error(err); } }, 0);
+    });
+    box.addEventListener("keydown", e => { if (isNote() && node.isEditing && e.key === "Escape") { e.preventDefault(); e.stopPropagation(); node.stopEditing(); try { node.canvas.wrapperEl.focus({ preventScroll: true }); } catch (_) {} } });
+    box.addEventListener("dblclick", e => { if (isNote() && !node.isEditing && node.contentEl.contains(e.target) || e.target === node.blockerEl) node._cvfDbl = [e.clientX, e.clientY]; }, true);
+    box.addEventListener("pointerdown", e => {
+      if (!isNote() || node.isEditing || e.button !== 0 || !sel()) return;
+      const o = node._cvf.out;
+      const hit = o && document.elementsFromPoint(e.clientX, e.clientY).map(x => x.closest && x.closest("a.wiki, a.internal-link")).find(a => a && o.contains(a));
+      if (!hit) return;
+      e.stopPropagation(); e.preventDefault();
+      const t = (hit.dataset.note || hit.getAttribute("data-href") || hit.textContent || "") + (hit.dataset.anchor ? "#" + hit.dataset.anchor : "");
+      const app = node._cvfCtx && node._cvfCtx.app;
+      if (t && app && app.workspace) app.workspace.openLinkText(t, String(node.data.file || ""), e.ctrlKey || e.metaKey ? "tab" : false).catch(err => console.error("[canvas] open link:", err));
+    });
+    const lab = node.labelEl;
+    lab.addEventListener("pointerdown", e => {
+      if (!isNote() || e.button !== 0 || !(e.ctrlKey || e.metaKey)) return;
+      e.stopPropagation(); e.preventDefault();
+      open("tab");
+    });
+    lab.addEventListener("dblclick", e => {
+      if (!isNote()) return;
+      e.stopPropagation(); e.preventDefault();
+      open(false);
+    });
   }
 
   function pdf(node, ctx, p) {
@@ -206,27 +428,53 @@
      lands on the wrapper, where nodeOf() finds no card and a NEW text card is made (canvas-cards.js
      documents the same for other-kind files). A double press on a text card is therefore detected
      on its second pointerdown, before the board sees it, and opens that card's editor. */
-  let dpId = "", dpT = 0, dpX = 0, dpY = 0;
-  document.addEventListener("pointerdown", e => {
-    const t = e.target, card = t && t.closest ? t.closest(".canvas-node.canvas-node-text[data-node-id]") : null;
-    if (!card || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) { dpId = ""; return; }
-    if (t.closest("textarea, input, .markdown-source-view, [contenteditable=true], .canvas-node-resizer, .canvas-node-label")) { dpId = ""; return; }
-    const id = card.dataset.nodeId, now = Date.now();
-    const dbl = id === dpId && now - dpT < 500 && Math.abs(e.clientX - dpX) + Math.abs(e.clientY - dpY) < 8;
-    dpId = id; dpT = now; dpX = e.clientX; dpY = e.clientY;
-    if (!dbl) return;                               // the first press still selects / drags the card
-    dpId = "";
+  /* The same holds for a NOTE file card: a double press on its body edits the note inline (caret at
+     the press point), a double press on its label opens the note in this tab. The dblclick that
+     follows such a press is kept from the board, which would otherwise make a text card. */
+  let dpId = "", dpT = 0, dpX = 0, dpY = 0, dpLab = false, dpEat = 0;
+  const nodeFor = (card, id) => {
     const app = ST.app || (window.__osPluginHost && window.__osPluginHost.app) || null;
-    let node = null;
     try {
       for (const l of app ? app.workspace.getLeavesOfType("canvas") : []) {
         const v = l.view;
-        if (v && v.canvas && v.containerEl && v.containerEl.contains(card)) { node = v.canvas.nodes.get(id) || null; break; }
+        if (v && v.canvas && v.containerEl && v.containerEl.contains(card)) return v.canvas.nodes.get(id) || null;
       }
-    } catch (_) { node = null; }
-    if (!node || node.isEditing || !node.canvas || node.canvas.readonly || typeof node.startEditing !== "function") return;
+    } catch (_) {}
+    return null;
+  };
+  document.addEventListener("pointerdown", e => {
+    const t = e.target, card = t && t.closest ? t.closest(".canvas-node[data-node-id]") : null;
+    const text = !!(card && card.classList.contains("canvas-node-text")), lab = !!(card && t.closest(".canvas-node-label"));
+    if (!card || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) { dpId = ""; return; }
+    if (t.closest("textarea, input, .markdown-source-view, [contenteditable=true], .canvas-node-resizer") || (text && lab)) { dpId = ""; return; }
+    const id = card.dataset.nodeId, now = Date.now();
+    const dbl = id === dpId && lab === dpLab && now - dpT < 500 && Math.abs(e.clientX - dpX) + Math.abs(e.clientY - dpY) < 8;
+    dpId = id; dpT = now; dpX = e.clientX; dpY = e.clientY; dpLab = lab;
+    if (!dbl) return;                               // the first press still selects / drags the card
+    dpId = "";
+    if (!text && !card.classList.contains("canvas-node-file")) return;
+    const node = nodeFor(card, id);
+    if (!node || node.isEditing || !node.canvas) return;
+    if (!text) {                                    // a file card: only a note card answers here (other kinds: canvas-cards.js)
+      if (!node._cvf || node._cvf.kind !== "note") return;
+      const o = node._cvf.out;                      // a second press on a link of the (now selected) card opens the link
+      if (!lab && o && document.elementsFromPoint(e.clientX, e.clientY).some(x => x.closest && o.contains(x) && x.closest("a.wiki, a.internal-link"))) return;
+      e.stopPropagation(); e.preventDefault();
+      dpEat = now;
+      if (lab) { if (typeof node._cvfOpen === "function") node._cvfOpen(false); return; }
+      if (node.canvas.readonly || typeof node.startEditing !== "function" || !node.isEditable || !node.isEditable()) return;
+      node._cvfDbl = [e.clientX, e.clientY];
+      node.startEditing();
+      return;
+    }
+    if (node.canvas.readonly || typeof node.startEditing !== "function") return;
     e.stopPropagation(); e.preventDefault();
     node.startEditing();
+  }, true);
+  document.addEventListener("dblclick", e => {
+    if (!dpEat || Date.now() - dpEat > 700) return;
+    dpEat = 0;
+    if (e.target && e.target.closest && e.target.closest(".canvas-wrapper, .canvas-node, .canvas-node-container")) e.stopPropagation();
   }, true);
 
   /* ------------------------------------------------ link card menu */
@@ -370,10 +618,25 @@
     const vis = e => !!e && e.isConnected && e.getClientRects().length > 0;
     const ctr = e => { const r = e.getBoundingClientRect(); return Math.round(r.x + r.width / 2) + "," + Math.round(r.y + r.height / 2); };
     let t = "", k = 0, ed = "-";
+    const lbl = [];
     for (const n of v.canvas.nodes.values()) {
       if (n.data.type === "text" && n.isEditing && ed === "-") ed = esc(n.id);
+      if (n.data.type === "file" && lbl.length < 24 && vis(n.containerEl) && vis(n.labelEl)) lbl.push(esc(n.id) + "=" + esc(n.labelEl.textContent) + "@" + ctr(n.labelEl));
       if (n.data.type !== "file" || k >= 16 || !vis(n.containerEl)) continue;
       const f = n._cvf || {}, id = esc(n.id);
+      if (f.kind === "note") {                       // goal cvf-filecards: [cvfn:<id>|md=|h=|src=|ed=|cm=|fo=|lk=|lt=|tx=]
+        k++;
+        const o = f.out && n.contentEl.contains(f.out) ? f.out : null;
+        const hs = o ? [...o.querySelectorAll("h1,h2,h3,h4,h5,h6")].map(h => esc(h.textContent).replace(/,/g, " ")).join(",") : "";
+        let src = 0;
+        if (o) { const w = document.createTreeWalker(o, NodeFilter.SHOW_TEXT); for (let x = w.nextNode(); x; x = w.nextNode()) if (/(^|\n)\s*#{1,6} |\[\[|\]\]/.test(x.nodeValue)) src++; }
+        const a = o && o.querySelector("a.wiki, a.internal-link");
+        const lt = a ? (a.dataset.note || a.getAttribute("data-href") || a.textContent || "") + (a.dataset.anchor ? "#" + a.dataset.anchor : "") : "";
+        t += " [cvfn:" + id + "|md=" + (o ? f.md : f.md === "rendered" ? "none" : f.md) + "|h=" + hs + "|src=" + src + "|ed=" + (n.isEditing ? 1 : 0) +
+             "|cm=" + (n.contentEl.querySelector(".cm-editor") ? 1 : 0) + "|fo=" + (n.contentEl.contains(document.activeElement) ? 1 : 0) +
+             "|lk=" + (vis(a) ? ctr(a) : "-") + "|lt=" + (a ? esc(lt) || "-" : "-") + "|tx=" + esc((o || n.contentEl).textContent).slice(0, 160) + "]";
+        continue;
+      }
       if (n._cvfWhy) t += " [cvfwhy:" + id + "=" + esc(n._cvfWhy + (n._cvfErr ? ":" + n._cvfErr : "")) + "]";   // a PDF / canvas card that fell back, and why
       if (f.kind === "pdf") {
         k++;
@@ -390,6 +653,7 @@
       }
     }
     const root = v.canvas.nodeEl || v.containerEl;
+    if (lbl.length) t += " [cvfl:" + lbl.join("|") + "]";
     t += " [cvfile:cm=" + root.querySelectorAll(".canvas-node-text .cm-editor").length + "|ta=" + root.querySelectorAll("textarea.canvas-node-textarea").length + "|ed=" + ed + "]";
     const b = v.errorEl && v.errorEl.querySelector(".cvf-ro-btn");
     if (vis(b)) t += " [cvfile:robtn@" + ctr(b) + "]";

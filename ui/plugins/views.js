@@ -301,6 +301,60 @@
         const r = recs.get(t); if (r) closeRec(r);
       }
       const pvTab = (type, name) => ({ kind: "unk", name: name || type, utype: type, raw: null, lid: newId(), mode: "source", hist: [], hpos: -1 });
+      /* CVR-B-027: a canvas tab that opens a note in its own leaf (a link in a selected text card, at rest)
+         becomes that note IN PLACE, as stock replaces the leaf's view: the tab count is unchanged and the
+         board is the leaf's Back entry ({pv: {type, state}}, as main.js keeps a graph as {gg:1}). Back on
+         that entry turns the tab into the canvas again, re-opened from its saved view state; Forward from
+         there turns it into the note again. Only the canvas type: other plugin views keep opening a note
+         in a new tab of their group (Excalidraw and friends rely on it). */
+      const PV_INPLACE = new Set(["canvas"]);
+      function pvToNote(leaf, file) {   // leaf's canvas tab -> a note tab with the board as its Back entry; true if done
+        const t = leaf._t, g = t && groupOfTab(t);
+        if (!g || leaf._side || !PV_INPLACE.has(t.utype) || !file || file.extension !== "md" || typeof modeBits !== "function") return false;
+        const r = recs.get(t);
+        let st = {}; try { st = (r ? r.view.getState() : t.raw && t.raw.state && t.raw.state.state) || {}; } catch (_) {}
+        const e = { n: t.name, s: 0, pv: { type: t.utype, state: JSON.parse(JSON.stringify(st)), title: t.name } };
+        t.hist = t.hpos >= 0 ? t.hist.slice(0, t.hpos + 1) : [];
+        t.hist.push(e); t.hpos = t.hist.length - 1;
+        if (r) closeRec(r);
+        pvAsNote(t);
+        pvHistInstall();
+        return true;
+      }
+      function pvAsNote(t) {            // the tab is a note tab now: no plugin kind, live preview bits
+        delete t.kind; delete t.utype; delete t.raw; delete t.base; delete t.mode;
+        t.read = false; t.src = false; modeBits(t);
+      }
+      function pvAsView(t, e) {         // the tab is the plugin view of history entry e again (mounted by loadActive)
+        delete t.base;
+        t.kind = "unk"; t.utype = e.pv.type; t.name = e.n; t.read = false; t.src = true;
+        t.raw = { id: t.lid, type: "leaf", state: { type: e.pv.type, state: JSON.parse(JSON.stringify(e.pv.state || {})), title: e.pv.title || e.n } };
+      }
+      /* main.js histGo walks note/graph entries only; a {pv} entry (or a tab standing on one) is walked here,
+         every other step goes to histGo unchanged. Installed on the first in-place open, so a session that
+         never makes one runs main.js's history exactly as before. */
+      let pvHistOn = false;
+      function pvHistInstall() {
+        if (pvHistOn || typeof histGo !== "function") return;
+        pvHistOn = true;
+        const base = histGo;
+        window.histGo = async function pvHistGo(dd, from) {
+          const g = from || M().fg(), t = activeTab(g);
+          const at = t && t.hist && t.hpos >= 0 ? t.hist[t.hpos] : null, p = t ? t.hpos + dd : -1;
+          const to = t && t.hist && p >= 0 && p < t.hist.length ? t.hist[p] : null;
+          if (!to || t.kind === "lg" || (!(to.pv) && !(t.kind === "unk" && at && at.pv))) return base(dd, from);
+          if (to.pv) {                  // onto a canvas entry: leave the note (saved), the tab is the canvas again
+            if (t.kind === "unk") { const r = recs.get(t); if (r) closeRec(r); }
+            else { if (typeof flushSave === "function") await flushSave(g); if (typeof scrollOf === "function" && at) at.s = scrollOf(g); }
+            t.hpos = p; pvAsView(t, to);
+            if (typeof loadActive === "function") await loadActive(g);
+            return;
+          }
+          const r = recs.get(t); if (r) closeRec(r);   // off a canvas entry onto a note: histGo walks it as a note tab
+          pvAsNote(t);
+          return base(dd, from);
+        };
+      }
 
       /* ------------------------------------------- the layout tree (api-workspace)
          Obsidian's layout classes over main.js's own model, resolved LIVE at
@@ -534,6 +588,7 @@
         }
         async _openFileDirect(file, openState) { svsSkip++; try { return await this._openFileDirect0(file, openState); } finally { svsSkip--; } }
         _openFileDirect0(file, openState) {
+          if (this._t && this._t.kind === "unk" && !this._side && pvToNote(this, file)) return d.openFileIn(this, file, openState);   // CVR-B-027: a canvas leaf shows the note in place
           if ((this._t && this._t.kind === "unk") || this._side) {   // a plugin leaf asked to show a note: a new tab in its group (or the focused one)
             const n = new WorkspaceLeaf(this.app); n._g = this._grp || M().fg(); n._nt = true;
             return d.openFileIn(n, file, openState);
@@ -629,6 +684,13 @@
           const prev = keepFocus ? M().fg() : null;   // splitWith focuses the new pane; WorkspaceLeaf.open gives focus back
           await splitWith(g, split, t);
           if (prev && prev !== M().fg() && M().groups().indexOf(prev) >= 0 && typeof focusGroup === "function") try { focusGroup(prev); } catch (_) {}
+        }
+        else if (t0 && !t0.kind && active && !leaf._nt && PV_INPLACE.has(type)) {
+          // cvf-links CVR-A-096: a canvas opened from a NOTE leaf (a [[X.canvas]] link / embed click) replaces the
+          // note in the same tab, as stock: the canvas tab goes in right after it, then the note tab goes (count unchanged)
+          await openTabView(g, t, at, true);
+          const j = g.tabs.indexOf(t0);
+          if (j >= 0 && typeof closeTab === "function") await closeTab(g, j, "plugin-detach", "plugin", true);
         }
         else if (t0 && !active && !leaf._nt) {
           // a leaf already showing something changes view in place: the active leaf stays where it is (stock);

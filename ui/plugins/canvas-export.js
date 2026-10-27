@@ -6,22 +6,29 @@
    (help.obsidian.md/plugins/canvas, "Export a canvas as an image") — clean room.
 
    The dialog offers
-     Area      the whole board (every card's bounding box + PAD on each side, the
-               box zoomToFit uses) or the current view (the board wrapper as it is
+     Area      the whole board (every card's bounding box + PAD = 100 px on each
+               side) or the current view (the board wrapper as it is
                on screen, at the screen's devicePixelRatio)
-     Zoom      0.5 / 1 / 2 / 8 — the image size "W × H" is shown before export
-     Privacy   every text line is drawn as a bar instead of glyphs
+     Zoom      continuous (slider + typed field, ZMIN..ZMAX, fresh at 1 each run);
+               the image size "W × H" is shown before export
+     Privacy   every text run is drawn as a solid rounded bar (off on every run)
+     Footer    a band under the image with our own mark (on by default); it
+               adds bandOf(z) px BELOW the estimated size, the estimate excludes it
    A size with a side over MAX_SIDE or an area over MAX_AREA is refused before
-   anything is rasterised (a notice, no file). An empty board offers no command.
+   anything is rasterised (a notice, no file). On an empty board the command
+   says so in a notice and opens no dialog.
 
    RASTERISING. The image is painted from the MODEL on a 2D <canvas>: cards from
    their data (x/y/width/height/text/file/url/label), styled with the colours the
    board shows (computed style of each card), edges from the geometry canvas.js
    already rendered (the SVG path d -> Path2D, the arrow polygons, the labels).
    No DOM snapshot (an SVG foreignObject can taint the canvas in WebKit).
-   canvas.toBlob("image/png") -> app.vault.createBinary at the first free name
-   ("<canvas>.png", "<canvas> 1.png", ...): the confined vault VFS, never a path
-   outside the vault, never an overwrite.
+   canvas.toBlob("image/png") -> the core command canvas_attach (src-tauri canvasfs.rs:
+   vault-confined, create-new only, not trust-gated, so it works in a restricted
+   vault) at the first free name in the VAULT ROOT ("<canvas>.png", "<canvas> 1.png",
+   ...), the name shown in the dialog; a notice says where it went. Never a path
+   outside the vault, never an overwrite. (No native save dialog: that would need a
+   host path outside the vault.)
 
    Load order (index.html): canvas.js -> ... -> canvas-edges.js -> canvas-export.js
    -> main.js. canvas.js does not call in: this file registers its command itself
@@ -29,13 +36,14 @@
    census(view). One frozen global, window.CanvasExport. */
 (function () {
   "use strict";
-  const PAD = 40;                          // = canvas.js zoomToFit pad
+  const PAD = 100;                         // margin around the cards on each side of a whole-board image
   const MAX_SIDE = 16384, MAX_AREA = 64 * 1024 * 1024;
-  const ZOOMS = [0.5, 1, 2, 8];
+  const ZMIN = 0.25, ZMAX = 8, ZSTEP = 0.05;  // the zoom slider: continuous, typed values snap to 0.01
+  const BAND = 64;                         // footer band height at zoom 1 (our own mark), under the estimate
   const host = window.__osPluginHost;      // captured now: the loader seals the host before plugins run
   let app = (host && host.app) || null, X = (host && host.api) || null;
 
-  const opt = { mode: "full", z: 1, p: 0 };   // the dialog keeps the last choice
+  const opt = { mode: "full", z: 1, p: 0, l: 1 };   // area is kept between runs; zoom, privacy and footer start fresh
   let dlg = null;                             // the open dialog
   let last = null, nExp = 0, refused = null, nRef = 0;
 
@@ -72,6 +80,8 @@
     const b = bboxOf(c) || { x0: 0, y0: 0, x1: 1, y1: 1 };
     return { mode, z, w: Math.round((b.x1 - b.x0 + 2 * PAD) * z), h: Math.round((b.y1 - b.y0 + 2 * PAD) * z), b };
   }
+  const bandOf = z => Math.max(24, Math.round(BAND * z));   // the footer band: added BELOW the estimated size
+  const zClamp = v => Math.min(ZMAX, Math.max(ZMIN, Math.round(v * 100) / 100));
   const tooBig = s => s.w < 1 || s.h < 1 || s.w > MAX_SIDE || s.h > MAX_SIDE || s.w * s.h > MAX_AREA;
 
   /* ---------------------------------------------- colours */
@@ -138,9 +148,10 @@
     st.line = (s, x, y, fs) => {
       if (!s) return;
       if (!privacy) { ctx.fillText(s, x, y); st.glyphs++; return; }
-      const w = ctx.measureText(s).width, h = Math.max(2, fs * 0.7);
+      // a solid rounded bar the width of the run, in the run's own colour (links keep their link colour)
+      const w = Math.max(4, ctx.measureText(s).width), h = Math.max(3, fs * 0.72);
       const left = ctx.textAlign === "center" ? x - w / 2 : x;
-      ctx.save(); ctx.globalAlpha = 0.45; ctx.fillRect(left, y - h, w, h); ctx.restore();
+      ctx.save(); ctx.globalAlpha = 0.85; rrect(ctx, left, y - h, w, h, h / 2); ctx.fill(); ctx.restore();
       st.bars++;
     };
     return st;
@@ -234,23 +245,71 @@
     return { glyphs: st.glyphs, bars: st.bars };
   }
 
+  /* the footer band under the board: a hairline, a small mark (two overlapping
+     rounded squares) and the app name, bottom-left, in the board's own colours */
+  function paintBand(c, ctx, w, y0, h) {
+    const bg = boardBg(c);
+    let ink = "#9a9a9a";
+    try { ink = solid(getComputedStyle(c.wrapperEl).color) || ink; } catch (_) {}
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = bg; ctx.fillRect(0, y0, w, h);
+    ctx.save();
+    ctx.globalAlpha = 0.35; ctx.fillStyle = ink; ctx.fillRect(0, y0, w, Math.max(1, Math.round(h / 64)));
+    ctx.restore();
+    const s = Math.round(h * 0.4), pad = Math.round(h * 0.3), cy = y0 + h / 2;
+    ctx.save(); ctx.fillStyle = ink;
+    ctx.globalAlpha = 0.55; rrect(ctx, pad, cy - s / 2, s, s, s * 0.25); ctx.fill();
+    ctx.globalAlpha = 0.9; rrect(ctx, pad + s * 0.45, cy - s * 0.3, s * 0.8, s * 0.8, s * 0.2); ctx.fill();
+    ctx.globalAlpha = 0.85;
+    ctx.font = "600 " + Math.round(h * 0.34) + "px sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+    ctx.fillText("opensidian", pad + s * 1.6, cy);
+    ctx.restore();
+  }
+
   /* ---------------------------------------------- export */
   const blobOf = cv => new Promise((res, rej) => cv.toBlob(b => (b ? res(b) : rej(new Error("the image could not be encoded"))), "image/png"));
   function bytesOf(b) {
     if (typeof b.arrayBuffer === "function") return b.arrayBuffer().then(a => new Uint8Array(a));
     return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(new Uint8Array(r.result)); r.onerror = () => rej(r.error); r.readAsArrayBuffer(b); });
   }
+  // is p in use? Our own earlier exports, the vault model, the backend image index (list_images: works in a
+  // restricted vault, where the adapter answers EPERM and the model may not have caught up), the adapter.
+  const wrote = new Set();
   async function taken(p) {
-    const V = app.vault;
+    const V = app.vault, lp = p.toLowerCase();
+    if (wrote.has(lp)) return true;
     try { if (V.getAbstractFileByPathInsensitive(p)) return true; } catch (_) {}
+    try { const I = invoke(), l = I && await I("list_images", {}); if (Array.isArray(l) && l.some(x => String(x).toLowerCase() === lp)) return true; } catch (_) {}
     try { if (V.adapter && typeof V.adapter.exists === "function" && await V.adapter.exists(p)) return true; } catch (_) {}
     return false;
   }
   async function freePath(c) {
-    const cp = (c.view && c.view.path) || "Canvas.canvas", base = cp.replace(/\.canvas$/i, "");
-    let p = app.vault.getAvailablePath(base, "png");
+    const cp = (c.view && c.view.path) || "Canvas.canvas", base = cp.split("/").pop().replace(/\.canvas$/i, "") || "Canvas";
+    let p = base + ".png";
     for (let i = 1; await taken(p); i++) p = base + " " + i + ".png";
     return p;
+  }
+  const invoke = () => { try { if (typeof inv === "function") return inv; } catch (_) {} const T = window.__TAURI__; return T && T.core ? T.core.invoke : null; };   // main.js global lexical
+  function b64Of(u8) {
+    let s = "";
+    for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+    return btoa(s);
+  }
+  // canvas_attach is create-new only (EEXIST when taken). A name taken between the pick and the write
+  // moves on to "<stem> 1.png", "<stem> 2.png", ... without trusting taken(): in a restricted vault
+  // the adapter may not see every file.
+  async function attach(path, data) {
+    const I = invoke();
+    if (!I) throw new Error("no core command bridge");
+    const stem = path.replace(/( \d+)?\.png$/i, "");
+    for (let i = 0; ; i++) {
+      try { return await I("canvas_attach", { path, dataB64: data }); }
+      catch (e) {
+        const m = String((e && e.message) || e);
+        if (!/^EEXIST/.test(m) || i >= 200) throw new Error(m);
+        path = stem + " " + (i + 1) + ".png";
+      }
+    }
   }
   const notice = m => { try { if (X && X.Notice) new X.Notice(m); } catch (_) {} };
   function refuse(c, sz) {
@@ -262,15 +321,19 @@
   async function exportImage(c, o) {
     const sz = sizeOf(c, o.mode, o.z);
     if (tooBig(sz)) { refuse(c, sz); return null; }
-    const cv = document.createElement("canvas"); cv.width = sz.w; cv.height = sz.h;
+    const band = o.l ? bandOf(o.z) : 0;
+    const cv = document.createElement("canvas"); cv.width = sz.w; cv.height = sz.h + band;
     const ctx = cv.getContext("2d");
     if (!ctx) throw new Error("no 2D context");
     const st = paint(c, ctx, sz, !!o.p);
+    if (band) paintBand(c, ctx, sz.w, sz.h, band);
     const bytes = await bytesOf(await blobOf(cv));
-    const path = await freePath(c);
-    await app.vault.createBinary(path, bytes);
+    let path = o.to;
+    if (!path || await taken(path)) path = await freePath(c);   // never an overwrite
+    path = await attach(path, b64Of(bytes));
+    wrote.add(String(path).toLowerCase());
     nExp++;
-    last = { glyphs: st.glyphs, bars: st.bars, w: sz.w, h: sz.h, file: path, n: nExp, dpr: dprOf() };
+    last = { glyphs: st.glyphs, bars: st.bars, w: sz.w, h: sz.h + band, file: path, n: nExp, dpr: dprOf() };
     notice("Canvas exported to " + path);
     ping(c);
     return path;
@@ -279,23 +342,30 @@
   /* ---------------------------------------------- dialog */
   function openDialog(c) {
     if (dlg || !X || !X.Modal) return;
+    opt.z = 1; opt.p = 0; opt.l = 1;            // zoom, privacy and the footer start fresh on every run
     const m = new X.Modal(c.app || app);
     m.setTitle("Export as image");
     m.modalEl.classList.add("cvx-modal");
-    const D = { m, c, b: {}, sizeEl: null, msgEl: null };
+    const D = { m, c, b: {}, sizeEl: null, msgEl: null, to: "" };
     const mk = (tag, cls, parent, txt) => { const e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; parent.appendChild(e); return e; };
     const button = (parent, key, txt, fn) => {
       const b = mk("button", "cvx-opt", parent, txt); b.type = "button";
       b.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); fn(); update(); });
       D.b[key] = b; return b;
     };
-    function update() {
+    const sw = (parent, key, get, set) => {        // an Off/On switch
+      const b = button(parent, key, "", () => set(get() ? 0 : 1)); b.setAttribute("role", "switch"); return b;
+    };
+    const paintSw = (b, on) => { b.classList.toggle("is-active", !!on); b.setAttribute("aria-checked", on ? "true" : "false"); b.textContent = on ? "On" : "Off"; };
+    function update(from) {
       for (const k of ["full", "view"]) D.b[k].classList.toggle("is-active", opt.mode === k);
-      for (const z of ZOOMS) D.b["z" + z].classList.toggle("is-active", opt.z === z);
-      D.b.priv.classList.toggle("is-active", !!opt.p); D.b.priv.setAttribute("aria-checked", opt.p ? "true" : "false");
-      D.b.priv.textContent = opt.p ? "On" : "Off";
+      if (from !== "range") D.b.zr.value = String(opt.z);
+      if (from !== "field") D.b.zin.value = String(opt.z);
+      paintSw(D.b.priv, opt.p); paintSw(D.b.logo, opt.l);
       const sz = sizeOf(c, opt.mode, opt.z);
       D.sizeEl.textContent = fmtSize(sz);
+      D.bandEl.textContent = opt.l ? "+ " + bandOf(opt.z) + " px footer band" : "";
+      D.toEl.textContent = D.to || "…";
       D.msgEl.textContent = tooBig(sz) ? "Too large to export: at most " + MAX_SIDE + " px a side and " + (MAX_AREA / 1048576) + "M pixels." : "";
       ping(c);
     }
@@ -307,22 +377,39 @@
       button(r, "full", "Whole canvas", () => { opt.mode = "full"; });
       button(r, "view", "Current view", () => { opt.mode = "view"; });
       r = row("Zoom");
-      for (const z of ZOOMS) button(r, "z" + z, z + "×", () => { opt.z = z; });
-      r = row("Privacy mode (hide text)");
-      button(r, "priv", "Off", () => { opt.p = opt.p ? 0 : 1; }).setAttribute("role", "switch");
+      const zr = mk("input", "cvx-zoom", r); zr.type = "range"; zr.min = String(ZMIN); zr.max = String(ZMAX); zr.step = String(ZSTEP); D.b.zr = zr;
+      zr.addEventListener("input", () => { opt.z = zClamp(parseFloat(zr.value) || 1); update("range"); });
+      const zin = mk("input", "cvx-zin", r); zin.type = "text"; zin.inputMode = "decimal"; zin.size = 5; zin.spellcheck = false; D.b.zin = zin;
+      const takeField = fin => {
+        const v = parseFloat(String(zin.value).replace(",", "."));
+        if (isFinite(v) && v > 0) { opt.z = zClamp(v); update(fin ? undefined : "field"); }
+        else if (fin) update();
+      };
+      zin.addEventListener("input", () => takeField(false));
+      zin.addEventListener("change", () => takeField(true));
+      zin.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); takeField(true); } });
+      r = row("Privacy mode (text as bars)");
+      sw(r, "priv", () => opt.p, v => { opt.p = v; });
+      r = row("Footer band with app mark");
+      sw(r, "logo", () => opt.l, v => { opt.l = v; });
       r = row("Image size");
       D.sizeEl = mk("span", "cvx-size", r);
+      D.bandEl = mk("span", "cvx-band", r);
+      r = row("Saved as");
+      D.toEl = mk("span", "cvx-to", r);
       D.msgEl = mk("div", "cvx-warn", ce);
       const foot = mk("div", "cvx-foot", ce);
       const go = mk("button", "mod-cta cvx-go", foot, "Export"); go.type = "button"; D.b.go = go;
       go.addEventListener("click", e => {
         e.preventDefault(); e.stopPropagation();
-        const o = { mode: opt.mode, z: opt.z, p: opt.p }, sz = sizeOf(c, o.mode, o.z);
+        takeField(true);
+        const o = { mode: opt.mode, z: opt.z, p: opt.p, l: opt.l, to: D.to }, sz = sizeOf(c, o.mode, o.z);
         if (tooBig(sz)) { refuse(c, sz); return; }   // refused before rasterising; the dialog stays for another choice
         m.close();
         exportImage(c, o).catch(err => { console.error("[canvas] export:", err); notice("Canvas not exported — " + ((err && err.message) || err)); ping(c); });
       });
       dlg = D; update();
+      freePath(c).then(p => { if (dlg === D) { D.to = p; update(); } }).catch(() => {});
     };
     const esc = e => { if (e.key === "Escape" && dlg === D) { e.preventDefault(); e.stopPropagation(); m.close(); } };
     m.onClose = function () { document.removeEventListener("keydown", esc, true); if (dlg === D) dlg = null; ping(c); };
@@ -341,8 +428,10 @@
     try {
       cm.addCommand({ id: "canvas:export-image", name: "Canvas: Export as image", checkCallback: chk => {
         const c = boardOf();
-        if (!c || !c.nodes.size) return false;    // an empty board has nothing to export
-        if (!chk) openDialog(c);
+        if (!c) return false;                     // listed whenever a board is the active view
+        if (chk) return true;
+        if (!c.nodes.size) { notice("Nothing to export: this canvas is empty."); return true; }   // no dialog
+        openDialog(c);
         return true;
       } });
       done = typeof cm.findCommand !== "function" || !!cm.findCommand("canvas:export-image");
@@ -358,8 +447,9 @@
   function census(v) {
     let t = "";
     if (dlg && dlg.sizeEl) {
-      t += " [cvxdlg:mode=" + opt.mode + "|z=" + opt.z + "|p=" + (opt.p ? 1 : 0) + "|size=" + dlg.sizeEl.textContent + "|dpr=" + dprOf();
-      for (const k of ["full", "view", ...ZOOMS.map(z => "z" + z), "priv", "go"]) if (vis(dlg.b[k])) t += "|" + k + "=" + ctr(dlg.b[k]);
+      t += " [cvxdlg:mode=" + opt.mode + "|z=" + opt.z + "|p=" + (opt.p ? 1 : 0) + "|l=" + (opt.l ? 1 : 0) + "|size=" + dlg.sizeEl.textContent +
+        "|band=" + (opt.l ? bandOf(opt.z) : 0) + "|to=" + esc(dlg.to) + "|dpr=" + dprOf();
+      for (const k of ["full", "view", "zr", "zin", "priv", "logo", "go"]) if (vis(dlg.b[k])) t += "|" + k + "=" + ctr(dlg.b[k]);
       t += "]";
     }
     if (last) t += " [cvexport:glyphs=" + last.glyphs + "|bars=" + last.bars + "|w=" + last.w + "|h=" + last.h + "|file=" + esc(last.file) + "|n=" + last.n + "|dpr=" + last.dpr + "]";

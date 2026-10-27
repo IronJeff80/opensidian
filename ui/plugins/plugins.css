@@ -157,3 +157,22 @@ body.os-has-plugin-status #main .status { bottom: 30px }
 /* top5-func: a plugin setting tab's SettingTab.icon in the Settings sidebar (ui/plugins/settings.js nav) */
 .snavi-icon { display: inline-flex; width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px }
 .snavi-icon > svg { width: 14px; height: 14px }
+/* goal cvf-menus1: the canvas context menus (canvas-menus.js tags them .canvas-card-menu-ctx):
+   an icon column on every row, a check mark after a checked setting, disabled rows dimmed */
+.os-plugin-menu.canvas-card-menu-ctx .menu-item-icon { flex: 0 0 16px; display: inline-flex; justify-content: center; color: var(--text-muted, #aaa) }
+.os-plugin-menu.canvas-card-menu-ctx .menu-item-icon svg { width: 15px; height: 15px }
+.os-plugin-menu.canvas-card-menu-ctx .menu-item-title { flex: 1 1 auto }
+.os-plugin-menu.canvas-card-menu-ctx .menu-item.mod-checked::after { content: ""; flex: 0 0 auto; width: 4px; height: 8px; margin: 0 4px 3px 12px; border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg) }
+.os-plugin-menu.canvas-card-menu-ctx .menu-item.dis { opacity: .5; cursor: default }
+/* goal cvf-zoom CVR-C-076: zoomed out past the threshold (canvas-perf.js sets .cvp-lod) a text or note card is drawn
+   as its bare box — border and fill, no content (its name still reads above it); a media card keeps its picture.
+   The box stays even where cvf-board's .cvn-hide-content would hide the whole container. Its content is hidden with
+   visibility (paint only), not display: none — crossing the threshold must not tear down and relayout every card's
+   content (cvperf CV-168: a fitted 500-card board crosses it during open). */
+.canvas-wrapper.cvp-lod.cvp-lod .canvas-node:not(.canvas-node-group):not(.cc-media):not(.is-editing) > .canvas-node-container { visibility: visible }
+.canvas-wrapper.cvp-lod.cvp-lod .canvas-node:not(.canvas-node-group):not(.cc-media):not(.is-editing) > .canvas-node-container > * { visibility: hidden }
+/* gh-icons #20: inline monochrome svg icons that replaced text pictographs in canvas / plugin buttons */
+.canvas-control svg.gi, .canvas-selection-btn svg.gi { width: 14px; height: 14px; vertical-align: -2px; pointer-events: none }
+.sctl.cpgear svg.gi { width: 16px; height: 16px; display: block; pointer-events: none }
+.canvas-settings-check svg.gi, .cvsp-chk svg.gi { width: 12px; height: 12px; vertical-align: -2px; pointer-events: none }
+.cvsp-chk { margin-right: 6px }

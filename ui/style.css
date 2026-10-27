@@ -395,8 +395,11 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
         overflow: hidden; background: var(--bg-sidebar);
         display: flex; flex-direction: column }
 /* R9.2 sidebar tab strip: Files / Search / Bookmarks */
-#stabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 6px 6px 2px; overflow: hidden }   /* R22: wrap, then clip — never push the sidebar wider */
-.stab { flex: 1; min-width: 0; overflow: hidden; background: none; color: var(--text-chrome-muted);
+#stabs { display: flex; flex-wrap: wrap; gap: 3px; padding: 6px 6px 2px 8px; overflow: hidden }   /* R22: wrap, then clip — never push the sidebar wider */
+/* gh-icons #21: stock 1.13.7 keeps sidebar tab-header buttons COMPACT — 34px wide, 3px apart, from the
+   strip's left edge, at every sidebar width (docs/gh-icons/README.md §2). Nominal 34px, still
+   shrinkable (flex-shrink 1, min-width 0) so R22's narrow-window clip holds. */
+.stab { flex: 0 1 34px; width: 34px; min-width: 0; overflow: hidden; background: none; color: var(--text-chrome-muted);
         border: 0; padding: 4px; cursor: pointer; border-radius: 4px }   /* R22: min-width:0 = shrinkable icon button */
 .stab:hover { color: var(--text-chrome) }
 .stab.active { background: var(--bg-surface); color: var(--text-chrome) }
@@ -531,7 +534,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
          overflow: hidden; background: var(--bg-sidebar); display: flex;
          flex-direction: column }
 /* rsidebar: icon strip + panes (Backlinks / Outgoing / Outline / Local graph) */
-#rtabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 6px 6px 2px 6px; overflow: hidden }   /* R22: wrap+clip. NO right padding reserve: R20 put #rtoggle IN FLOW as a flex child (margin-left:auto), so the old 30px inboard reserve only opened a dead gap and shifted the toggle 30px left of where R20's rside phase clicks it */
+#rtabs { display: flex; flex-wrap: wrap; gap: 3px; padding: 6px 6px 2px 7px; overflow: hidden }   /* R22: wrap+clip. NO right padding reserve: R20 put #rtoggle IN FLOW as a flex child (margin-left:auto), so the old 30px inboard reserve only opened a dead gap and shifted the toggle 30px left of where R20's rside phase clicks it */
 #rpane-graph { display: flex; position: relative }
 #rpane-graph[hidden] { display: none }
 .rhead { padding: 6px 10px 4px; font-size: 12px; font-weight: 600; color: var(--text-chrome) }
@@ -837,6 +840,9 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 /* R38.7: the pin glyph rides in FRONT of a pinned tab's label (shots/m3-pinned-tabbar.png) */
 .tab .pin { flex: 0 0 auto; display: flex; align-items: center; color: var(--text-chrome-muted); margin-right: 3px }
 .tab .pin svg { width: 11px; height: 11px; display: block }
+/* gh-icons #18: the linked-tab chain is a monochrome svg marker, sized like the pin */
+.tab .lk { flex: 0 0 auto; display: flex; align-items: center; color: var(--text-chrome-muted); margin-right: 4px }
+.tab .lk svg { width: 12px; height: 12px; display: block }
 /* "Reveal file in navigation": a focus ring on the explorer row, no selection (recon 10-reveal.png) */
 .trow.revealed { outline: 2px solid var(--border-focus-ring); outline-offset: -2px }
 /* goal graphparity: the global graph's Forces card (docs/recon-graphpanel). Open: 240 wide,
@@ -1870,3 +1876,6 @@ span.is-flashing { background: var(--highlight-yellow) }
 .cm-editor .cm-scroller .cm-cursor.cm-cursor,
 .cm-editor .cm-scroller .cm-dropCursor.cm-dropCursor { border-left-color: var(--caret-color, var(--text-normal)) }
 :where(input, textarea, [contenteditable]:not([contenteditable="false"])) { caret-color: var(--caret-color, var(--text-normal)) }
+/* gh-icons #20: inline monochrome glyph in an icon-only button (replaces a text pictograph);
+   inline at 12px, on the text's middle, so the button keeps its line box */
+svg.gi { width: 12px; height: 12px; vertical-align: -2px; display: inline-block; pointer-events: none }

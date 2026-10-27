@@ -12,6 +12,8 @@
    page has loaded (main.js's command registry exists only then), and acts on the
    canvas the user is looking at: the active leaf when it is a canvas, else the
    visible canvas view. Every command works on canvas.selection (cv-select).
+   Goal cvf-arrange: the same commands are on the multi-selection toolbar too (an
+   "Align and arrange" button and its menu, next to "Create group"; see below).
 
    THE CHANGE PATH. A command moves / resizes the selected cards through the
    node's own moveTo() / resize() (they round to whole canvas units and keep
@@ -32,6 +34,13 @@
      Justify horizontally / vertically every card takes B's width (x = B.left) / B's height (y = B.top) */
 (function () {
   "use strict";
+  /* gh-icons #20: monochrome inline svg icons (drawn for this app, currentColor) in place of
+     text pictographs / emoji; class "gi" sizes them (style.css / plugins.css) */
+  const I = d => '<svg class="gi" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' + d + "</svg>";
+  const GI = {
+    group: I('<rect x="2.5" y="2.5" width="11" height="11" rx="2" stroke-dasharray="2.4 1.8"/><rect x="5.5" y="5.5" width="5" height="5" rx="1"/>'),
+    align: I('<path d="M2.8 2.5v11"/><rect x="5" y="4" width="8.2" height="3" rx=".8"/><rect x="5" y="9" width="5" height="3" rx=".8"/>'),
+  };
   const GAP = 20;   // arrange spacing, canvas units (the grid step of cv-select)
 
   const ro = c => !!(c.readonly || (c.options && c.options.readOnly));
@@ -144,6 +153,83 @@
   else setTimeout(register, 0);
   // a late registry (or a failed first try): retry when the user first reaches a board
   document.addEventListener("pointerdown", e => { if (!done && e.target && e.target.closest && e.target.closest(".canvas-wrapper")) register(); }, true);
+
+  /* ---------------------------------------------- the multi-selection toolbar (goal cvf-arrange)
+     Two or more selected cards add two buttons to the selection toolbar canvas-select.js
+     floats over the selection (remove / colour / zoom are its own): "Create group" puts a
+     group around the selection (canvas-menus.js groupAround, the same group its context menu
+     makes) and "Align and arrange" opens a menu of the commands above, in OPS order. The
+     buttons join canvas-select's button map (s.btn) so its census [cvstb:] / [cvstbb:] lists
+     them; one card, a read-only board or no selection hides them. Installed once per board,
+     the first time the user presses or types on it (the overlay exists by then). */
+  const MBTN = [["create-group", "Create group", GI.group], ["align", "Align and arrange", GI.align]];
+  const boardAt = el => {
+    const w = el && el.closest && el.closest(".canvas-wrapper");
+    if (!w || !app) return null;
+    try { const v = app.workspace.getLeavesOfType("canvas").map(l => l.view).find(x => x && x.canvas && x.canvas.wrapperEl === w); return v ? v.canvas : null; } catch (_) { return null; }
+  };
+  const toBoard = c => { try { c.wrapperEl.focus({ preventScroll: true }); } catch (_) {} };
+  function tbInstall(c) {
+    if (!c || c._cva) return;
+    const s = c._cvs;
+    if (!s || !s.tbEl || !s.btn) return;           // canvas-select builds the overlay when the board is wired
+    const t = c._cva = { btn: {}, on: null };
+    for (const [name, label, txt] of MBTN) {
+      const b = document.createElement("button");
+      b.className = "canvas-selection-btn mod-" + name; b.type = "button"; b.innerHTML = txt;
+      b.title = label; b.setAttribute("aria-label", label); b.dataset.action = name; b.hidden = true;
+      b.addEventListener("click", e => { e.stopPropagation(); name === "align" ? alignMenu(c, b) : makeGroup(c); });
+      s.tbEl.appendChild(b);
+      t.btn[name] = s.btn[name] = b;
+    }
+    const sync = () => tbSync(c);
+    const sel = c.select;                          // every selection change goes through select() (deselectAll too)
+    c.select = function () { const r = sel.apply(this, arguments); sync(); return r; };
+    new MutationObserver(sync).observe(s.tbEl, { attributes: true, attributeFilter: ["hidden", "style"] });
+    sync();
+  }
+  const cards = c => [...c.selection].filter(n => n && n.data && c.nodes.get(n.id) === n);
+  function tbSync(c) {
+    const t = c._cva; if (!t) return;
+    const on = cards(c).length >= 2 && !ro(c);
+    if (on === t.on) return;
+    t.on = on;
+    for (const b of Object.values(t.btn)) b.hidden = !on;
+    if (window.CanvasSelect) try { window.CanvasSelect.refresh(c); } catch (_) {}   // re-centre: the toolbar changed width
+  }
+  function makeGroup(c) {
+    const ns = cards(c), M = window.CanvasMenus;
+    if (ns.length < 2 || ro(c) || !M || typeof M.groupAround !== "function") return;
+    toBoard(c);
+    try { M.groupAround(c, ns); } catch (e) { console.error("[canvas] create group:", e); }
+  }
+  function alignMenu(c, at) {
+    const host = window.__osPluginHost, X = host && host.api;
+    if (!X || !X.Menu || ro(c)) return;
+    const m = new X.Menu();
+    for (const key of Object.keys(OPS)) {
+      const op = OPS[key];
+      m.addItem(i => {
+        i.setTitle(op.name);
+        if (cards(c).length < op.min) i.setDisabled(true);
+        i.onClick(() => { toBoard(c); run(c, key); });
+      });
+    }
+    const r = at.getBoundingClientRect();
+    m.showAtPosition({ x: Math.round(r.left), y: Math.round(r.bottom + 4) });
+    // Escape closes the menu and only the menu: the board's own keydown would take it first
+    // (it clears the selection and stops it), so catch it on the way down while the menu is up
+    const esc = e => { if (e.key === "Escape" && m.dom) { e.preventDefault(); e.stopPropagation(); m.hide(); } };
+    document.addEventListener("keydown", esc, true);
+    m.onHide(() => document.removeEventListener("keydown", esc, true));
+  }
+  const reach = e => {
+    if (!app) app = (window.__osPluginHost && window.__osPluginHost.app) || null;
+    const c = boardAt(e.target);
+    if (c && !c._cva) tbInstall(c);
+  };
+  document.addEventListener("pointerdown", reach, true);
+  document.addEventListener("keydown", reach, true);
 
   const api = { run: (c, key) => !!(c && OPS[key] && run(c, key)), ops: () => Object.keys(OPS) };
   Object.defineProperty(window, "CanvasArrange", { configurable: true, enumerable: false, writable: false, value: Object.freeze(api) });

@@ -275,6 +275,22 @@ const Ed = {
           Ed.tok(em, emk, "img");
           i += wl[0].length; continue;
         }
+        // cvf-links CVR-A-095 `![[Board.canvas]]`: a canvas preview (shapes only, no text node), painted and
+        // wired by main.js cvEmbedPaint; Canvas off / no painter -> the link branch below, as before
+        if (wl[1] === "!" && hash < 0 && /\.canvas$/i.test(target) && typeof cvEmbedPaint === "function" &&
+            typeof CANVAS !== "undefined" && CANVAS && CANVAS.isRegistered()) {
+          const em = [], emk = [];
+          const eadd = (el, isMk) => { em.push(el); if (isMk) emk.push(el); box.appendChild(el); };
+          eadd(Ed.mk("![["), true);
+          eadd(Ed.mk(raw, "img"), true);
+          eadd(Ed.mk("]]"), true);
+          const cs = Ed.el("span", "cv-embed");
+          cs.dataset.canvas = target;
+          eadd(cs, false);
+          Ed.tok(em, emk, "img");
+          cvEmbedPaint(cs, null);
+          i += wl[0].length; continue;
+        }
         const parts = [], mks = [];
         const add = (el, isMk) => { parts.push(el); if (isMk) mks.push(el); box.appendChild(el); };
         add(Ed.mk(wl[1] + "[["), true);
@@ -1698,6 +1714,9 @@ Object.assign(Ed, {
           return false;
         },
         blur: () => { if (typeof hideAc === "function") setTimeout(hideAc, 100); return false; },
+        // gh-paste (#19): a PNG on the clipboard (a screenshot) is saved into the vault and
+        // embedded, like stock (ui/main.js attachPaste); true = claimed, CM6 does not paste text
+        paste: (e) => typeof attachPaste === "function" ? attachPaste(G(), e) : false,
       }),
       CMv.EditorView.lineWrapping,
       CMv.EditorView.contentAttributes.of({ spellcheck: "false", autocorrect: "off", autocapitalize: "off" }),

@@ -27,7 +27,7 @@
        same path an external edit takes, so open tabs and the tree stay right. */
     const files = new Map();                      // path -> TFile | TFolder (root not included)
     const vroot = new TFolder(); vroot.path = "/"; vroot.name = "";
-    let modelP = null, unlisten = null;   // vaultName, modelOn: K.st (api.js)
+    let modelP = null, filesP = null, unlisten = null;   // vaultName, modelOn, filesOn: K.st (api.js)
     const noteOf = p => (p.endsWith(".md") ? p.slice(0, -3) : null);
     const isCanvas = p => typeof p === "string" && p.endsWith(".canvas");   // JSON Canvas: app-owned canvas_io, not the note commands
     const inv = (c, a) => be.invoke(c, a);
@@ -61,13 +61,22 @@
       if (f instanceof TFolder) for (const c of f.children.slice()) movePath(c, np + c.path.slice(op.length));
     }
     async function buildModel() {
-      const [notes, folders, imgs, cvs] = await Promise.all([inv("list_notes"), inv("list_folders"), inv("list_images").catch(() => []), cio("list").catch(() => [])]);
+      const [notes, folders, imgs, cvs, media] = await Promise.all([inv("list_notes"), inv("list_folders"), inv("list_images").catch(() => []), cio("list").catch(() => []), cio("media").catch(() => [])]);
       const keep = new Set();
       for (const d of folders || []) { ensureFolder(d); keep.add(d); }
       for (const n of notes || []) { ensureFile(n + ".md"); keep.add(n + ".md"); }
       for (const p of imgs || []) { ensureFile(p); keep.add(p); }
       for (const p of cvs || []) { ensureFile(p); keep.add(p); }
+      for (const p of media || []) { ensureFile(p); keep.add(p); }   // goal cv-journeys: audio / video (canvasfs media) are files a card plays
       for (const [p, f] of [...files]) if (!keep.has(p) && files.get(p) === f) removeTree(f);
+    }
+    /* goal cv-journeys: the image / PDF / audio / video files only (notes are the watcher's, canvases the Canvas view's):
+       a new one becomes a TFile and fires "create". ADD only: a file a plugin wrote (createBinary) is in no listing and
+       must not vanish from the model, and a removal is the watcher's / the deleting verb's business. */
+    async function syncMedia() {
+      const [imgs, media] = await Promise.all([inv("list_images"), cio("media")]);
+      const want = new Set([...(imgs || []), ...(media || [])]);
+      for (const p of want) { if (files.has(p)) continue; const [f, made] = ensureFile(p); if (made) vault.trigger("create", f); }
     }
     async function syncFolders() {
       let ds; try { ds = await inv("list_folders"); } catch (_) { return; }
@@ -78,7 +87,7 @@
     /* one watcher batch (notes only, names without .md) -> Vault events, in
        Obsidian's order: rename, create, modify, delete; then the cache. */
     function applyChange(c) {
-      if (!K.st.modelOn || !c) return;
+      if (!K.st.filesOn || !c) return;   // the file model is up (ensureFiles); indexFile parses only once the plugin runtime is (modelOn)
       for (const [o, n] of c.renamed || []) {
         const f = files.get(o + ".md");
         if (f) { movePath(f, n + ".md"); vault.trigger("rename", f, o + ".md"); indexFile(f); }
@@ -94,9 +103,9 @@
        note typed in the editor and the metadata cache kept the text from before the edit (Advanced Tables:
        acceptsTableEdit found no cached section covering the line just typed, so its Tab declined). Like stock:
        "create" for a new note, else "modify", then the file is re-indexed. No folder sync, no events before
-       the plugin runtime is on. main.js captures host before the seal; plugins never see it. */
+       the file model is on (ensureFiles); re-indexed only once the plugin runtime is (indexFile). main.js captures host before the seal; plugins never see it. */
     host.noteWritten = (name, fresh) => {
-      if (!K.st.modelOn || typeof name !== "string" || !name) return;
+      if (!K.st.filesOn || typeof name !== "string" || !name) return;
       if (fresh) { const [f, made] = ensureFile(name + ".md"); if (made) vault.trigger("create", f); indexFile(f); return; }
       const f = files.get(name + ".md");
       if (f instanceof TFile) { f.stat.mtime = Date.now(); vault.trigger("modify", f); indexFile(f); }
@@ -114,9 +123,32 @@
       if (n == null) throw new Error(what + ": only markdown notes are supported in opensidian M1 (" + (f && f.path) + ")");
       return n;
     }
+    /* goal cv-model: the FILE model alone — the files Map (buildModel) kept current by the vault-changed
+       subscription and the app's own saves (noteWritten). No moment, no window.app, no config, no metadata
+       parse: what an app-owned consumer (Canvas: pickers, missing-file cards) needs in ANY vault, restricted
+       mode included, with no community plugin enabled. main.js takes it before the seal (host.vaultModel)
+       and hands it to Canvas, which calls it when a board opens. Idempotent; a failed build is retried. */
+    function ensureFiles() {
+      if (filesP) return filesP;
+      filesP = (async () => {
+        await buildModel();
+        K.st.filesOn = true;
+        if (!unlisten && be.listen) unlisten = await be.listen("vault-changed", e => applyChange(e.payload));
+      })().catch(e => { filesP = null; throw e; });
+      return filesP;
+    }
+    host.vaultModel = ensureFiles;
+    /* goal cv-journeys: the app re-listed its explorer (main.js refreshTree) — re-list the file model too, so a file the
+       watcher never reports (it reports notes only: an image pasted on or dropped onto a board) is a TFile before the
+       card that shows it paints. A no-op until ensureFiles is up. */
+    host.vaultSync = async () => { if (!K.st.filesOn) return; try { await syncMedia(); } catch (e) { console.error("[plugin] vaultSync:", e); } };
+    /* goal cv-journeys: the app's OWN rename / move of a note (main.js applyRename: F2, the title rename, a drag-move). The
+       watcher reconciles against the index and reports none of them, so the model kept the old path: a canvas file card
+       relinked to the new name painted "not found". A Vault "rename", as for a plugin's renameFile. */
+    host.noteMoved = (o, n) => { if (!K.st.filesOn || typeof o !== "string" || typeof n !== "string" || o === n) return; applyChange({ renamed: [[o, n]] }); };
     /* the runtime a plugin needs before its main.js is evaluated: moment (vendored,
-       pinned — ui/vendor/moment.min.js), the vault model, the vault-changed
-       subscription and the metadata sweep. Idempotent; first enable() pays it. */
+       pinned — ui/vendor/moment.min.js), the file model (ensureFiles), the vault
+       config and the metadata sweep. Idempotent; first enable() pays it. */
     function ensureModel() {
       if (modelP) return modelP;
       modelP = (async () => {
@@ -126,11 +158,10 @@
         // variable: app"). Same object a plugin gets as this.app; set only here,
         // i.e. never in restricted mode.
         if (!("app" in window)) Object.defineProperty(window, "app", { value: K.app, configurable: true, enumerable: false, writable: false });
-        await buildModel();
+        await ensureFiles();
         await loadVaultConfig();
         await metadataTypeManager.load();
         K.st.modelOn = true;
-        if (!unlisten && be.listen) unlisten = await be.listen("vault-changed", e => applyChange(e.payload));
         sweep();
       })().catch(e => { modelP = null; throw e; });
       return modelP;
@@ -628,7 +659,7 @@
     }
     const idxQ = new Set(); let idxT = 0;
     function indexFile(f) {
-      if (!(f instanceof TFile) || f.extension !== "md") return;
+      if (!K.st.modelOn || !(f instanceof TFile) || f.extension !== "md") return;
       idxQ.add(f); if (!idxT) idxT = setTimeout(drainIdx, 0);
     }
     async function drainIdx() {

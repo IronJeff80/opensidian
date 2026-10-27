@@ -16,13 +16,15 @@
    phase, so a press on an edge, a handle or the edge toolbar never reaches the
    board's own pan/select/dblclick listeners.
 
-   - hovering a card (or the band just outside it) paints a connection handle on
-     the middle of each side; dragging one onto a card makes an edge with both
-     sides set, onto empty board makes a text card at the drop point and connects it
+   - hovering near a card's side (inside it, or the band just outside) paints ONE
+     connection handle, centred on that side's border; none near the card's centre.
+     Dragging it onto a card makes an edge with both sides set; onto empty board
+     the edge dangles and a menu offers a card or a note from the vault there
    - an edge is hit within HIT px of its curve; a press selects it, Delete or
      Backspace removes it, a double press edits its label
-   - a hovered or selected edge paints a handle on each end: dragging an end onto
-     a card reconnects it (same edge, same id), onto empty board removes the edge
+   - a hovered edge gets a light halo; the selected edge paints a handle on each end: dragging an end onto
+     a card reconnects it (same edge, same id, side re-picked), onto empty board
+     removes the edge; on the selected edge, its line just before a card grabs that end too
    - the selected edge has a toolbar: delete, colour (palette), direction
      (none / one way / both ways), label, remove label
    - right-click an edge: Follow connection pans to the card at the far end
@@ -33,7 +35,9 @@
   const HIT = 16;          // screen px: width of an edge's invisible hit stroke
   const HANDLE = 14;       // screen px: connection / end handle diameter
   const NEAR = 20;         // screen px: a card's handles stay painted this far outside it
-  const OUT = 5;           // screen px: a connection handle sits this far outside its side, so the border band inside stays resize
+  const BAND = 24;         // screen px: inside a card, the pointer this close to a side shows that side's handle (never at the centre)
+  const GRAB = 30;         // screen px: a press on the selected edge's line this close to an end grabs that end
+  const LINE = 2;          // screen px: a press this far inside a side still counts as on its border line (connect, not resize)
   const SNAP = 24;         // screen px: a drop this close to a side attaches to that side
   const SIDES = ["top", "right", "bottom", "left"];
   const NORMAL = { top: [0, -1], right: [1, 0], bottom: [0, 1], left: [-1, 0] };
@@ -63,14 +67,14 @@
     s.id = "canvas-edges-style";
     s.textContent = [
       ".canvas-edge-hit { cursor: pointer }",
-      ".canvas-edge.is-hovered > .canvas-edge-line { stroke-width: 3px !important }",
+      ".canvas-edge.is-hovered > .canvas-edge-hit { stroke: rgba(160, 160, 160, 0.3) !important }",
       ".canvas-edge.is-selected > .canvas-edge-line { stroke-width: 4px !important }",
       ".canvas-edge.is-dragging { opacity: 0.25 }",
       ".canvas-edge-label { cursor: pointer }",
       ".canvas-edge-overlay { position: absolute; left: 0; top: 0; width: 0; height: 0; pointer-events: none; z-index: 2 }",
       ".canvas-edge-handle, .canvas-edge-end { position: absolute; box-sizing: border-box; border-radius: 50%; pointer-events: auto; cursor: crosshair;" +
         " background: var(--background-primary, #1e1e1e); border: 2px solid var(--interactive-accent, #7f6df2) }",
-      ".canvas-edge-handle { z-index: 1; pointer-events: none }",   // hit-tested in onDown (handleAt), so a press inside the card stays a resize
+      ".canvas-edge-handle { z-index: 1; pointer-events: none }",   // hit-tested in onDown (handleAt): a press on the handle connects, the rest of the border band resizes
       ".canvas-edge-end { z-index: 2; background: var(--interactive-accent, #7f6df2); cursor: move }",
       ".canvas-edge-preview { position: absolute; overflow: visible; pointer-events: none }",
       ".canvas-edge-preview path { fill: none; stroke: var(--interactive-accent, #7f6df2); stroke-width: 2px; stroke-dasharray: 6 4 }",
@@ -82,6 +86,9 @@
       ".canvas-edge-toolbar > button, .canvas-edge-popup > button { padding: 2px 7px; font-size: 12px; cursor: pointer }",
       ".canvas-edge-popup > button.canvas-edge-swatch { width: 22px; height: 22px; padding: 0; border-radius: 50%; border: 2px solid var(--background-modifier-border, #555) }",
       ".canvas-edge-label-input { position: absolute; left: 0; top: 0; width: 180px; transform: translate(-50%, -50%); pointer-events: auto; font-size: 14px; text-align: center }",
+      ".canvas-edge-popup > button.canvas-edge-swatch.mod-custom { font-size: 14px; line-height: 1; color: var(--text-normal, #ddd) }",
+      ".canvas-edge-hex-input { width: 90px; font-size: 13px; font-family: var(--font-monospace, monospace); pointer-events: auto }",
+      ".canvas-edge-hex-input.is-invalid { outline: 1px solid var(--text-error, #e93147) }",
       ".canvas-edge-menu { position: absolute; z-index: 20; min-width: 170px; padding: 4px; background: var(--background-secondary, #262626);" +
         " border: 1px solid var(--background-modifier-border, #444); border-radius: 6px; box-shadow: 0 4px 14px rgba(0,0,0,.35) }",
       ".canvas-edge-menu-item { padding: 4px 10px; border-radius: 4px; cursor: pointer; color: var(--text-normal, #ddd) }",
@@ -112,7 +119,7 @@
   /* ------------------------------------------------------------ state */
   function install(c) {
     style();
-    const S = c._cve = { ctx: {}, geo: new Map(), hover: null, sel: null, hnode: null, drag: null, press: null,
+    const S = c._cve = { ctx: {}, geo: new Map(), hover: null, sel: null, hnode: null, hside: null, drag: null, press: null,
                          pop: null, menu: null, label: null, zoom: c.zoom };
     S.overlay = el("div", "canvas-edge-overlay", c.canvasEl);
     S.handlesEl = el("div", "canvas-edge-handles", S.overlay);
@@ -124,7 +131,7 @@
     const w = c.wrapperEl;
     w.addEventListener("pointerdown", ev => onDown(c, ev), true);
     w.addEventListener("pointermove", ev => onHover(c, ev), true);
-    w.addEventListener("pointerleave", () => { if (!S.drag && (S.hover || S.hnode)) { S.hover = null; S.hnode = null; refresh(c); ping(c); } });
+    w.addEventListener("pointerleave", () => { if (!S.drag && (S.hover || S.hnode)) { S.hover = null; S.hnode = null; S.hside = null; refresh(c); ping(c); } });
     w.addEventListener("dblclick", ev => onDbl(c, ev), true);
     w.addEventListener("contextmenu", ev => onMenu(c, ev), true);
     w.addEventListener("keydown", ev => onKey(c, ev), true);
@@ -155,18 +162,49 @@
     if (edgeDist <= SNAP / (c.zoom || 1) && best <= Math.max(d.width, d.height) / 2 + SNAP / (c.zoom || 1)) return s;
     return other ? facing(d, other) : s;
   }
-  // a connection handle's centre: the side's midpoint pushed OUT screen px outward
-  const handlePos = (c, d, side) => { const a = anchor(d, side), o = OUT / (c.zoom || 1); return [a[0] + NORMAL[side][0] * o, a[1] + NORMAL[side][1] * o]; };
-  // the painted handle under a press, or null. Handles take no pointer events (CSS) and a press
-  // INSIDE the card is never a handle press: the card's border band is canvas-select's resize zone
-  // (resize from any edge), the part of the handle outside the card is the connect grab.
+  // a reconnected end's side, re-picked on every drop: a drop on (or near) a side takes that side; a drop
+  // inside the card takes the side the pointer came in through (the side nearest the drag's last point
+  // outside the card, or its start)
+  function endSide(c, d, p, trail) {
+    const z = c.zoom || 1;
+    const edgeDist = Math.min(Math.abs(p[0] - d.x), Math.abs(p[0] - d.x - d.width), Math.abs(p[1] - d.y), Math.abs(p[1] - d.y - d.height));
+    let q = p;
+    if (edgeDist > SNAP / z) {
+      q = trail && trail[0] || p;
+      for (let i = (trail || []).length - 1; i >= 0; i--) {
+        const r = trail[i];
+        if (r[0] < d.x || r[0] > d.x + d.width || r[1] < d.y || r[1] > d.y + d.height) { q = r; break; }
+      }
+    }
+    let s = null, best = Infinity;
+    for (const k of SIDES) { const a = anchor(d, k), dist = Math.hypot(a[0] - q[0], a[1] - q[1]); if (dist < best) { best = dist; s = k; } }
+    return s;
+  }
+  // a connection handle's centre: the side's midpoint, on the border line
+  const handlePos = (c, d, side) => anchor(d, side);
+  // the one side whose handle a pointer at canvas point p shows on card d, or null: the side nearest the
+  // pointer; outside the card (within NEAR) always, inside only within BAND of that side (and never as far
+  // in as the card's centre), so the middle of a card shows no handle
+  function hoverSide(c, d, p) {
+    const z = c.zoom || 1;
+    const dist = { top: Math.abs(p[1] - d.y), right: Math.abs(p[0] - d.x - d.width), bottom: Math.abs(p[1] - d.y - d.height), left: Math.abs(p[0] - d.x) };
+    let s = null;
+    for (const k of SIDES) if (s === null || dist[k] < dist[s]) s = k;
+    const inside = p[0] >= d.x && p[0] <= d.x + d.width && p[1] >= d.y && p[1] <= d.y + d.height;
+    if (!inside) return s;
+    return dist[s] * z <= Math.min(BAND, 0.35 * Math.min(d.width, d.height) * z) ? s : null;
+  }
+  // the painted handle under a press, or null. Handles take no pointer events (CSS): a press within the
+  // painted handle (it straddles the border) is a connect grab and wins over canvas-select's border resize;
+  // the rest of the border band and the corners stay resize.
   function handleAt(c, ev) {
-    const S = c._cve, d = !c.readonly && S.hnode && nodeData(c, S.hnode);
+    const S = c._cve, d = !c.readonly && S.hnode && S.hside && nodeData(c, S.hnode);
     if (!d || !S.handlesEl.firstChild) return null;
-    const p = pt(c, ev), z = c.zoom || 1;
-    if (p[0] >= d.x && p[0] <= d.x + d.width && p[1] >= d.y && p[1] <= d.y + d.height) return null;
-    for (const s of SIDES) { const h = handlePos(c, d, s); if (Math.hypot(h[0] - p[0], h[1] - p[1]) * z <= HANDLE / 2 + 1) return { node: d.id, side: s }; }
-    return null;
+    const p = pt(c, ev), z = c.zoom || 1, s = S.hside, h = handlePos(c, d, s);
+    if (Math.hypot(h[0] - p[0], h[1] - p[1]) * z > HANDLE / 2 + 2) return null;
+    // the border line itself and the handle's outer half connect; deeper inside is canvas-select's resize band
+    const depth = s === "top" ? p[1] - d.y : s === "bottom" ? d.y + d.height - p[1] : s === "left" ? p[0] - d.x : d.x + d.width - p[0];
+    return depth * z <= LINE ? { node: d.id, side: s } : null;
   }
   const pt = (c, ev) => { const q = c.toCanvas(ev.clientX, ev.clientY); return [q.x, q.y]; };
 
@@ -175,7 +213,7 @@
     const S = c._cve, z = c.zoom || 1;
     if (S.sel && !c.edges.has(S.sel)) { S.sel = null; S.pop = null; }
     if (S.hover && !c.edges.has(S.hover)) S.hover = null;
-    if (S.hnode && !c.nodes.has(S.hnode)) S.hnode = null;
+    if (S.hnode && !c.nodes.has(S.hnode)) { S.hnode = null; S.hside = null; }
     if (S.zoom !== z) {   // the hit stroke and the handles keep their screen size across a zoom
       S.zoom = z;
       for (const h of c.edgeEl.querySelectorAll(".canvas-edge-hit")) h.style.strokeWidth = (HIT / z) + "px";
@@ -195,9 +233,9 @@
     };
     S.handlesEl.textContent = "";
     const hn = S.hnode && nodeData(c, S.hnode);
-    if (hn && !c.readonly && !(S.drag && S.drag.kind)) for (const s of SIDES) dot("canvas-edge-handle", S.handlesEl, handlePos(c, hn, s), { node: hn.id, side: s });
+    if (hn && S.hside && !c.readonly && !(S.drag && S.drag.kind)) dot("canvas-edge-handle", S.handlesEl, handlePos(c, hn, S.hside), { node: hn.id, side: S.hside });
     S.endsEl.textContent = "";
-    if (!c.readonly && !(S.drag && S.drag.moved)) for (const id of new Set([S.hover, S.sel])) {
+    if (!c.readonly && !(S.drag && S.drag.moved)) for (const id of [S.sel]) {   // a hovered edge gets a halo, no end handles (CVR-C-081)
       const g = id && S.geo.get(id); if (!g) continue;
       dot("canvas-edge-end", S.endsEl, g.p1, { edge: id, end: "from" });
       dot("canvas-edge-end", S.endsEl, g.p2, { edge: id, end: "to" });
@@ -206,11 +244,13 @@
   }
   function paintPin(c) {
     const S = c._cve, z = c.zoom || 1;
-    S.pin.textContent = "";
     const id = S.label ? S.label.id : S.sel, g = id && S.geo.get(id), e = id && c.edges.get(id);
-    if (!g || !e || (S.drag && S.drag.moved)) { S.pin.style.display = "none"; if (S.label && !g) S.label = null; return; }
+    if (S.hex && (S.hex.id !== id || S.pop !== "hex")) S.hex = null;
+    if (!g || !e || (S.drag && S.drag.moved)) { S.pin.textContent = ""; S.pin.style.display = "none"; if (S.label && !g) S.label = null; return; }
     const m = bez(g, 0.5);
     S.pin.style.display = ""; S.pin.style.left = m[0] + "px"; S.pin.style.top = m[1] + "px"; S.pin.style.transform = "scale(" + (1 / z) + ")";
+    if (S.hex && S.hex.input.isConnected && S.pin.contains(S.hex.input)) return;   // typing a colour: keep the field (and its focus)
+    S.pin.textContent = "";
     if (S.label) { S.pin.appendChild(S.label.input); return; }
     if (c.readonly) return;
     const bar = el("div", "canvas-edge-toolbar", S.pin);
@@ -222,9 +262,30 @@
     b("del", "Delete", "Delete connection", () => removeEdge(c, id));
     b("color", "Colour", "Connection colour", () => { S.pop = S.pop === "color" ? null : "color"; paintPin(c); ping(c); });
     b("dir", "Direction", "Line direction", () => { S.pop = S.pop === "dir" ? null : "dir"; paintPin(c); ping(c); });
+    b("zoom", "Zoom", "Zoom to selection", () => zoomTo(c, id));
     b("label", "Label", "Edit label", () => openLabel(c, id));
     if (e.label) b("unlabel", "Remove label", "Remove label", () => { delete e.label; S.pop = null; save(c); });
-    if (S.pop === "color") {
+    if (S.pop === "hex") {
+      const p = el("div", "canvas-edge-popup", S.pin); p.dataset.pop = "hex";
+      const inp = el("input", "canvas-edge-hex-input", p);
+      inp.type = "text"; inp.spellcheck = false; inp.maxLength = 7; inp.placeholder = "#rrggbb"; inp.setAttribute("aria-label", "Custom colour");
+      inp.value = /^#/.test(e.color || "") ? e.color : "#";
+      S.hex = { id, input: inp };
+      inp.addEventListener("keydown", ev => {
+        ev.stopPropagation();
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          let v = inp.value.trim().toLowerCase(); if (v && v[0] !== "#") v = "#" + v;
+          if (/^#[0-9a-f]{3}$/.test(v)) v = "#" + v[1] + v[1] + v[2] + v[2] + v[3] + v[3];
+          if (!/^#[0-9a-f]{6}$/.test(v)) { inp.classList.add("is-invalid"); return; }
+          S.hex = null; setColor(c, id, v); try { c.wrapperEl.focus({ preventScroll: true }); } catch (_) {}
+        } else if (ev.key === "Escape") {
+          ev.preventDefault(); S.hex = null; S.pop = null; paintPin(c); ping(c); try { c.wrapperEl.focus({ preventScroll: true }); } catch (_) {}
+        } else inp.classList.remove("is-invalid");
+      });
+      for (const t of ["pointerdown", "mousedown", "dblclick", "contextmenu", "wheel"]) inp.addEventListener(t, ev => ev.stopPropagation());
+      setTimeout(() => { try { inp.focus(); inp.select(); } catch (_) {} }, 0);
+    } else if (S.pop === "color") {
       const p = el("div", "canvas-edge-popup", S.pin); p.dataset.pop = "color";
       const none = b("none", "∅", "No colour", () => setColor(c, id, null), p); none.classList.add("canvas-edge-swatch");
       const colorOf = S.ctx.colorOf || (() => null);
@@ -232,6 +293,9 @@
         const s = b(k, "", "Colour " + k, () => setColor(c, id, k), p); s.classList.add("canvas-edge-swatch");
         s.style.background = colorOf(k) || ""; if (e.color === k) s.style.borderColor = "var(--text-normal, #ddd)";
       }
+      const cu = b("custom", "+", "Custom colour", () => { S.pop = "hex"; paintPin(c); ping(c); }, p);
+      cu.classList.add("canvas-edge-swatch", "mod-custom");
+      if (/^#/.test(e.color || "")) { cu.style.background = e.color; cu.style.borderColor = "var(--text-normal, #ddd)"; }
     } else if (S.pop === "dir") {
       const p = el("div", "canvas-edge-popup", S.pin); p.dataset.pop = "dir";
       b("none", "— None", "Nondirectional", () => setDir(c, id, "none"), p);
@@ -267,7 +331,8 @@
   function setDir(c, id, d) {
     const e = c.edges.get(id); if (!e || c.readonly) return;
     e.fromEnd = d === "bi" ? "arrow" : "none";
-    e.toEnd = d === "none" ? "none" : "arrow";
+    if (d === "bi") delete e.toEnd;          // the toEnd default is already arrow: write only what differs
+    else e.toEnd = d === "none" ? "none" : "arrow";
     c._cve.pop = null; save(c);
   }
   function select(c, id) {
@@ -310,8 +375,23 @@
     if (!g || !e) return;
     const far = Math.hypot(g.p2[0] - p[0], g.p2[1] - p[1]) >= Math.hypot(g.p1[0] - p[0], g.p1[1] - p[1]) ? e.toNode : e.fromNode;
     const d = nodeData(c, far); if (!d) return;
-    const r = c.wrapperEl.getBoundingClientRect(), z = c.zoom || 1;
-    c.tx = r.width / 2 - (d.x + d.width / 2) * z; c.ty = r.height / 2 - (d.y + d.height / 2) * z;
+    const r = c.wrapperEl.getBoundingClientRect();
+    c.zoom = 1;                                // following a connection lands at 100%, the target centred
+    c.tx = r.width / 2 - (d.x + d.width / 2); c.ty = r.height / 2 - (d.y + d.height / 2);
+    c.applyTransform();
+    refresh(c); ping(c);
+  }
+  // edge toolbar "zoom to selection": fit the curve's box (at most 100%), its midpoint centred
+  function zoomTo(c, id) {
+    const S = c._cve, g = S.geo.get(id);
+    if (!g) return;
+    const r = c.wrapperEl.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    const ps = [0, 0.25, 0.5, 0.75, 1].map(t => bez(g, t)), m = ps[2], pad = 80;
+    let hw = 1, hh = 1;
+    for (const q of ps) { hw = Math.max(hw, Math.abs(q[0] - m[0])); hh = Math.max(hh, Math.abs(q[1] - m[1])); }
+    c.zoom = Math.max(0.1, Math.min(1, (r.width / 2 - pad) / hw, (r.height / 2 - pad) / hh));
+    c.tx = r.width / 2 - m[0] * c.zoom; c.ty = r.height / 2 - m[1] * c.zoom;
     c.applyTransform();
     refresh(c); ping(c);
   }
@@ -321,22 +401,24 @@
     const S = c._cve;
     if (S.drag || ev.buttons) return;
     const t = ev.target;
-    let hover = S.hover, hnode = S.hnode;
+    let hover = S.hover, hnode = S.hnode, hside = S.hside;
     if (t && t.classList && t.classList.contains("canvas-edge-end")) hover = t.dataset.edge;
     else if (t && t.classList && t.classList.contains("canvas-edge-handle")) hnode = t.dataset.node;
     else {
       hover = edgeOf(c, t);
-      if (t && t.closest && t.closest(".canvas-edge-pin, .canvas-controls, .canvas-edge-menu")) hnode = null;
+      if (t && t.closest && t.closest(".canvas-edge-pin, .canvas-controls, .canvas-edge-menu")) { hnode = null; hside = null; }
       else {
+        const p = pt(c, ev);
         const nEl = t && t.closest ? t.closest(".canvas-node") : null;
         const over = nEl && c.nodes.get(nEl.dataset.nodeId);
-        const n = over && over.data.type !== "group" ? over : nodeAt(c, pt(c, ev), NEAR / (c.zoom || 1));
+        const n = over && over.data.type !== "group" ? over : nodeAt(c, p, NEAR / (c.zoom || 1));
         hnode = n && !n.isEditing ? n.id : null;
+        hside = hnode ? hoverSide(c, n.data, p) : null;
       }
     }
     if (S.zoom !== c.zoom) refresh(c);
-    if (hover === S.hover && hnode === S.hnode) return;
-    S.hover = hover; S.hnode = hnode;
+    if (hover === S.hover && hnode === S.hnode && hside === S.hside) return;
+    S.hover = hover; S.hnode = hnode; S.hside = hside;
     refresh(c); ping(c);
   }
   function onDown(c, ev) {
@@ -354,6 +436,12 @@
     if (c.readonly) { if (id) select(c, id); return; }
     if (isH) return startDrag(c, ev, { kind: "new", node: hh.node, side: hh.side });
     if (isE) { select(c, id); return startDrag(c, ev, { kind: "end", id, end: t.dataset.end }); }
+    // a press on the SELECTED edge's line just before a card grabs that end (reconnect)
+    if (id === S.sel && S.geo.get(id)) {
+      const g = S.geo.get(id), p = pt(c, ev), z = c.zoom || 1;
+      const d1 = Math.hypot(g.p1[0] - p[0], g.p1[1] - p[1]) * z, d2 = Math.hypot(g.p2[0] - p[0], g.p2[1] - p[1]) * z;
+      if (Math.min(d1, d2) <= GRAB) { S.press = null; return startDrag(c, ev, { kind: "end", id, end: d2 <= d1 ? "to" : "from" }); }
+    }
     // a press on the edge: select; a second press on it within 450ms opens the label editor
     const now = Date.now(), pr = S.press;
     S.press = { id, t: now, x: ev.clientX, y: ev.clientY }; S.edgePress = now;
@@ -362,12 +450,12 @@
   }
   function startDrag(c, ev, d) {
     const S = c._cve;
-    d.x = ev.clientX; d.y = ev.clientY; d.moved = false;
+    d.x = ev.clientX; d.y = ev.clientY; d.moved = false; d.trail = [pt(c, ev)];
     S.drag = d;
     const move = e => {
       if (!d.moved && Math.abs(e.clientX - d.x) + Math.abs(e.clientY - d.y) < 4) return;
       if (!d.moved) { d.moved = true; refresh(c); }
-      const p = pt(c, e);
+      const p = pt(c, e); d.trail.push(p); if (d.trail.length > 64) d.trail.shift();
       if (d.kind === "new") { const n = nodeData(c, d.node); if (n) preview(c, anchor(n, d.side), p, d.side); }
       else {
         const g = S.geo.get(d.id); if (!g) return;
@@ -388,35 +476,57 @@
     window.addEventListener("pointercancel", up, true);
   }
   function drop(c, d, p) {
-    const S = c._cve, newId = S.ctx.newId;
     if (d.kind === "new") {
       const from = nodeData(c, d.node); if (!from) return;
       const tgt = nodeAt(c, p, 0, d.node);
       let to, toSide;
       if (tgt) { to = tgt.data; toSide = sideNear(c, to, p, from); }
-      else {   // empty board: a text card whose facing side sits on the drop point
-        const a = anchor(from, d.side), dx = p[0] - a[0], dy = p[1] - a[1], W = 250, H = 60;
-        let x, y;
-        if (Math.abs(dy) >= Math.abs(dx)) { toSide = dy >= 0 ? "top" : "bottom"; x = p[0] - W / 2; y = dy >= 0 ? p[1] : p[1] - H; }
-        else { toSide = dx >= 0 ? "left" : "right"; y = p[1] - H / 2; x = dx >= 0 ? p[0] : p[0] - W; }
-        const n = c.createTextNode({ pos: { x, y }, size: { width: W, height: H }, save: false });
-        to = n.data;
-      }
-      const ids = new Set([...c.nodes.keys(), ...c.edges.keys()]);
-      const id = typeof newId === "function" ? newId(ids) : "e" + Date.now().toString(16);
-      c.edges.set(id, { id, fromNode: from.id, fromSide: d.side, toNode: to.id, toSide });
-      S.sel = null;
-      save(c);
+      else return openDrop(c, from, d.side, p);   // empty board: the edge dangles, a menu asks what to add, nothing written yet
+      connect(c, from, d.side, to, toSide);
       return;
     }
     const e = c.edges.get(d.id); if (!e) return;
-    const fixed = nodeData(c, d.end === "to" ? e.fromNode : e.toNode);
     const tgt = nodeAt(c, p, 0);
     if (!tgt) { removeEdge(c, d.id); return; }   // dropped off every card: the connection is gone
     const k = d.end === "to" ? "to" : "from";
     e[k + "Node"] = tgt.data.id;
-    e[k + "Side"] = sideNear(c, tgt.data, p, fixed && fixed.id !== tgt.data.id ? fixed : null);
+    e[k + "Side"] = endSide(c, tgt.data, p, d.trail);
     save(c);
+  }
+  function connect(c, from, side, to, toSide) {
+    const S = c._cve, newId = S.ctx.newId;
+    const ids = new Set([...c.nodes.keys(), ...c.edges.keys()]);
+    const id = typeof newId === "function" ? newId(ids) : "e" + Date.now().toString(16);
+    c.edges.set(id, { id, fromNode: from.id, fromSide: side, toNode: to.id, toSide });
+    S.sel = null;
+    save(c);
+  }
+  // a connection dropped on empty board: its line stays drawn to the drop point and a small menu offers a text card or a
+  // note from the vault there; only a choice writes (card + edge, one save); Escape or a press elsewhere drops it
+  function openDrop(c, from, side, p) {
+    const S = c._cve;
+    closeMenu(c);
+    const a = anchor(from, side), dx = p[0] - a[0], dy = p[1] - a[1];
+    const toSide = Math.abs(dy) >= Math.abs(dx) ? (dy >= 0 ? "top" : "bottom") : (dx >= 0 ? "left" : "right");
+    const place = (W, H) => toSide === "top" ? { x: p[0] - W / 2, y: p[1] } : toSide === "bottom" ? { x: p[0] - W / 2, y: p[1] - H }
+      : toSide === "left" ? { x: p[0], y: p[1] - H / 2 } : { x: p[0] - W, y: p[1] - H / 2 };
+    const add = (n) => { const f = nodeData(c, from.id); if (f && n) connect(c, f, side, n.data, toSide); refresh(c); ping(c); };
+    preview(c, a, p, side);
+    const q = c.toClient(p[0], p[1]), r = c.wrapperEl.getBoundingClientRect();
+    const m = el("div", "canvas-edge-menu", c.wrapperEl);
+    m.dataset.kind = "drop";
+    m.style.left = (q.x - r.left) + "px"; m.style.top = (q.y - r.top) + "px";
+    const item = (act, txt, fn) => {
+      const i = el("div", "canvas-edge-menu-item", m); i.dataset.act = act; i.textContent = txt;
+      i.addEventListener("click", e => { e.stopPropagation(); closeMenu(c); fn(); });
+    };
+    item("card", "Add card", () => add(c.createTextNode({ pos: place(250, 60), size: { width: 250, height: 60 }, save: false })));
+    const pick = window.CanvasMenus && window.CanvasMenus.pickNote;
+    if (pick) item("note", "Add note from vault", () => pick(c, path =>
+      add(c.createFileNode({ file: path, pos: place(400, 400), size: { width: 400, height: 400 }, save: false }))));
+    for (const ty of ["pointerdown", "dblclick", "wheel"]) m.addEventListener(ty, e => e.stopPropagation());
+    S.menu = m;
+    ping(c);
   }
   function onDbl(c, ev) {
     const S = c._cve, t = ev.target;
@@ -441,17 +551,16 @@
       const i = el("div", "canvas-edge-menu-item", m); i.dataset.act = act; i.textContent = txt;
       i.addEventListener("click", e => { e.stopPropagation(); closeMenu(c); fn(); });
     };
+    // edit first, navigation in the middle, the destructive action last
+    if (!c.readonly) item("label", "Edit label", () => { select(c, id); openLabel(c, id); });
     item("follow", "Follow connection", () => follow(c, id, p));
-    if (!c.readonly) {
-      item("label", "Edit label", () => { select(c, id); openLabel(c, id); });
-      item("del", "Delete connection", () => removeEdge(c, id));
-    }
+    if (!c.readonly) item("del", "Remove", () => removeEdge(c, id));
     for (const ty of ["pointerdown", "dblclick", "wheel"]) m.addEventListener(ty, e => e.stopPropagation());
     S.menu = m;
     select(c, id);
     ping(c);
   }
-  function closeMenu(c) { const S = c._cve; if (S.menu) { S.menu.remove(); S.menu = null; ping(c); } }
+  function closeMenu(c) { const S = c._cve; if (S.menu) { if (S.menu.dataset.kind === "drop") S.previewEl.style.display = "none"; S.menu.remove(); S.menu = null; ping(c); } }
   function onKey(c, ev) {
     const S = c._cve, t = ev.target;
     if (S.label && t === S.label.input) return;
@@ -493,7 +602,8 @@
     list("cvepal", '.canvas-edge-popup[data-pop="color"] > button');
     list("cvedir", '.canvas-edge-popup[data-pop="dir"] > button');
     if (S.label && vis(S.label.input)) t += " [cvelab:" + esc(S.label.id) + "]";
-    if (S.menu && vis(S.menu)) t += " [cvemenu:" + [...S.menu.querySelectorAll(".canvas-edge-menu-item")].map(x => x.dataset.act + "@" + ctr(x)).join("|") + "]";
+    if (S.hex && vis(S.hex.input)) t += " [cvehex:" + esc(S.hex.id) + "@" + ctr(S.hex.input) + "]";
+    if (S.menu && vis(S.menu)) t += " [" + (S.menu.dataset.kind === "drop" ? "cvedrop" : "cvemenu") + ":" + [...S.menu.querySelectorAll(".canvas-edge-menu-item")].map(x => x.dataset.act + "@" + ctr(x)).join("|") + "]";
     const fit = c.controlsEl && c.controlsEl.querySelector(".canvas-control.mod-zoom-fit");
     if (vis(fit)) t += " [cvefit:" + ctr(fit) + "]";
     return t;
