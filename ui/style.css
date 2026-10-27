@@ -1469,6 +1469,10 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
   inset-inline-start: calc(14px - 3ch); top: calc(var(--list-spacing) + 0.6em) }
 .lp ol > li::before, .preview ol > li::before { content: counter(list-item) "."; position: absolute; color: var(--list-marker-color);
   pointer-events: none; inset-inline-start: calc(12px - 3ch); top: var(--list-spacing) }
+/* plug-top5: a plugin code block rendered in Live Preview (editor.js Ed.cbField) lays out like the reading view:
+   CM6 line wrapping (overflow-wrap: anywhere) would shrink its table columns to one word, and a list needs the indent its marker sits in */
+.lp .cm-preview-code-block { white-space: normal; overflow-wrap: normal; word-break: normal; cursor: default }
+.lp .cm-preview-code-block ul > li, .lp .cm-preview-code-block ol > li { margin-inline-start: 3ch }
 /* R15.11 task list: custom 16px box r4 1px faint border, accent fill + masked tick; no bullet; done = strike + muted */
 .lp li:has(> input[type=checkbox])::before, .preview li:has(> input[type=checkbox])::before { display: none }
 .lp li:has(> input[type=checkbox]), .preview li:has(> input[type=checkbox]) { list-style: none }

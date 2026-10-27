@@ -7101,6 +7101,19 @@ mod tests {
     }
 
     #[test]
+    fn render_resolves_md_suffixed_link() {
+        // plug-top5: dataview renders its file links as [[Projects/Alpha.md|Alpha]]; Obsidian resolves
+        // a target written with its .md extension to that note
+        let notes = vec!["Projects/Alpha".to_string()];
+        let h = render_md("[[Projects/Alpha.md|Alpha]] [[Alpha.md]] [[Nope.md]] [[.md]]", &notes);
+        assert!(h.contains(r#"class="wiki" data-note="Projects/Alpha.md""#), "{h}");
+        assert!(h.contains(r#"class="wiki" data-note="Alpha.md""#), "{h}");
+        assert!(h.contains(r#"class="wiki wiki-unresolved" data-note="Nope.md""#), "{h}");
+        assert_eq!(index::resolve(&notes, "Projects/Alpha.md"), Some(0));
+        assert_eq!(index::resolve(&notes, ".md"), None);
+    }
+
+    #[test]
     fn render_neutralizes_raw_html() {
         // H1 (docs/security-review.md): raw/inline HTML must render inert
         let h = render_md("hi <img src=x onerror=alert(1)> there", &[]);

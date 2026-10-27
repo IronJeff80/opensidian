@@ -388,7 +388,11 @@
           return -1;
         } }],
       };
-      try { mdLangExt = new L.Language(L.defineLanguageFacet(), LM.markdownLanguage.parser.configure([code]), [], "markdown").extension; }
+      // Prec.highest: the language facet keeps its FIRST value, and Templater 2.25.0 registers a
+      // Prec.high StreamLanguage (its CM5 "templater" overlay; with no CM5 javascript mode here it
+      // is the null mode = a flat, nodeless tree) that would otherwise displace this tree for every
+      // plugin that reads it (plug-top5: dataview inline queries never rendered in Live Preview)
+      try { mdLangExt = S.Prec.highest(new L.Language(L.defineLanguageFacet(), LM.markdownLanguage.parser.configure([code]), [], "markdown").extension); }
       catch (e) { console.error("[plugin] markdown syntax tree:", e); mdLangExt = []; }
       return mdLangExt;
     }
@@ -698,7 +702,28 @@
        registers one, so a vault without such plugins pays nothing; gen bumps on
        every (un)register so the reading view's retained DOM is re-rendered. */
     const MDP = { post: [], code: new Map(), gen: 0, used: false };
-    function mdpChanged() { MDP.gen++; MDP.used = true; try { PPOST = (MDP.post.length || MDP.code.size || embPluginExts()) ? PP : null; } catch (_) {} touch(); }
+    function mdpChanged() { MDP.gen++; MDP.used = true; try { PPOST = (MDP.post.length || MDP.code.size || embPluginExts()) ? PP : null; } catch (_) {} cbHookSet(); touch(); }
+    // plug-top5: the Live Preview side of the code-block processors (editor.js Ed.cbField): a fence
+    // of a registered language renders as one block widget; each widget owns its render's children
+    let cbT = 0;
+    function cbHookSet() {
+      try {
+        if (typeof Ed === "undefined" || !Ed) return;
+        if (!Ed.cbHook) Ed.cbHook = {
+          any: () => MDP.code.size > 0,
+          has: lang => MDP.code.has(lang),
+          gen: () => MDP.gen,
+          render(lang, src, el, sourcePath) {
+            const p = MDP.code.get(lang);
+            if (!p) return null;
+            const h = new Component(); h.load();
+            runCode(lang, p, src, el, mdCtx(sourcePath, h));
+            return () => h.unload();
+          },
+        };
+        if (Ed.cbRefresh) { clearTimeout(cbT); cbT = setTimeout(() => { try { Ed.cbRefresh(); } catch (e) { console.error(e); } }, 0); }   // a plugin registers several in a row: one rebuild
+      } catch (e) { console.error(e); }
+    }
     // main.js tabGone: a closed tab unloads its reading embed children, even once no processor or plugin
     // embed is left (PPOST null by then). Armed by embHolder, the only maker of tab-owned children:
     // this part runs from api.js before main.js has declared PTABGONE, so it cannot be set here.
@@ -863,7 +888,7 @@
       if (!MDP.used) return "";
       const r = document.querySelectorAll(".preview [class^='block-language-'], .preview [class*=' block-language-']").length;
       if (!MDP.post.length && !MDP.code.size && !r) return "";
-      return " [pmd:p" + MDP.post.length + "|c" + [...MDP.code.keys()].join("+") + "|r" + r + "]";
+      return " [pmd:p" + MDP.post.length + "|c" + [...MDP.code.keys()].join("+") + "|r" + r + "]" + (typeof Ed !== "undefined" && Ed.cbCensus ? Ed.cbCensus() : "");
     }
     const prop = (C, name, def) => Object.defineProperty(C.prototype, name, {   // see protoField in the editor-api closure
       configurable: true, enumerable: false, get() { return typeof def === "function" ? def() : def; },

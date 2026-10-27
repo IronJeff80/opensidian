@@ -2182,7 +2182,94 @@ Ed.lpExt = function (v, G) {
       return e.defaultPrevented;
     },
   });
-  return [plugin, clicks];
+  return [plugin, clicks, Ed.cbField(v, G, bust)];
+};
+/* ---------- plugin CODE BLOCKS in Live Preview (plug-top5) ----------
+   A fenced block whose language a plugin registered a code-block processor for
+   (registerMarkdownCodeBlockProcessor: dataview, tasks, ...) shows in Live Preview
+   as the processor's output, not as source: the whole fence (opening line ..
+   closing line) is one block widget, div.block-language-L handed to the processor
+   with (source, el, ctx) the way the reading view does it. A selection touching
+   the fence reveals the source; source mode never renders. Ed.cbHook is set by
+   ui/plugins/editor-api.js (null = no plugin loaded: nothing is scanned). Block
+   decorations must come from a StateField (CM6 refuses them from a ViewPlugin). */
+Ed.cbHook = null;
+Ed.cbFx = null;
+Ed.CB_FENCE = /^ {0,3}(`{3,}|~{3,})[ \t]*([^\s`{]*)(.*)$/;
+// every closed fence of doc -> [{from, to, lang, src}] (cached on the doc: a caret move re-scans nothing)
+Ed.cbFences = function (doc) {
+  if (Ed._cbDoc === doc) return Ed._cbOut;
+  const out = [];
+  let open = null;
+  for (let i = 1; i <= doc.lines; i++) {
+    const ln = doc.line(i), m = Ed.CB_FENCE.exec(ln.text);
+    if (!open) {
+      if (m && !(m[1][0] === "`" && m[3].includes("`"))) open = { ch: m[1][0], n: m[1].length, lang: m[2], from: ln.from, l0: i };
+      continue;
+    }
+    if (m && m[1][0] === open.ch && m[1].length >= open.n && !m[2] && !m[3].trim()) {
+      const src = i - 1 > open.l0 ? doc.sliceString(doc.line(open.l0 + 1).from, doc.line(i - 1).to) : "";
+      if (open.lang) out.push({ from: open.from, to: ln.to, lang: open.lang, src });
+      open = null;
+    }
+  }
+  Ed._cbDoc = doc; Ed._cbOut = out;
+  return out;
+};
+// a processor was (un)registered: every editor rebuilds its code-block widgets
+Ed.cbRefresh = function () {
+  if (!Ed.cbFx || !CMv || !CMv.EditorView) return;
+  for (const el of document.querySelectorAll(".cm-editor")) {
+    const cm = CMv.EditorView.findFromDOM(el);
+    if (cm) try { cm.dispatch({ effects: Ed.cbFx.of(null) }); } catch (e) { console.error(e); }
+  }
+};
+Ed.cbField = function (v, G, bust) {
+  const { Decoration, WidgetType, EditorView } = CMv;
+  if (!Ed.cbFx) Ed.cbFx = CMs.StateEffect.define();
+  class CB extends WidgetType {
+    constructor(lang, src, path, gen) { super(); this.lang = lang; this.src = src; this.path = path; this.gen = gen; }
+    eq(o) { return o.lang === this.lang && o.src === this.src && o.path === this.path && o.gen === this.gen; }
+    toDOM() {
+      const w = Ed.el("div", "cm-preview-code-block cm-embed-block markdown-rendered");
+      const el = Ed.el("div", "block-language-" + this.lang);
+      w.appendChild(el);
+      const h = Ed.cbHook;
+      if (h) try { w._cbOff = h.render(this.lang, this.src, el, this.path); } catch (e) { console.error("[plugin] code block " + this.lang + ":", e); }
+      return w;
+    }
+    destroy(dom) { if (dom && dom._cbOff) try { dom._cbOff(); } catch (e) { console.error(e); } }
+    ignoreEvent() { return true; }
+  }
+  const build = st => {
+    const h = Ed.cbHook;
+    if (!h || !h.any()) return Decoration.none;
+    const g = G();
+    if (!g || (v.lp && v.lp.classList.contains("src"))) return Decoration.none;
+    const blocks = Ed.cbFences(st.doc);
+    if (!blocks.length) return Decoration.none;
+    const n = typeof curOf === "function" && g.view === v ? curOf(g) : v.note, path = n ? n + ".md" : "", gen = h.gen(), out = [];
+    for (const b of blocks) {
+      if (!h.has(b.lang)) continue;
+      if (st.selection.ranges.some(r => r.from <= b.to && r.to >= b.from)) continue;   // caret in the fence: its source shows
+      out.push(Decoration.replace({ widget: new CB(b.lang, b.src, path, gen), block: true }).range(b.from, b.to));
+    }
+    return Decoration.set(out, true);
+  };
+  const field = CMs.StateField.define({
+    create: st => { try { return build(st); } catch (e) { console.error(e); return Decoration.none; } },
+    update(d, tr) {
+      if (tr.docChanged || tr.selection || tr.effects.some(e => e.is(bust) || e.is(Ed.cbFx)))
+        try { return build(tr.state); } catch (e) { console.error(e); return Decoration.none; }
+      return d;
+    },
+    provide: f => EditorView.decorations.from(f),
+  });
+  return field;
+};
+Ed.cbCensus = function () {   // [lpcb:N] rendered plugin code blocks in live-preview editors (only once one exists)
+  const n = document.querySelectorAll(".cm-editor .cm-preview-code-block").length;
+  return n ? " [lpcb:" + n + "]" : "";
 };
 /* ---------- MARKS painted by main.js (find bar "fd", search jump "sc") ----------
    A named DecorationSet per view, replaced whole by Ed.hl and mapped through
