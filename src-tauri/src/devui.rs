@@ -258,9 +258,11 @@ mod tests {
         let d = tmp("trav");
         let r = d.join("ui");
         for p in ["/../secret.txt", "/..%2fsecret.txt", "/%2e%2e/secret.txt", "/plugins/../../secret.txt",
-                  "/..%2f..%2f..%2fetc%2fpasswd", "/../nonexistent", "/%2fetc%2fpasswd", "/a%00b", "/%zz", "/..%5csecret.txt"] {
+                  "/..%2f..%2f..%2fetc%2fpasswd", "/../nonexistent", "/a%00b", "/%zz", "/..%5csecret.txt"] {
             assert_eq!(resolve(&r, p), Resolve::Refused, "{p}");
         }
+        // an encoded leading slash is still relative to root: never the host /etc, the embedded asset is kept
+        assert_eq!(resolve(&r, "/%2fetc%2fpasswd"), Resolve::Missing);
         std::os::unix::fs::symlink(d.join("secret.txt"), r.join("link.txt")).unwrap();
         assert_eq!(resolve(&r, "/link.txt"), Resolve::Refused);
     }
