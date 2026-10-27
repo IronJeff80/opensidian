@@ -8288,7 +8288,7 @@ mod tests {
     /// normalised). Then the refusals: an already-bookmarked note (top level
     /// AND nested) and a file row as parent return Err with the tree unchanged.
     #[test]
-    fn tab_bookmark_add_at_painted_slot_round_trips_byte_wise() {
+    fn bm_add_at_painted_slot_round_trips_byte_wise() {
         let orig: &str =
             include_str!("../tests/fixtures/bmcompat/obsidian-format-unknown-keys.bookmarks.json");
         let ct = |s: &str| {
