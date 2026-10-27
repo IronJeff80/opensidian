@@ -68,6 +68,16 @@
       for (const p of imgs || []) { ensureFile(p); keep.add(p); }
       for (const p of cvs || []) { ensureFile(p); keep.add(p); }
       for (const p of media || []) { ensureFile(p); keep.add(p); }   // goal cv-journeys: audio / video (canvasfs media) are files a card plays
+      /* plug-val: every other non-hidden file (a .js user script, .json, .txt) is a TFile too, as in stock: one
+         confined-fs listing per folder (templater tp.user: Scripts/hello.js must be a child of its TFolder) */
+      try {
+        const lists = await Promise.all(["", ...(folders || [])].map(d => core.list(d).then(r => [d, r], () => [d, []])));
+        for (const [d, r] of lists) for (const [n, k] of r || []) {
+          if (k === "folder" || n.startsWith(".")) continue;
+          const p = joinRel(d, n);
+          if (!keep.has(p)) { ensureFile(p); keep.add(p); }
+        }
+      } catch (_) {}
       for (const [p, f] of [...files]) if (!keep.has(p) && files.get(p) === f) removeTree(f);
     }
     /* goal cv-journeys: the image / PDF / audio / video files only (notes are the watcher's, canvases the Canvas view's):
