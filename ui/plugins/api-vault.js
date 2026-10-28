@@ -655,6 +655,16 @@
         open("paragraph", i, off); ext(i, off, len);
       }
       close();
+      {   // block ids: a list item, or a paragraph / quote / table / math section, whose last line ends in " ^id" ->
+          // blocks[id] = { id, position } (lower-cased, the item / section span); resolveSubpath "#^id" reads it
+        const bl = {}, idAt = ln => { const m = String(lines[ln] == null ? "" : lines[ln]).replace(/\r$/, "").match(/(?:^|\s)\^([A-Za-z0-9-]+)[ \t]*$/); return m ? m[1].toLowerCase() : null; };
+        for (const it of items) { const id = idAt(it.position.end.line); if (id && !bl[id]) bl[id] = { id, position: it.position }; }
+        for (const s of sections) {
+          if (!/^(paragraph|blockquote|callout|table|math)$/.test(s.type)) continue;
+          const id = idAt(s.position.end.line); if (id && !bl[id]) bl[id] = { id, position: s.position };
+        }
+        if (Object.keys(bl).length) out.blocks = bl;
+      }
       if (sections.length) out.sections = sections;
       if (items.length) out.listItems = items;
     }
