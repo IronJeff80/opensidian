@@ -1298,6 +1298,12 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
      is declared on body, and a var() naming a property this element does not
      have is guaranteed-invalid, not a fallback. Keep this block colour-free. */
   /* R15.14 dark tokens (content area only — app chrome keeps its own token layer): --text-normal / --text-muted / --text-faint / --background-primary(-alt) / --interactive-accent all live in the ONE token block at the top of this file */
+  /* Obsidian's spacing scale: plugin styles size from it (excalidraw sets
+     --editor-container-padding: var(--size-4-2), which places its top toolbar
+     and side button stack; unset, both collapse to the left edge) */
+  --size-2-1: 2px; --size-2-2: 4px; --size-2-3: 6px; --size-4-1: 4px; --size-4-2: 8px;
+  --size-4-3: 12px; --size-4-4: 16px; --size-4-5: 20px; --size-4-9: 36px;
+  --size-4-12: 48px; --size-4-16: 64px; --size-4-18: 72px;
   --radius-s: 4px; --size-4-6: 24px; --size-4-8: 32px; --file-line-width: 700px; --file-margins: var(--size-4-8);
   /* sidefont: ONE size for every sidebar list row — explorer .trow, bookmarks
      .bmrow, the right-strip .rlist rows, search .sgroup file rows. 13px is
