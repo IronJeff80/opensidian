@@ -10958,6 +10958,12 @@ async function startGraph(g, cfg) {
     if (steps) perf.push("graph_frame", perf.now() - fT0, { nodes: N.length, steps, phys: +(fT1 - fT0).toFixed(1), ke: +ke.toFixed(2), alpha: +alpha.toFixed(3) });
     if (quiet && animT0 < 0) {         // settled: loop ends, CPU -> 0; publish node coords to the census
       running = false;
+      // #28: WebKitGTK shows a WebGL canvas ONE frame behind (measured: after a hover-out the GL layer
+      // still showed the hover frame while the 2D labels did not; a Groups colour edit left the nodes
+      // in the old colour). A loop that stops right after a draw would leave its last frame unseen, so
+      // a settled GL loop draws the same frame once more on the next animation frame — nothing new to show,
+      // it only pushes the real last frame onto the screen.
+      if (drew && glr) requestAnimationFrame(() => { if (g.simGen === gen && !running && glr) draw(); });
       // graphperf: a ggkeep tab left at rest comes back QUIET, so its very first frame lands here —
       // inside the tab_switch paint. v0.6.1 restarted hot and settled ~2 s later, outside it.
       // State is set now; the title + span flush are published after the next frame (afterPaint).
