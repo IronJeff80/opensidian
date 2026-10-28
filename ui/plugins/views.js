@@ -858,7 +858,7 @@
         pane.appendChild(view.containerEl);
         const before = c.before ? byId(c.before) : null;
         if (before && before.parentNode === strip) strip.insertBefore(btn, before); else strip.appendChild(btn);
-        const vs = byId("vswitch");
+        const vs = byId("vbar") || byId("vswitch");   // settings-gear: the footer is #vbar (switcher + gear); panes go above it
         if (leaf._side === "left" && vs && vs.parentNode === host) host.insertBefore(pane, vs); else host.appendChild(pane);
         const r = { leaf, view, type, pid: ty ? ty.pid : null, side: leaf._side, opened: null, btn, pane, icon: null };
         sides.push(r);

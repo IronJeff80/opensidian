@@ -11698,6 +11698,23 @@ async function quitFlush(why) {
 TAURI.event.listen("app-quit", e => quitFlush(e.payload || "quit")).then(() => inv("quit_arm")).catch(() => {});
 
 $("vswitch").onclick = showPicker;
+/* settings-gear (#29): the gear beside the vault switcher opens Settings — the SAME path as the
+   Settings command / Ctrl+, (cmdSettings, so the R30.12 open timing holds). A native <button>:
+   Tab reaches it, Enter / Space press it. It only ever OPENS (the modal covers it while open). */
+$("sgear").onclick = () => { if (!settingsOpen) cmdSettings(); };
+$("sgear").addEventListener("focus", () => updateTitle());   // f= is read off the DOM: publish it when it changes
+$("sgear").addEventListener("blur", () => updateTitle());
+/* [sgear:<visible 0|1>|x,y,w,h|bar=x,y,w,h|nm=<name right edge>,<ell|fit>|f=<focused 0|1>] — the gear's
+   painted rect, the vault bar's rect it must sit inside, where the vault name stops (must be <= the
+   gear's left edge) and whether it is ellipsized, and DOM focus (the keyboard path). */
+function sgearTok() {
+  const g = $("sgear"), b = $("vbar"), n = $("vswitch");
+  if (!g || !b || !n) return "";
+  const R = e => { const r = e.getBoundingClientRect(); return [r.x, r.y, r.width, r.height].map(Math.round).join(","); };
+  const r = g.getBoundingClientRect(), vis = r.width > 0 && r.height > 0 && getComputedStyle(g).visibility !== "hidden" ? 1 : 0;
+  return " [sgear:" + vis + "|" + R(g) + "|bar=" + R(b) + "|nm=" + Math.round(n.getBoundingClientRect().right) + "," + (n.scrollWidth > n.clientWidth ? "ell" : "fit") +
+    "|f=" + (document.activeElement === g ? 1 : 0) + "]";
+}
 
 (async () => {
   await bootTheme();             // the root attribute is set synchronously inside
