@@ -964,6 +964,7 @@
       getSuggestions() { return []; }
       selectSuggestion(item, evt) { if (this._cb) this._cb(item, evt); }
       _refresh() {
+        if (this._picking) return;   // an "input" a selectSuggestion fires (templater: setValue + trigger("input") + close) does not reopen it, as in stock
         const q = this.getValue();
         Promise.resolve().then(() => this.getSuggestions(q)).then(items => {
           this._items = (items || []).slice(0, this.limit || 100); this._sel = 0;
@@ -987,7 +988,8 @@
       }
       _choose(i, e) {
         const it = this._items[i]; if (it === undefined) return;
-        try { this.selectSuggestion(it, e); } catch (er) { console.error("[plugin] selectSuggestion:", er); }
+        this._picking = true;
+        try { this.selectSuggestion(it, e); } catch (er) { console.error("[plugin] selectSuggestion:", er); } finally { this._picking = false; }
         this.close();
       }
       close() { super.close(); this.suggestEl.hidden = true; this.suggestEl.textContent = ""; this._items = []; }
