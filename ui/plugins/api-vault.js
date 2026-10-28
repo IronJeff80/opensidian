@@ -239,28 +239,35 @@
     host.vfs = core;                 // for node-modules.js only; the seal hides host from plugins
 
     const joinRel = (dir, n) => (dir ? dir + "/" : "") + n;
+    /* plug-val G2: a DataAdapter path is vault-relative in stock (getFullPath = basePath + "/" + p),
+       so "/.git" names <vault>/.git (obsidian-git asks adapter.exists("/.git")). Only the adapter
+       strips the leading "/": "/vault/..." keeps its meaning and the fs facade (core) stays verbatim,
+       so require("fs") still has "/etc" refused by Rust. */
+    const ap = p => { const s = String(p == null ? "" : p); return s === VROOT || s.startsWith(VROOT + "/") ? s : s.replace(/^\/+/, ""); };
     class DataAdapter {
       getName() { return K.st.vaultName; }
-      async exists(p) { return core.exists(p); }
+      async exists(p) { return core.exists(ap(p)); }
       async stat(p) {
-        try { return await core.stat(p); } catch (e) { if (e.code === "ENOENT") return null; throw e; }
+        try { return await core.stat(ap(p)); } catch (e) { if (e.code === "ENOENT") return null; throw e; }
       }
       async list(p) {
+        p = ap(p);
         const d = vrel(p).replace(/\/+$/, ""), out = { files: [], folders: [] };
         for (const [n, k] of await core.list(p)) (k === "folder" ? out.folders : out.files).push(joinRel(d, n));
         return out;
       }
-      async read(p) { return td.decode(await core.read(p)); }
-      async readBinary(p) { const u = await core.read(p); return u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength); }
-      async write(p, data) { await core.write(p, String(data)); }
-      async writeBinary(p, data) { await core.write(p, toBytes(data)); }
-      async append(p, data) { await core.append(p, String(data)); }
-      async appendBinary(p, data) { await core.append(p, toBytes(data)); }
+      async read(p) { return td.decode(await core.read(ap(p))); }
+      async readBinary(p) { const u = await core.read(ap(p)); return u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength); }
+      async write(p, data) { await core.write(ap(p), String(data)); }
+      async writeBinary(p, data) { await core.write(ap(p), toBytes(data)); }
+      async append(p, data) { await core.append(ap(p), String(data)); }
+      async appendBinary(p, data) { await core.append(ap(p), toBytes(data)); }
       async process(p, fn) { const out = fn(await this.read(p)); await this.write(p, out); return out; }
       getResourcePath() { return ""; }
-      async mkdir(p) { await core.mkdir(p, true); }
+      async mkdir(p) { await core.mkdir(ap(p), true); }
       async trashSystem() { return false; }       // no system trash: callers fall back to trashLocal
       async trashLocal(p) {
+        p = ap(p);
         await core.mkdir(".trash", true);
         const base = vrel(p).split("/").pop();
         let to = ".trash/" + base;
@@ -268,6 +275,7 @@
         await core.rename(p, to);
       }
       async rmdir(p, recursive) {
+        p = ap(p);
         if (recursive) {
           for (const [n, k] of await core.list(p)) {
             const c = joinRel(vrel(p).replace(/\/+$/, ""), n);
@@ -276,9 +284,9 @@
         }
         await core.rmdir(p);
       }
-      async remove(p) { await core.unlink(p); }
-      async rename(a, b) { await core.rename(a, b); }
-      async copy(a, b) { await core.copy(a, b); }
+      async remove(p) { await core.unlink(ap(p)); }
+      async rename(a, b) { await core.rename(ap(a), ap(b)); }
+      async copy(a, b) { await core.copy(ap(a), ap(b)); }
     }
     const nodeErr = (Ctor, code, msg) => { const e = new Ctor(msg); e.code = code; return e; };
     const posixResolve = p => {
@@ -313,7 +321,7 @@
     class FileSystemAdapter extends DataAdapter {
       get basePath() { return VROOT; }
       getBasePath() { return VROOT; }
-      getFullPath(p) { const r = vrel(p); return r ? VROOT + "/" + r : VROOT; }
+      getFullPath(p) { const r = vrel(ap(p)); return r ? VROOT + "/" + r : VROOT; }
       getFilePath(p) { return "file://" + this.getFullPath(p); }
       /* top5-func: stock's desktop adapter carries its fs module (templater reads adapter.fs). Here it
          is the same vault-confined facade require("fs") gives (ui/plugins/node-modules.js): paths are
