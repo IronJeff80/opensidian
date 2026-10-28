@@ -10122,6 +10122,9 @@ function gfTok(g, pre = "gf") {
   });
   { const e = p.querySelector(".gc-newgroup"); if (vis(e)) bs.push("newgroup@" + c(e)); }
   t += " [" + pre + "b:" + bs.join("|") + "]";
+  // #28 [gswatch:<w>x<h>,...] ([lswatch:] local) every VISIBLE Groups-row swatch, border box in CSS px (2 dp), row order — a circle has w == h
+  { const sw = [...p.querySelectorAll(".graph-color-group input[type=\"color\"]")].filter(vis).map(e => { const b = R(e); return +b.width.toFixed(2) + "x" + +b.height.toFixed(2); });
+    if (sw.length) t += " [" + pre[0] + "swatch:" + sw.join(",") + "]"; }
   const ss = [...p.querySelectorAll(".mod-slider")].filter(row => vis(row.querySelector("input"))).map(row => {
     const r = R(row.querySelector("input"));
     return row.dataset.k + "@" + Math.round(r.left) + "," + Math.round(r.right) + "," + Math.round(r.top + r.height / 2) + "," + row.querySelector(".slider-value").textContent;
