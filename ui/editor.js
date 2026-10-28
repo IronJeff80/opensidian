@@ -2129,6 +2129,9 @@ Ed.lpExt = function (v, G) {
   const build = view => {
     const g = G(), st = view.state, doc = st.doc, sel = st.selection.main, out = [], labels = [];
     const cur = doc.lineAt(sel.head).number;
+    // plugin overlay tokens (a Templater command) take no markdown decoration, as in Obsidian
+    const opq = Ed.lpOpaque ? Ed.lpOpaque(view) : null;
+    const hit = (rs, s, e) => { for (const r of rs) if (s < r[1] && e > r[0]) return true; return false; };
     let last = -1;
     for (const { from, to } of view.visibleRanges) {
       let pos = from;
@@ -2137,7 +2140,7 @@ Ed.lpExt = function (v, G) {
         pos = ln.to + 1;
         if (ln.number <= last) continue;
         last = ln.number;
-        const P = Ed.lpParse(g, ln.text);
+        const P = Ed.lpParse(g, ln.text), ors = opq && opq.get(ln.number);
         let rv = null;
         if (sel.from <= ln.to && sel.to >= ln.from) {
           const lo = Math.max(sel.from, ln.from) - ln.from, hi = Math.min(sel.to, ln.to) - ln.from;
@@ -2148,12 +2151,13 @@ Ed.lpExt = function (v, G) {
           }
         }
         const fl = g && g._fl && g._fl.l === ln.number - 1 ? (g._fl.fade ? " navflash fade" : " navflash") : "";
-        out.push(ld(P.cls + (ln.number === cur ? " cur" : "") + fl).range(ln.from));
+        const whole = ors && ln.length > 0 && ors.some(r => r[0] <= 0 && r[1] >= ln.length);
+        out.push(ld((whole ? Ed.lpParse(g, "x").cls : P.cls) + (ln.number === cur ? " cur" : "") + fl).range(ln.from));
         for (let i = 0; i < P.els.length; i++) {
           const x = P.els[i];
-          if (x.e > x.s) out.push((rv && rv.has(i) ? x.rv : x.d).range(ln.from + x.s, ln.from + x.e));
+          if (x.e > x.s && !(ors && hit(ors, x.s, x.e))) out.push((rv && rv.has(i) ? x.rv : x.d).range(ln.from + x.s, ln.from + x.e));
         }
-        for (const w of P.wid) out.push(Decoration.widget({ widget: new Leaf(ln.text, w.k, w.el), side: 1 }).range(ln.from + w.pos));
+        for (const w of P.wid) if (!(ors && ors.some(r => r[0] < w.pos && w.pos < r[1]))) out.push(Decoration.widget({ widget: new Leaf(ln.text, w.k, w.el), side: 1 }).range(ln.from + w.pos));
       }
     }
     if (g && g.view === v && g.lp) {
@@ -2165,7 +2169,7 @@ Ed.lpExt = function (v, G) {
   const plugin = ViewPlugin.fromClass(class {
     constructor(view) { this.decorations = build(view); }
     update(u) {
-      if (u.docChanged || u.selectionSet || u.viewportChanged || u.transactions.some(t => t.effects.some(e => e.is(bust))))
+      if (u.docChanged || u.selectionSet || u.viewportChanged || u.transactions.some(t => t.reconfigured || t.effects.some(e => e.is(bust))))
         this.decorations = build(u.view);
     }
   }, { decorations: p => p.decorations });
