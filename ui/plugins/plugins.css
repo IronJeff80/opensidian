@@ -90,6 +90,10 @@ body.os-has-plugin-status #main .status { bottom: 30px }
 .os-plugin-menu .menu-item-icon svg { width: 14px; height: 14px; display: block }
 .os-plugin-menu .menu-item.is-label { cursor: default; color: var(--text-chrome-muted) }
 .os-plugin-menu .menu-item.mod-warning { color: var(--text-error) }
+/* plug-val E43: plugin rows a plugin adds INTO a core file/folder menu (menuHook) get the same icon + title row */
+.ctxmenu > .menu-item { display: flex; align-items: center; gap: 6px }
+.ctxmenu > .menu-item .menu-item-icon:empty { display: none }
+.ctxmenu > .menu-item .menu-item-icon svg { width: 14px; height: 14px; display: block }
 /* Settings > Community plugins (ui/plugins/settings.js): live toggles + the per-plugin gear */
 .sctl.toggle.live { cursor: pointer }
 .sctl.toggle.live:focus-visible { outline: 2px solid var(--border-focus-ring); outline-offset: 1px }
