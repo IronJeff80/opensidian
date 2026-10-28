@@ -11719,6 +11719,11 @@ async function quitFlush(why) {
   inv("quit_ready", { dirty: lost.length }).catch(() => {});
 }
 TAURI.event.listen("app-quit", e => quitFlush(e.payload || "quit")).then(() => inv("quit_arm")).catch(() => {});
+/* plug-val G1: window.close() closes the app window as in stock (obsidian-git "commit-and-sync and
+   close" calls it). The webview's own close only blanks the page and leaves the window up, and the
+   page has no window-close permission (capabilities: core:default), so this takes the close
+   button's path (win_close): CloseRequested, then the quit flush above. */
+window.close = () => { inv("win_close").catch(e => console.error("[window.close]", e)); };
 
 $("vswitch").onclick = showPicker;
 
