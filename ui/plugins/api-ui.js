@@ -343,10 +343,11 @@
       }
       setName(n) { if (n instanceof Node) { this.nameEl.empty(); this.nameEl.appendChild(n); } else this.nameEl.setText(n == null ? "" : String(n)); return this; }
       setDesc(d) { if (d instanceof Node) { this.descEl.empty(); this.descEl.appendChild(d); } else this.descEl.setText(d == null ? "" : String(d)); return this; }
-      /* api-settings: a persistent validation message under the row; empty / null clears it */
+      /* api-settings: a persistent validation message; empty / null clears it. Stock draws it under the row's control,
+         right-aligned in the warning colour (templater Template hotkey "This template already has a hotkey") */
       setErrorMessage(msg) {
         if (msg) {
-          if (!this.errorEl) this.errorEl = this.infoEl.createDiv({ cls: "setting-item-error" });
+          if (!this.errorEl) this.errorEl = this.controlEl.createDiv({ cls: "setting-item-error" });
           this.errorEl.textContent = String(msg); this.settingEl.addClass("is-invalid");
         } else {
           if (this.errorEl) this.errorEl.remove();
@@ -408,7 +409,7 @@
     const valOf = v => { if (typeof v === "function") { try { return v(); } catch (e) { console.error("[plugin] setting value:", e); return undefined; } } return v; };
     const onActivate = (el, f) => {
       el.tabIndex = 0;
-      el.addEventListener("click", e => { if (e.target && e.target.closest && e.target.closest("input,select,textarea,button")) return; f(e); });
+      el.addEventListener("click", e => { if (e.target && e.target.closest && e.target.closest("input,select,textarea,button,.clickable-icon")) return; f(e); });
       el.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); f(e); } });
     };
     function sdTeardown(tab) {
@@ -512,7 +513,7 @@
       }
       if (list) {
         if (typeof list.onDelete === "function") {
-          s.addExtraButton(b => b.setIcon("trash").setTooltip("Delete").onClick(() => list.onDelete(idx)));
+          s.addExtraButton(b => b.setIcon("x").setTooltip("Delete").onClick(() => list.onDelete(idx)));
           s.settingEl.tabIndex = 0;
           s.settingEl.addEventListener("keydown", e => { if ((e.key === "Delete" || e.key === "Backspace") && e.target === s.settingEl) { e.preventDefault(); list.onDelete(idx); } });
         }
@@ -602,6 +603,17 @@
     /* stock: "<" on a sub-page returns to the parent page at the scroll position it was left at (templater's
        User scripts > sits at the bottom of its tab); a sub-page opens at its top */
     const sdScroller = el => { for (let n = el; n && n.nodeType === 1; n = n.parentElement) { const o = getComputedStyle(n).overflowY; if (o === "auto" || o === "scroll") return n; } return null; };
+    /* update() while a sub-page is on screen stays on that page, as in stock (templater re-reads its definitions after "Done" in
+       Template hotkey and shows the new row there): the open pages are looked up again by name in the new definitions */
+    const sdFindPage = (items, name) => {
+      for (const it of Array.isArray(items) ? items : []) {
+        if (!it || typeof it !== "object") continue;
+        if (it.type === "page" && it.name === name) return it;
+        if (it.type === "group" || it.type === "list") { const f = sdFindPage(it.items, name); if (f) return f; }
+      }
+      return null;
+    };
+    function sdRebase(items, stack) { const out = []; let scope = items; for (const p of stack) { const f = p && sdFindPage(scope, p.name); if (!f) break; out.push(f); scope = f.items; } return out; }
     function sdOpenPage(tab, def) {
       const sc = sdScroller(tab.containerEl);
       (tab._pageScroll || (tab._pageScroll = [])).push(sc ? sc.scrollTop : 0);
@@ -633,7 +645,7 @@
         try { defs = this.getSettingDefinitions(); } catch (e) { console.error("[plugin] getSettingDefinitions:", e); defs = []; }
         this.settingItems = Array.isArray(defs) ? defs : [];
         const d = this._dom;   // a tab whose rendering is on screen re-renders
-        if (d && this.containerEl.isConnected && (d.page ? this.containerEl.contains(d.page.rootEl) : d.nodes.some(n => this.containerEl.contains(n.el)))) { this._pages = []; this._pageScroll = []; sdShow(this); }
+        if (d && this.containerEl.isConnected && (d.page ? this.containerEl.contains(d.page.rootEl) : d.nodes.some(n => this.containerEl.contains(n.el)))) { this._pages = sdRebase(this.settingItems, this._pages || []); this._pageScroll = (this._pageScroll || []).slice(0, this._pages.length); sdShow(this); }
       }
       getControlValue(key) { const v = this.app && this.app.vault; return v && typeof v.getConfig === "function" ? v.getConfig(key) : undefined; }
       setControlValue(key, value) {

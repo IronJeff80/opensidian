@@ -67,6 +67,8 @@
 :where(#spage, .os-plugin-modal) .setting-item-description:empty { display: none }
 :where(#spage, .os-plugin-modal) .setting-item-description .mod-warning { color: var(--text-warning) }
 :where(#spage, .os-plugin-modal) .setting-item-control { flex: 0 0 auto; display: flex; align-items: center; gap: 8px }
+:where(#spage, .os-plugin-modal) .setting-item-control:has(> .setting-item-error) { flex-wrap: wrap; justify-content: flex-end; row-gap: 4px }
+:where(#spage, .os-plugin-modal) .setting-item-error { flex: 1 0 100%; text-align: right; font-size: 12px; color: var(--text-warning) }
 :where(#spage, .os-plugin-modal) .setting-item-heading .setting-item-name { font-weight: 600 }
 /* a SettingGroup heading (templater "Syntax highlighting", "User scripts", ...) is a section title above its rows, as in stock: larger and semibold */
 :where(#spage, .os-plugin-modal) .setting-group-heading-text { font-size: 16px; font-weight: 600; color: var(--text-chrome); padding-top: 12px }
