@@ -28,6 +28,8 @@
   function install(ctx) {
     const EdG = typeof Ed !== "undefined" ? Ed : null;
     if (!S || !V || !EdG) return null;
+    // ED-3: every doc change a plugin makes through the Editor API is marked, so editor.js can group its undo steps as stock does
+    const PE = () => EdG.PLUGIN_EDIT ? [EdG.PLUGIN_EDIT.of(true)] : [];
     const app = () => ctx.app(), ws = () => ctx.app().workspace;
 
     /* ---------------------------------------------------------------- Editor */
@@ -76,11 +78,11 @@
       somethingSelected() { return this.cm.state.selection.ranges.some(r => !r.empty); }
       replaceSelection(text, origin) {
         const tr = this.cm.state.replaceSelection(String(text == null ? "" : text));
-        this.cm.dispatch(tr, { userEvent: origin ? String(origin) : "input" });
+        this.cm.dispatch(tr, { userEvent: origin ? String(origin) : "input", annotations: PE() });
       }
       replaceRange(text, from, to, origin) {
         const a = this.posToOffset(from), b = to ? this.posToOffset(to) : a;
-        this.cm.dispatch({ changes: { from: Math.min(a, b), to: Math.max(a, b), insert: String(text == null ? "" : text) }, userEvent: origin ? String(origin) : undefined });
+        this.cm.dispatch({ changes: { from: Math.min(a, b), to: Math.max(a, b), insert: String(text == null ? "" : text) }, userEvent: origin ? String(origin) : undefined, annotations: PE() });
       }
       getRange(from, to) { const a = this.posToOffset(from), b = this.posToOffset(to); return this.cm.state.sliceDoc(Math.min(a, b), Math.max(a, b)); }
       wordAt(pos) { const w = this.cm.state.wordAt(this.posToOffset(pos)); return w ? { from: this.offsetToPos(w.from), to: this.offsetToPos(w.to) } : null; }
@@ -103,7 +105,7 @@
         const selOf = () => S.EditorSelection.create(sels.map(s => S.EditorSelection.range(this.posToOffset(s.from), this.posToOffset(s.to || s.from))), 0);
         if (tx.changes && tx.changes.length) {
           const ch = tx.changes.map(c => { const a = this.posToOffset(c.from), b = c.to ? this.posToOffset(c.to) : a; return { from: Math.min(a, b), to: Math.max(a, b), insert: String(c.text == null ? "" : c.text) }; });
-          this.cm.dispatch({ changes: ch, userEvent: ue });
+          this.cm.dispatch({ changes: ch, userEvent: ue, annotations: PE() });
         }
         if (sels && sels.length) this.cm.dispatch({ selection: selOf() });
         if (tx.replaceSelection != null) this.replaceSelection(tx.replaceSelection, origin);   // replaces the selections just set (or the current ones)

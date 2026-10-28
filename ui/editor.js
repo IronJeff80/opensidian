@@ -22,6 +22,7 @@ const Ed = {
   cur: null,            // {g, l} row currently holding the caret (census/geometry)
   _tk: null,            // R17.6 token map under construction (Ed.row owns it)
   UNDO_IDLE_MS: 2000,   // R17.8: idle gap that CLOSES an undo group
+  PLUGIN_JOIN_MS: 500,  // ED-3: a plugin edit this soon after its previous one joins that undo step
 
   /* ---------- inline renderer: one row per source line ---------- */
   el(tag, cls) { const e = document.createElement(tag); if (cls) e.className = cls; return e; },
@@ -1476,6 +1477,13 @@ document.addEventListener("scroll", e => {
    ====================================================================== */
 const CM6 = window.__osModules || {};
 const CMs = CM6["@codemirror/state"], CMv = CM6["@codemirror/view"], CMc = CM6["@codemirror/commands"];
+/* ED-3: a plugin Editor-API edit carries Ed.PLUGIN_EDIT; Ed.EDIT_KIND remembers the kind + time of the last
+   doc change so the undo grouping below can join a plugin's follow-up edit to its own previous one */
+Ed.PLUGIN_EDIT = CMs && CMs.Annotation.define();
+Ed.EDIT_KIND = CMs && CMs.StateField.define({
+  create: () => ({ k: "", t: 0 }),
+  update: (v, tr) => !tr.docChanged ? v : { k: tr.annotation(Ed.PLUGIN_EDIT) ? "plugin" : tr.isUserEvent("input.type") ? "type" : "other", t: tr.annotation(CMs.Transaction.time) || Date.now() },
+});
 Object.assign(Ed, {
   cm(g) { return g && g.view && g.view.cm || null; },
   view(g) { return Ed.cm(g); },                        // the Obsidian Editor shim's accessor (ui/plugins/editor-api.js)
@@ -1695,9 +1703,18 @@ Object.assign(Ed, {
       CMc.history({ newGroupDelay: Ed.UNDO_IDLE_MS }),
       // R17.8: only an uninterrupted TYPING burst coalesces; every other edit
       // kind (CM6's own paste/drop/cut included) is its own undo step
-      CMs.EditorState.transactionExtender.of(tr => tr.docChanged && !tr.isUserEvent("input.type")
-        && !tr.isUserEvent("undo") && !tr.isUserEvent("redo") && tr.annotation(CMc.isolateHistory) == null
-        ? { annotations: CMc.isolateHistory.of("full") } : null),
+      // ED-3: a plugin's Editor-API edit opens its own step, and its follow-up edit within
+      // PLUGIN_JOIN_MS (Obsidian's CM6 newGroupDelay) joins it, as in stock: templater's
+      // insert + cursor jump undo as ONE step; typing after a plugin edit starts a new one
+      Ed.EDIT_KIND,
+      CMs.EditorState.transactionExtender.of(tr => {
+        if (!tr.docChanged || tr.isUserEvent("undo") || tr.isUserEvent("redo") || tr.annotation(CMc.isolateHistory) != null) return null;
+        const last = tr.startState.field(Ed.EDIT_KIND, false), plug = !!tr.annotation(Ed.PLUGIN_EDIT);
+        if (plug) return last && last.k === "plugin" && (tr.annotation(CMs.Transaction.time) || Date.now()) - last.t < Ed.PLUGIN_JOIN_MS
+          ? null : { annotations: CMc.isolateHistory.of("before") };
+        if (tr.isUserEvent("input.type")) return last && last.k === "plugin" ? { annotations: CMc.isolateHistory.of("before") } : null;
+        return { annotations: CMc.isolateHistory.of("full") };
+      }),
       // the editor's own keys (Ed.onKey) are a keymap `any` binding, not a keydown
       // handler: CM6 merges every keymap's commands for a key into one run list in
       // precedence order, so a plugin binding at a higher precedence
