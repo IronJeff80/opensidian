@@ -327,7 +327,7 @@
       if (/^-?\d+(\.\d+)?$/.test(v)) return Number(v);
       return v;
     }
-    function parseYaml(src) {   // the frontmatter subset: key: scalar | [a, b] | block list
+    function parseYamlLoose(src) {   // the old line subset: key: scalar | [a, b] | block list (never throws)
       const o = {}; let key = null;
       for (const raw of String(src).split("\n")) {
         const l = raw.replace(/\r$/, "");
@@ -337,6 +337,219 @@
         if ((m = l.match(/^([^\s:#][^:]*?)\s*:(?:\s+(.*))?$/))) { key = m[1].trim(); o[key] = parseScalar(m[2] || ""); continue; }
       }
       return o;
+    }
+    /* block + flow YAML as a note's frontmatter uses it: nested block maps and sequences (a sequence of maps,
+       `key:` followed by `- item` at the key's indent), flow [..] / {..} nested and spanning lines, block scalars
+       | and > with chomping (- +) and indent indicators, double-quoted escapes (\n \t \uXXXX ...), '' in single
+       quotes, comments, anchors/aliases, core-schema plain scalars (null ~ true false ints 0x 0o floats .inf .nan).
+       Dates stay strings. Throws a YAMLParseError on anything it cannot read. */
+    function yErr(msg, n) { const e = new Error(msg + (n != null ? " (line " + (n + 1) + ")" : "")); e.name = "YAMLParseError"; return e; }
+    function yPlain(s) {
+      if (s === "" || /^(null|Null|NULL|~)$/.test(s)) return null;
+      if (/^(true|True|TRUE)$/.test(s)) return true;
+      if (/^(false|False|FALSE)$/.test(s)) return false;
+      if (/^[-+]?[0-9]+$/.test(s)) return parseInt(s, 10);
+      if (/^0x[0-9a-fA-F]+$/.test(s)) return parseInt(s.slice(2), 16);
+      if (/^0o[0-7]+$/.test(s)) return parseInt(s.slice(2), 8);
+      if (/^[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?$/.test(s)) return Number(s);
+      if (/^[-+]?\.(inf|Inf|INF)$/.test(s)) return s[0] === "-" ? -Infinity : Infinity;
+      if (/^\.(nan|NaN|NAN)$/.test(s)) return NaN;
+      return s;
+    }
+    const yEsc = { "0": "\0", a: "\x07", b: "\b", t: "\t", "\t": "\t", n: "\n", v: "\v", f: "\f", r: "\r", e: "\x1b", " ": " ", '"': '"', "/": "/", "\\": "\\", N: "\x85", _: "\xa0", L: " ", P: " " };
+    // quoted scalar at s[p] (" or '); line breaks inside fold like YAML (one break = space, n blank lines = n "\n").
+    // returns [value, index after the closing quote] or null when the quote is not closed in s
+    function yQuoted(s, p) {
+      const q = s[p]; let out = "", i = p + 1;
+      while (i < s.length) {
+        const c = s[i];
+        if (q === "'" && c === "'") { if (s[i + 1] === "'") { out += "'"; i += 2; continue; } return [out, i + 1]; }
+        if (q === '"' && c === '"') return [out, i + 1];
+        if (q === '"' && c === "\\") {
+          const d = s[i + 1]; if (d === undefined) return null;   // cut at a line end: the caller appends the next line
+          if (d === "\n") { i += 2; while (s[i] === " " || s[i] === "\t") i++; continue; }
+          const w = d === "x" ? 2 : d === "u" ? 4 : d === "U" ? 8 : 0;
+          if (w && i + 2 + w > s.length) return null;
+          if (w) { const h = s.substr(i + 2, w); if (!new RegExp("^[0-9a-fA-F]{" + w + "}$").test(h)) throw yErr("bad escape \\" + d + h); out += String.fromCodePoint(parseInt(h, 16)); i += 2 + w; continue; }
+          if (!(d in yEsc)) throw yErr("bad escape \\" + d);
+          out += yEsc[d]; i += 2; continue;
+        }
+        if (c === "\n") {
+          out = out.replace(/[ \t]+$/, ""); let nl = 0; i++;
+          for (;;) { while (s[i] === " " || s[i] === "\t") i++; if (s[i] === "\n") { nl++; i++; } else break; }
+          out += nl ? "\n".repeat(nl) : " "; continue;
+        }
+        out += c; i++;
+      }
+      return null;
+    }
+    function yFlow(s, n) {
+      let p = 0;
+      const ws = () => { while (p < s.length && /\s/.test(s[p])) p++; };
+      function val(stop) {
+        ws(); const c = s[p];
+        if (c === "[") {
+          p++; const a = []; ws(); if (s[p] === "]") { p++; return a; }
+          for (;;) {
+            const k = val(",]:"); ws();
+            if (s[p] === ":") { p++; a.push({ [String(k)]: val(",]") }); ws(); } else a.push(k);
+            if (s[p] === ",") { p++; ws(); if (s[p] === "]") { p++; return a; } continue; }
+            if (s[p] === "]") { p++; return a; }
+            throw yErr("unclosed flow sequence", n);
+          }
+        }
+        if (c === "{") {
+          p++; const o = {}; ws(); if (s[p] === "}") { p++; return o; }
+          for (;;) {
+            const k = val(",}:"); ws(); let v = null;
+            if (s[p] === ":") { p++; v = val(",}"); ws(); }
+            o[String(k)] = v;
+            if (s[p] === ",") { p++; ws(); if (s[p] === "}") { p++; return o; } continue; }
+            if (s[p] === "}") { p++; return o; }
+            throw yErr("unclosed flow mapping", n);
+          }
+        }
+        if (c === '"' || c === "'") { const r = yQuoted(s, p); if (!r) throw yErr("unclosed quote", n); p = r[1]; return r[0]; }
+        if (c === "]" || c === "}" || c === ",") return null;
+        let q = p;
+        while (q < s.length) {
+          const ch = s[q];
+          if (ch === "," || ch === "]" || ch === "}" || (ch === "[" || ch === "{") && q > p) break;
+          if (ch === ":" && stop.includes(":") && (q + 1 >= s.length || /[\s,\]}]/.test(s[q + 1]))) break;
+          q++;
+        }
+        const t = s.slice(p, q).replace(/\s+/g, " ").trim(); p = q; return yPlain(t);
+      }
+      const v = val(""); ws();
+      if (p < s.length) throw yErr("trailing text after a flow value", n);
+      return v;
+    }
+    function parseYamlStrict(src) {
+      const raws = String(src).replace(/\r\n?/g, "\n").replace(/^﻿/, "").split("\n");
+      const uncomment = t => {   // drop a ` #...` comment outside quotes
+        let q = null;
+        for (let i = 0; i < t.length; i++) {
+          const c = t[i];
+          if (q) { if (c === q) { if (q === "'" && t[i + 1] === "'") { i++; continue; } q = null; } else if (q === '"' && c === "\\") i++; continue; }
+          if ((c === '"' || c === "'") && (i === 0 || /[\s\[{,:-]/.test(t[i - 1]))) { q = c; continue; }
+          if (c === "#" && (i === 0 || /\s/.test(t[i - 1]))) return t.slice(0, i).replace(/\s+$/, "");
+        }
+        return t.replace(/\s+$/, "");
+      };
+      const L = raws.map((r, n) => { const ind = r.match(/^ */)[0].length; const t = uncomment(r.slice(ind)); return { n, ind, t, raw: r }; });
+      const anchors = {}; let i = 0;
+      const sig = () => { while (i < L.length && (!L[i].t || /^(---|\.\.\.)$/.test(L[i].t) && L[i].ind === 0)) i++; return i < L.length ? L[i] : null; };
+      const isSeq = t => t === "-" || t.startsWith("- ");
+      function mapKey(t) {   // "key: rest" -> [key, rest] or null
+        if (t[0] === '"' || t[0] === "'") {
+          const r = yQuoted(t, 0); if (!r) return null;
+          const m = t.slice(r[1]).match(/^\s*:(?:\s+(.*)|$)/); return m ? [r[0], (m[1] || "").trim()] : null;
+        }
+        if (/^[\[{&*!|>%@`]/.test(t) || t[0] === "?") return null;
+        const m = t.match(/^(.*?)\s*:(?:\s+(.*)|$)/); if (!m || !m[1]) return null;
+        return [m[1], (m[2] || "").trim()];
+      }
+      function node(ind) {   // block node starting at the next significant line, whose indent must be >= ind
+        const l = sig(); if (!l || l.ind < ind) return null;
+        if (isSeq(l.t)) return seq(l.ind);
+        if (mapKey(l.t)) return map(l.ind);
+        i++; return inline(l.t, l.ind - 1, l.n);
+      }
+      function seq(ind) {
+        const a = [];
+        for (let l; (l = sig()) && l.ind === ind && isSeq(l.t);) {
+          const rest = l.t.slice(1).replace(/^ +/, ""), col = ind + (l.t.length - rest.length);
+          if (!rest) { i++; const nx = sig(); a.push(nx && nx.ind > ind ? node(ind + 1) : null); continue; }
+          if (isSeq(rest) || mapKey(rest)) { L[i] = { n: l.n, ind: col, t: rest, raw: " ".repeat(col) + rest }; a.push(node(col)); continue; }
+          i++; a.push(inline(rest, ind, l.n));
+        }
+        const l = sig(); if (l && l.ind > ind) throw yErr("bad indentation in a sequence", l.n);
+        return a;
+      }
+      function map(ind) {
+        const o = {};
+        for (let l; (l = sig()) && l.ind === ind;) {
+          const kv = mapKey(l.t); if (!kv) { if (isSeq(l.t)) break; throw yErr("expected key: value", l.n); }
+          i++;
+          const [k, rest] = kv;
+          if (rest === "") {
+            const nx = sig();
+            o[k] = nx && (nx.ind > ind || nx.ind === ind && isSeq(nx.t)) ? (nx.ind === ind ? seq(ind) : node(ind + 1)) : null;
+          } else o[k] = inline(rest, ind, l.n);
+        }
+        const l = sig(); if (l && l.ind > ind) throw yErr("bad indentation in a mapping", l.n);
+        return o;
+      }
+      // a value written after "key:" / "- " on line n; continuation lines must be indented deeper than pind
+      function inline(rest, pind, n) {
+        let anchor = null, m;
+        if ((m = rest.match(/^!\S*(?:\s+|$)(.*)$/))) rest = m[1];
+        if ((m = rest.match(/^&(\S+)(?:\s+|$)(.*)$/))) { anchor = m[1]; rest = m[2]; }
+        if ((m = rest.match(/^!\S*(?:\s+|$)(.*)$/))) rest = m[1];
+        let v;
+        if (rest === "") v = node(pind + 1);
+        else if (rest[0] === "*") { const a = rest.slice(1); if (!(a in anchors)) throw yErr("unknown alias *" + a, n); v = anchors[a]; }
+        else if ((m = rest.match(/^([|>])([1-9])?([-+])?([1-9])?$/))) v = block(m[1], m[3] || "", +(m[2] || m[4] || 0), pind, n);
+        else if (rest[0] === "[" || rest[0] === "{") {
+          let s = rest, depth = () => { let d = 0, q = null; for (let k = 0; k < s.length; k++) { const c = s[k]; if (q) { if (c === q) q = null; else if (q === '"' && c === "\\") k++; continue; } if (c === '"' || c === "'") q = c; else if (c === "[" || c === "{") d++; else if (c === "]" || c === "}") d--; } return d; };
+          while (depth() > 0 && i < L.length) s += "\n" + L[i++].t;
+          v = yFlow(s, n);
+        } else if (rest[0] === '"' || rest[0] === "'") {
+          let s = rest, r;
+          while (!(r = yQuoted(s, 0)) && i < L.length) s += "\n" + L[i++].raw.trim();
+          if (!r) throw yErr("unclosed quote", n);
+          if (uncomment(s.slice(r[1])).trim()) throw yErr("text after a quoted value", n);
+          v = r[0];
+        } else {
+          if (mapKey(rest)) throw yErr("a mapping cannot follow a plain value on one line", n);
+          let s = rest;
+          for (let nl = 0, l; i < L.length; i++) {   // continuation lines fold: one break = space, n blank lines = n "\n"
+            l = L[i];
+            if (!l.raw.trim()) { nl++; continue; }
+            if (!l.t) continue;
+            if (l.ind <= pind || isSeq(l.t) || mapKey(l.t)) break;
+            s += (nl ? "\n".repeat(nl) : " ") + l.t; nl = 0;
+          }
+          v = yPlain(s);
+        }
+        if (anchor) anchors[anchor] = v;
+        return v;
+      }
+      function block(style, chomp, explicit, pind, n) {
+        const body = []; let ci = explicit ? pind + explicit : 0;
+        for (; i < L.length; i++) {
+          const r = L[i].raw;
+          if (!r.trim()) { body.push(""); continue; }
+          const ind = r.match(/^ */)[0].length;
+          if (!ci) { if (ind <= Math.max(pind, -1)) break; ci = ind; }
+          if (ind < ci) break;
+          body.push(r.slice(ci));
+        }
+        let trail = 0; while (body.length && body[body.length - 1] === "") { body.pop(); trail++; }
+        let text;
+        if (style === "|") text = body.join("\n");
+        else {
+          text = "";
+          for (let k = 0; k < body.length; k++) {
+            const ln = body[k], prev = body[k - 1];
+            if (k === 0) { text = ln; continue; }
+            if (ln === "") { text += "\n"; continue; }
+            const more = /^[ \t]/.test(ln) || prev !== undefined && /^[ \t]/.test(prev);
+            text += prev === "" ? (more ? "\n" : "") + ln : (more ? "\n" : " ") + ln;
+          }
+        }
+        if (!body.length) return chomp === "+" ? "\n".repeat(trail) : "";
+        return text + (chomp === "-" ? "" : chomp === "+" ? "\n".repeat(trail + 1) : "\n");
+      }
+      const first = sig(); if (!first) return null;
+      const v = node(0);
+      const left = sig(); if (left) throw yErr("unexpected text", left.n);
+      return v;
+    }
+    function parseYaml(src) {
+      let v;
+      try { v = parseYamlStrict(src); } catch (e) { return parseYamlLoose(src); }
+      return v == null ? parseYamlLoose(src) : v;
     }
     /* block-style YAML like the frontmatter a vault keeps: lists as `key:` + `  - item` lines (excalidraw's
        converted-note `tags:`), nested maps indented two spaces, plain scalars unless quoting is needed */
@@ -366,7 +579,7 @@
       return out;
     }
     const stringifyYaml = o => isMap(o) ? yBlock(o, "") : Array.isArray(o) ? o.map(x => "- " + yScal(x)).join("\n") + "\n" : yScal(o) + "\n";
-    Object.assign(K, { parseYaml, stringifyYaml });
+    Object.assign(K, { parseYaml, parseYamlStrict, stringifyYaml });
   });
   reg("fns:links", function (K) {
     const { host, be } = K;

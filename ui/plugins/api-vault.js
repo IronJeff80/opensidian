@@ -504,7 +504,7 @@
         let j = 1, o = lines[0].length + 1;
         for (; j < lines.length; j++) { if (/^(---|\.\.\.)\s*$/.test(lineEnd(lines[j]))) break; o += lines[j].length + 1; }
         if (j < lines.length) {
-          out.frontmatter = parseYaml(lines.slice(1, j).join("\n"));
+          { const fm = parseYaml(lines.slice(1, j).join("\n")); out.frontmatter = fm && typeof fm === "object" && !Array.isArray(fm) ? fm : {}; }
           out.frontmatterPosition = { start: pos(0, 0, 0), end: pos(j, 3, o + 3) };
           out.sections = [{ type: "yaml", position: out.frontmatterPosition }];
           off = o + lines[j].length + 1; i = j + 1;
