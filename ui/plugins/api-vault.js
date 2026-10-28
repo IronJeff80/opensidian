@@ -341,11 +341,14 @@
     const adapter = new FileSystemAdapter();
 
     /* Vault: the typings' class; app.vault is its one instance. recurseChildren
-       is the static walk calendar's daily-notes index uses (depth-first, root first). */
+       is the static walk calendar's daily-notes index uses. deep-dataview: stock's own walk, root first,
+       then a stack that a folder's children are appended to in order and popped from the end, so the LAST
+       child is visited first. getFiles / getMarkdownFiles are this walk in stock, and dataview indexes the
+       vault in that order, so result rows that tie keep stock's order. */
     class Vault extends Events {
       static recurseChildren(root, cb) {
-        const st = root ? [root] : [];
-        while (st.length) { const f = st.pop(); cb(f); if (f instanceof TFolder) for (let i = f.children.length - 1; i >= 0; i--) st.push(f.children[i]); }
+        let st = [root];
+        while (st.length > 0) { const f = st.pop(); if (f) { cb(f); if (f instanceof TFolder) st = st.concat(f.children); } }
       }
     }
     const vault = new Vault();
@@ -360,8 +363,8 @@
       getAbstractFileByPath(p) { const n = normalizePath(p); return n === "/" ? vroot : files.get(n) || null; },
       getFileByPath(p) { const f = vault.getAbstractFileByPath(p); return f instanceof TFile ? f : null; },
       getFolderByPath(p) { const f = vault.getAbstractFileByPath(p); return f instanceof TFolder ? f : null; },
-      getFiles() { return [...files.values()].filter(f => f instanceof TFile); },
-      getMarkdownFiles() { return [...files.values()].filter(f => f instanceof TFile && f.extension === "md"); },
+      getFiles() { const a = []; Vault.recurseChildren(vroot, f => { if (f instanceof TFile) a.push(f); }); return a; },
+      getMarkdownFiles() { const a = []; Vault.recurseChildren(vroot, f => { if (f instanceof TFile && f.extension === "md") a.push(f); }); return a; },
       getAllLoadedFiles() { return [vroot, ...files.values()]; },
       getAllFolders(includeRoot) { const a = [...files.values()].filter(f => f instanceof TFolder); return includeRoot ? [vroot, ...a] : a; },
       async read(f) {
