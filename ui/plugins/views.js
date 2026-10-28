@@ -647,6 +647,7 @@
           } else {
             const v = this.view, pm = v && v.previewMode;
             if (pm && typeof pm.rerender === "function") pm.rerender(true);
+            try { if (typeof Ed !== "undefined" && Ed && Ed.cbRebuild) Ed.cbRebuild(v && v._tv); } catch (e) { console.error(e); }
           }
           this.setEphemeralState(es);
         }

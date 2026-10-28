@@ -2226,15 +2226,24 @@ Ed.CB_FENCE = /^ {0,3}(`{3,}|~{3,})[ \t]*([^\s`{]*)(.*)$/;
 Ed.cbFences = function (doc) {
   if (Ed._cbDoc === doc) return Ed._cbOut;
   const out = [];
-  let open = null;
+  let open = null, li = -1;   // li: content column of the list item the following lines may belong to (-1: none)
+  const LI = /^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+)\S/;
   for (let i = 1; i <= doc.lines; i++) {
-    const ln = doc.line(i), m = Ed.CB_FENCE.exec(ln.text);
+    const ln = doc.line(i), t = ln.text;
     if (!open) {
-      if (m && !(m[1][0] === "`" && m[3].includes("`"))) open = { ch: m[1][0], n: m[1].length, lang: m[2], from: ln.from, l0: i };
+      // deep-dataview FD14: a fence indented under a list item is that item's code block (stock Live Preview
+      // renders it; one in a blockquote stays source, as stock). Indent stripped from the fence and its lines.
+      const lm = LI.exec(t), ws = /^[ \t]*/.exec(t)[0].length;
+      if (lm) { li = lm[1].length + lm[2].length + lm[3].length; continue; }
+      if (t.trim() && li >= 0 && ws < li) li = -1;
+      const ind = li >= 0 && ws >= li && ws < li + 4 ? li : 0, m = Ed.CB_FENCE.exec(ind ? t.slice(ind) : t);
+      if (m && !(m[1][0] === "`" && m[3].includes("`"))) open = { ch: m[1][0], n: m[1].length, lang: m[2], from: ln.from, l0: i, ind };
       continue;
     }
+    const m = Ed.CB_FENCE.exec(open.ind ? t.replace(new RegExp("^[ \\t]{0," + open.ind + "}"), "") : t);
     if (m && m[1][0] === open.ch && m[1].length >= open.n && !m[2] && !m[3].trim()) {
-      const src = i - 1 > open.l0 ? doc.sliceString(doc.line(open.l0 + 1).from, doc.line(i - 1).to) : "";
+      let src = i - 1 > open.l0 ? doc.sliceString(doc.line(open.l0 + 1).from, doc.line(i - 1).to) : "";
+      if (open.ind) src = src.split("\n").map(s => s.replace(new RegExp("^[ \\t]{0," + open.ind + "}"), "")).join("\n");
       if (open.lang) out.push({ from: open.from, to: ln.to, lang: open.lang, src });
       open = null;
     }
@@ -2250,6 +2259,13 @@ Ed.cbRefresh = function () {
     if (cm) try { cm.dispatch({ effects: Ed.cbFx.of(null) }); } catch (e) { console.error(e); }
   }
 };
+// leaf.rebuildView on a note in Live Preview: that editor's code-block widgets render again from
+// scratch (stock rebuilds the whole view, so a dataview TABLE re-runs its query with refresh off)
+Ed.cbRebuild = function (v) {
+  if (!v || !v.cm || !Ed.cbFx) return;
+  v._cbRb = (v._cbRb || 0) + 1;
+  try { v.cm.dispatch({ effects: Ed.cbFx.of(null) }); } catch (e) { console.error(e); }
+};
 Ed.cbField = function (v, G, bust) {
   const { Decoration, WidgetType, EditorView } = CMv;
   if (!Ed.cbFx) Ed.cbFx = CMs.StateEffect.define();
@@ -2257,7 +2273,7 @@ Ed.cbField = function (v, G, bust) {
     constructor(lang, src, path, gen) { super(); this.lang = lang; this.src = src; this.path = path; this.gen = gen; }
     eq(o) { return o.lang === this.lang && o.src === this.src && o.path === this.path && o.gen === this.gen; }
     toDOM() {
-      const w = Ed.el("div", "cm-preview-code-block cm-embed-block markdown-rendered");
+      const w = Ed.el("div", "cm-preview-code-block cm-embed-block markdown-rendered cm-lang-" + this.lang);
       const el = Ed.el("div", "block-language-" + this.lang);
       w.appendChild(el);
       // the widget ignores editor events (ignoreEvent): its wiki links follow here (dataview file links)
@@ -2279,7 +2295,7 @@ Ed.cbField = function (v, G, bust) {
     if (!g || (v.lp && v.lp.classList.contains("src"))) return Decoration.none;
     const blocks = Ed.cbFences(st.doc);
     if (!blocks.length) return Decoration.none;
-    const n = typeof curOf === "function" && g.view === v ? curOf(g) : v.note, path = n ? n + ".md" : "", gen = h.gen(), out = [];
+    const n = typeof curOf === "function" && g.view === v ? curOf(g) : v.note, path = n ? n + ".md" : "", gen = h.gen() + "/" + (v._cbRb || 0), out = [];
     for (const b of blocks) {
       if (!h.has(b.lang)) continue;
       if (st.selection.ranges.some(r => r.from <= b.to && r.to >= b.from)) continue;   // caret in the fence: its source shows
