@@ -39,6 +39,12 @@
 .os-plugin-modal .suggestion-item.is-selected { background: var(--border) }
 .os-plugin-modal .suggestion-empty { padding: 8px 14px; color: var(--text-chrome-muted); font-size: 13px }
 .os-plugin-modal .suggestion-highlight { color: var(--text-accent); font-weight: 600 }
+/* an input suggest popover (AbstractInputSuggest: templater's Template hotkey / folder fields) is an opaque card under its input, as in stock */
+.os-isug { background: var(--bg-elevated); color: var(--text-chrome); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 28px var(--shadow-popover); padding: 4px; margin-top: 6px; max-height: 300px; overflow-y: auto; box-sizing: border-box }
+.os-isug[hidden] { display: none }
+.os-isug .suggestion-item { padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 14px; white-space: nowrap }
+.os-isug .suggestion-item.is-selected { background: var(--border) }
 .os-plugin-modal .prompt-instructions { display: flex; gap: 12px; padding: 6px 14px; font-size: 12px; color: var(--text-chrome-muted) }
 .os-plugin-modal .prompt-instructions:empty { display: none }
 .os-plugin-modal .prompt-instruction-command { font-weight: 600; margin-right: 4px }
