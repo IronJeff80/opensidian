@@ -343,10 +343,11 @@
       }
       setName(n) { if (n instanceof Node) { this.nameEl.empty(); this.nameEl.appendChild(n); } else this.nameEl.setText(n == null ? "" : String(n)); return this; }
       setDesc(d) { if (d instanceof Node) { this.descEl.empty(); this.descEl.appendChild(d); } else this.descEl.setText(d == null ? "" : String(d)); return this; }
-      /* api-settings: a persistent validation message under the row; empty / null clears it */
+      /* api-settings: a persistent validation message; empty / null clears it. Stock draws it under the row's control,
+         right-aligned in the warning colour (templater Template hotkey "This template already has a hotkey") */
       setErrorMessage(msg) {
         if (msg) {
-          if (!this.errorEl) this.errorEl = this.infoEl.createDiv({ cls: "setting-item-error" });
+          if (!this.errorEl) this.errorEl = this.controlEl.createDiv({ cls: "setting-item-error" });
           this.errorEl.textContent = String(msg); this.settingEl.addClass("is-invalid");
         } else {
           if (this.errorEl) this.errorEl.remove();
@@ -408,7 +409,7 @@
     const valOf = v => { if (typeof v === "function") { try { return v(); } catch (e) { console.error("[plugin] setting value:", e); return undefined; } } return v; };
     const onActivate = (el, f) => {
       el.tabIndex = 0;
-      el.addEventListener("click", e => { if (e.target && e.target.closest && e.target.closest("input,select,textarea,button")) return; f(e); });
+      el.addEventListener("click", e => { if (e.target && e.target.closest && e.target.closest("input,select,textarea,button,.clickable-icon")) return; f(e); });
       el.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); f(e); } });
     };
     function sdTeardown(tab) {
@@ -512,7 +513,7 @@
       }
       if (list) {
         if (typeof list.onDelete === "function") {
-          s.addExtraButton(b => b.setIcon("trash").setTooltip("Delete").onClick(() => list.onDelete(idx)));
+          s.addExtraButton(b => b.setIcon("x").setTooltip("Delete").onClick(() => list.onDelete(idx)));
           s.settingEl.tabIndex = 0;
           s.settingEl.addEventListener("keydown", e => { if ((e.key === "Delete" || e.key === "Backspace") && e.target === s.settingEl) { e.preventDefault(); list.onDelete(idx); } });
         }
@@ -587,7 +588,10 @@
         }
         if (!p.title) p.title = top.name == null ? "" : String(top.name);
         const back = new ExtraButtonComponent(p.titlebarEl);
-        back.setIcon("chevron-left").setTooltip("Back").onClick(() => { stack.pop(); sdRender(tab); });
+        back.setIcon("chevron-left").setTooltip("Back").onClick(() => {
+          stack.pop(); const y = (tab._pageScroll || []).pop(); sdRender(tab);
+          const sc = sdScroller(tab.containerEl); if (sc) sc.scrollTop = y || 0;
+        });
         p.titlebarEl.prepend(back.extraSettingsEl);
         d.page = p;
         tab.containerEl.appendChild(p.rootEl);
@@ -596,7 +600,26 @@
       sdApply(d);
       for (const f of d.after.splice(0)) f();
     }
-    function sdOpenPage(tab, def) { (tab._pages || (tab._pages = [])).push(def); sdRender(tab); }
+    /* stock: "<" on a sub-page returns to the parent page at the scroll position it was left at (templater's
+       User scripts > sits at the bottom of its tab); a sub-page opens at its top */
+    const sdScroller = el => { for (let n = el; n && n.nodeType === 1; n = n.parentElement) { const o = getComputedStyle(n).overflowY; if (o === "auto" || o === "scroll") return n; } return null; };
+    /* update() while a sub-page is on screen stays on that page, as in stock (templater re-reads its definitions after "Done" in
+       Template hotkey and shows the new row there): the open pages are looked up again by name in the new definitions */
+    const sdFindPage = (items, name) => {
+      for (const it of Array.isArray(items) ? items : []) {
+        if (!it || typeof it !== "object") continue;
+        if (it.type === "page" && it.name === name) return it;
+        if (it.type === "group" || it.type === "list") { const f = sdFindPage(it.items, name); if (f) return f; }
+      }
+      return null;
+    };
+    function sdRebase(items, stack) { const out = []; let scope = items; for (const p of stack) { const f = p && sdFindPage(scope, p.name); if (!f) break; out.push(f); scope = f.items; } return out; }
+    function sdOpenPage(tab, def) {
+      const sc = sdScroller(tab.containerEl);
+      (tab._pageScroll || (tab._pageScroll = [])).push(sc ? sc.scrollTop : 0);
+      (tab._pages || (tab._pages = [])).push(def); sdRender(tab);
+      if (sc) sc.scrollTop = 0;
+    }
 
     /* a tab with setting definitions is rendered from them, as stock 1.13.7 does: its own display() is the
        legacy fallback and is not called (excalidraw overrides display() with its single-page settings and
@@ -608,7 +631,7 @@
         this.containerEl = mk("div", { cls: "vertical-tab-content" });
         this._icon = undefined;   // stock default: undefined (apioracle settings-1.13.7); the accessor below
         this.settingItems = [];
-        this._dom = null; this._pages = [];
+        this._dom = null; this._pages = []; this._pageScroll = [];
       }
       /* the settings sidebar icon (d.ts SettingTab.icon, since 1.11). A plugin assigns it in its ctor
          (obsidian-git "git-pull-request", tasks "list-checks", templater "templater-icon"); the
@@ -622,7 +645,7 @@
         try { defs = this.getSettingDefinitions(); } catch (e) { console.error("[plugin] getSettingDefinitions:", e); defs = []; }
         this.settingItems = Array.isArray(defs) ? defs : [];
         const d = this._dom;   // a tab whose rendering is on screen re-renders
-        if (d && this.containerEl.isConnected && (d.page ? this.containerEl.contains(d.page.rootEl) : d.nodes.some(n => this.containerEl.contains(n.el)))) { this._pages = []; sdShow(this); }
+        if (d && this.containerEl.isConnected && (d.page ? this.containerEl.contains(d.page.rootEl) : d.nodes.some(n => this.containerEl.contains(n.el)))) { this._pages = sdRebase(this.settingItems, this._pages || []); this._pageScroll = (this._pageScroll || []).slice(0, this._pages.length); sdShow(this); }
       }
       getControlValue(key) { const v = this.app && this.app.vault; return v && typeof v.getConfig === "function" ? v.getConfig(key) : undefined; }
       setControlValue(key, value) {
@@ -634,7 +657,7 @@
       display() { if (this.settingItems && this.settingItems.length) sdRender(this); }
       // stock: hide() leaves containerEl's children alone (a ctor-built header/content survives a switch or close);
       // only a declarative rendering (settingItems, owned by this class) is taken down
-      hide() { const d = this._dom; sdTeardown(this); this._pages = []; if (d) this.containerEl.empty(); }
+      hide() { const d = this._dom; sdTeardown(this); this._pages = []; this._pageScroll = []; if (d) this.containerEl.empty(); }
     }
     class PluginSettingTab extends SettingTab {
       // stock: id / name are the plugin manifest's, set here (a subclass ctor reads them); no manifest is a TypeError
@@ -953,6 +976,7 @@
       getSuggestions() { return []; }
       selectSuggestion(item, evt) { if (this._cb) this._cb(item, evt); }
       _refresh() {
+        if (this._picking) return;   // an "input" a selectSuggestion fires (templater: setValue + trigger("input") + close) does not reopen it, as in stock
         const q = this.getValue();
         Promise.resolve().then(() => this.getSuggestions(q)).then(items => {
           this._items = (items || []).slice(0, this.limit || 100); this._sel = 0;
@@ -976,7 +1000,8 @@
       }
       _choose(i, e) {
         const it = this._items[i]; if (it === undefined) return;
-        try { this.selectSuggestion(it, e); } catch (er) { console.error("[plugin] selectSuggestion:", er); }
+        this._picking = true;
+        try { this.selectSuggestion(it, e); } catch (er) { console.error("[plugin] selectSuggestion:", er); } finally { this._picking = false; }
         this.close();
       }
       close() { super.close(); this.suggestEl.hidden = true; this.suggestEl.textContent = ""; this._items = []; }

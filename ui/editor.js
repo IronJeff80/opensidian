@@ -22,6 +22,7 @@ const Ed = {
   cur: null,            // {g, l} row currently holding the caret (census/geometry)
   _tk: null,            // R17.6 token map under construction (Ed.row owns it)
   UNDO_IDLE_MS: 2000,   // R17.8: idle gap that CLOSES an undo group
+  PLUGIN_JOIN_MS: 500,  // ED-3: a plugin edit this soon after its previous one joins that undo step
 
   /* ---------- inline renderer: one row per source line ---------- */
   el(tag, cls) { const e = document.createElement(tag); if (cls) e.className = cls; return e; },
@@ -1476,6 +1477,13 @@ document.addEventListener("scroll", e => {
    ====================================================================== */
 const CM6 = window.__osModules || {};
 const CMs = CM6["@codemirror/state"], CMv = CM6["@codemirror/view"], CMc = CM6["@codemirror/commands"];
+/* ED-3: a plugin Editor-API edit carries Ed.PLUGIN_EDIT; Ed.EDIT_KIND remembers the kind + time of the last
+   doc change so the undo grouping below can join a plugin's follow-up edit to its own previous one */
+Ed.PLUGIN_EDIT = CMs && CMs.Annotation.define();
+Ed.EDIT_KIND = CMs && CMs.StateField.define({
+  create: () => ({ k: "", t: 0 }),
+  update: (v, tr) => !tr.docChanged ? v : { k: tr.annotation(Ed.PLUGIN_EDIT) ? "plugin" : tr.isUserEvent("input.type") ? "type" : "other", t: tr.annotation(CMs.Transaction.time) || Date.now() },
+});
 Object.assign(Ed, {
   cm(g) { return g && g.view && g.view.cm || null; },
   view(g) { return Ed.cm(g); },                        // the Obsidian Editor shim's accessor (ui/plugins/editor-api.js)
@@ -1695,9 +1703,18 @@ Object.assign(Ed, {
       CMc.history({ newGroupDelay: Ed.UNDO_IDLE_MS }),
       // R17.8: only an uninterrupted TYPING burst coalesces; every other edit
       // kind (CM6's own paste/drop/cut included) is its own undo step
-      CMs.EditorState.transactionExtender.of(tr => tr.docChanged && !tr.isUserEvent("input.type")
-        && !tr.isUserEvent("undo") && !tr.isUserEvent("redo") && tr.annotation(CMc.isolateHistory) == null
-        ? { annotations: CMc.isolateHistory.of("full") } : null),
+      // ED-3: a plugin's Editor-API edit opens its own step, and its follow-up edit within
+      // PLUGIN_JOIN_MS (Obsidian's CM6 newGroupDelay) joins it, as in stock: templater's
+      // insert + cursor jump undo as ONE step; typing after a plugin edit starts a new one
+      Ed.EDIT_KIND,
+      CMs.EditorState.transactionExtender.of(tr => {
+        if (!tr.docChanged || tr.isUserEvent("undo") || tr.isUserEvent("redo") || tr.annotation(CMc.isolateHistory) != null) return null;
+        const last = tr.startState.field(Ed.EDIT_KIND, false), plug = !!tr.annotation(Ed.PLUGIN_EDIT);
+        if (plug) return last && last.k === "plugin" && (tr.annotation(CMs.Transaction.time) || Date.now()) - last.t < Ed.PLUGIN_JOIN_MS
+          ? null : { annotations: CMc.isolateHistory.of("before") };
+        if (tr.isUserEvent("input.type")) return last && last.k === "plugin" ? { annotations: CMc.isolateHistory.of("before") } : null;
+        return { annotations: CMc.isolateHistory.of("full") };
+      }),
       // the editor's own keys (Ed.onKey) are a keymap `any` binding, not a keydown
       // handler: CM6 merges every keymap's commands for a key into one run list in
       // precedence order, so a plugin binding at a higher precedence
@@ -2129,6 +2146,9 @@ Ed.lpExt = function (v, G) {
   const build = view => {
     const g = G(), st = view.state, doc = st.doc, sel = st.selection.main, out = [], labels = [];
     const cur = doc.lineAt(sel.head).number;
+    // plugin overlay tokens (a Templater command) take no markdown decoration, as in Obsidian
+    const opq = Ed.lpOpaque ? Ed.lpOpaque(view) : null;
+    const hit = (rs, s, e) => { for (const r of rs) if (s < r[1] && e > r[0]) return true; return false; };
     let last = -1;
     for (const { from, to } of view.visibleRanges) {
       let pos = from;
@@ -2137,7 +2157,7 @@ Ed.lpExt = function (v, G) {
         pos = ln.to + 1;
         if (ln.number <= last) continue;
         last = ln.number;
-        const P = Ed.lpParse(g, ln.text);
+        const P = Ed.lpParse(g, ln.text), ors = opq && opq.get(ln.number);
         let rv = null;
         if (sel.from <= ln.to && sel.to >= ln.from) {
           const lo = Math.max(sel.from, ln.from) - ln.from, hi = Math.min(sel.to, ln.to) - ln.from;
@@ -2148,12 +2168,13 @@ Ed.lpExt = function (v, G) {
           }
         }
         const fl = g && g._fl && g._fl.l === ln.number - 1 ? (g._fl.fade ? " navflash fade" : " navflash") : "";
-        out.push(ld(P.cls + (ln.number === cur ? " cur" : "") + fl).range(ln.from));
+        const whole = ors && ln.length > 0 && ors.some(r => r[0] <= 0 && r[1] >= ln.length);
+        out.push(ld((whole ? Ed.lpParse(g, "x").cls : P.cls) + (ln.number === cur ? " cur" : "") + fl).range(ln.from));
         for (let i = 0; i < P.els.length; i++) {
           const x = P.els[i];
-          if (x.e > x.s) out.push((rv && rv.has(i) ? x.rv : x.d).range(ln.from + x.s, ln.from + x.e));
+          if (x.e > x.s && !(ors && hit(ors, x.s, x.e))) out.push((rv && rv.has(i) ? x.rv : x.d).range(ln.from + x.s, ln.from + x.e));
         }
-        for (const w of P.wid) out.push(Decoration.widget({ widget: new Leaf(ln.text, w.k, w.el), side: 1 }).range(ln.from + w.pos));
+        for (const w of P.wid) if (!(ors && ors.some(r => r[0] < w.pos && w.pos < r[1]))) out.push(Decoration.widget({ widget: new Leaf(ln.text, w.k, w.el), side: 1 }).range(ln.from + w.pos));
       }
     }
     if (g && g.view === v && g.lp) {
@@ -2165,7 +2186,7 @@ Ed.lpExt = function (v, G) {
   const plugin = ViewPlugin.fromClass(class {
     constructor(view) { this.decorations = build(view); }
     update(u) {
-      if (u.docChanged || u.selectionSet || u.viewportChanged || u.transactions.some(t => t.effects.some(e => e.is(bust))))
+      if (u.docChanged || u.selectionSet || u.viewportChanged || u.transactions.some(t => t.reconfigured || t.effects.some(e => e.is(bust))))
         this.decorations = build(u.view);
     }
   }, { decorations: p => p.decorations });

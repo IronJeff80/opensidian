@@ -39,6 +39,12 @@
 .os-plugin-modal .suggestion-item.is-selected { background: var(--border) }
 .os-plugin-modal .suggestion-empty { padding: 8px 14px; color: var(--text-chrome-muted); font-size: 13px }
 .os-plugin-modal .suggestion-highlight { color: var(--text-accent); font-weight: 600 }
+/* an input suggest popover (AbstractInputSuggest: templater's Template hotkey / folder fields) is an opaque card under its input, as in stock */
+.os-isug { background: var(--bg-elevated); color: var(--text-chrome); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 28px var(--shadow-popover); padding: 4px; margin-top: 6px; max-height: 300px; overflow-y: auto; box-sizing: border-box }
+.os-isug[hidden] { display: none }
+.os-isug .suggestion-item { padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 14px; white-space: nowrap }
+.os-isug .suggestion-item.is-selected { background: var(--border) }
 .os-plugin-modal .prompt-instructions { display: flex; gap: 12px; padding: 6px 14px; font-size: 12px; color: var(--text-chrome-muted) }
 .os-plugin-modal .prompt-instructions:empty { display: none }
 .os-plugin-modal .prompt-instruction-command { font-weight: 600; margin-right: 4px }
@@ -59,8 +65,18 @@
 :where(#spage, .os-plugin-modal) .setting-item-name { font-size: 14px; color: var(--text-chrome) }
 :where(#spage, .os-plugin-modal) .setting-item-description { font-size: 12px; color: var(--text-chrome-muted); margin-top: 2px }
 :where(#spage, .os-plugin-modal) .setting-item-description:empty { display: none }
+:where(#spage, .os-plugin-modal) .setting-item-description .mod-warning { color: var(--text-warning) }
 :where(#spage, .os-plugin-modal) .setting-item-control { flex: 0 0 auto; display: flex; align-items: center; gap: 8px }
+:where(#spage, .os-plugin-modal) .setting-item-control:has(> .setting-item-error) { flex-wrap: wrap; justify-content: flex-end; row-gap: 4px }
+:where(#spage, .os-plugin-modal) .setting-item-error { flex: 1 0 100%; text-align: right; font-size: 12px; color: var(--text-warning) }
 :where(#spage, .os-plugin-modal) .setting-item-heading .setting-item-name { font-weight: 600 }
+/* a SettingGroup heading (templater "Syntax highlighting", "User scripts", ...) is a section title above its rows, as in stock: larger and semibold */
+:where(#spage, .os-plugin-modal) .setting-group-heading-text { font-size: 16px; font-weight: 600; color: var(--text-chrome); padding-top: 12px }
+/* its controls (a list group's "+" add button, templater Template hotkeys) sit at the right end of the heading row, as in stock */
+:where(#spage, .os-plugin-modal) .setting-group-heading:not([hidden]) { display: flex; align-items: center; gap: 8px; min-height: 28px }
+:where(#spage, .os-plugin-modal) .setting-group-heading-text { flex: 1 1 auto; min-width: 0 }
+:where(#spage, .os-plugin-modal) .setting-group-heading-text:empty { padding-top: 0 }
+:where(#spage, .os-plugin-modal) .setting-group-controls { display: flex; align-items: center; gap: 4px; margin-left: auto }
 :where(#spage, .os-plugin-modal) .setting-item.is-disabled { opacity: .5; pointer-events: none }
 :where(#spage, .os-plugin-modal) .setting-item-control input[type=text], :where(#spage, .os-plugin-modal) .setting-item-control input[type=search],
 :where(#spage, .os-plugin-modal) .setting-item-control textarea, :where(#spage, .os-plugin-modal) .setting-item-control select.dropdown {
