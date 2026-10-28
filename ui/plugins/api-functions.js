@@ -285,7 +285,34 @@
       }
       return o;
     }
-    const stringifyYaml = o => Object.keys(o || {}).map(k => k + ": " + (Array.isArray(o[k]) ? "[" + o[k].join(", ") + "]" : o[k] == null ? "" : String(o[k]))).join("\n") + "\n";
+    /* block-style YAML like the frontmatter a vault keeps: lists as `key:` + `  - item` lines (excalidraw's
+       converted-note `tags:`), nested maps indented two spaces, plain scalars unless quoting is needed */
+    function yScal(v) {
+      if (v === null || v === undefined) return "null";
+      if (typeof v === "number") return Number.isFinite(v) ? String(v) : v !== v ? ".nan" : v > 0 ? ".inf" : "-.inf";
+      if (typeof v === "boolean") return String(v);
+      if (v instanceof Date) return v.toISOString();
+      const s = String(v);
+      const plain = s !== "" && s === s.trim() && !/[\n\r\t]/.test(s) && !/^[-?:,\[\]{}#&*!|>'"%@`]/.test(s)
+        && !/: |:$| #/.test(s) && !/^(true|false|yes|no|on|off|null|~|[-+]?(\d[\d_]*)?\.?\d+([eE][-+]?\d+)?|0x[0-9a-f]+|\.(inf|nan))$/i.test(s);
+      return plain ? s : JSON.stringify(s);
+    }
+    const isMap = v => v !== null && typeof v === "object" && !Array.isArray(v) && !(v instanceof Date);
+    function yBlock(o, ind) {
+      let out = "";
+      for (const k of Object.keys(o)) {
+        const v = o[k], key = ind + (/^[\w][\w .\/-]*$/.test(k) && k === k.trim() ? k : JSON.stringify(k)) + ":";
+        if (v === undefined || typeof v === "function") continue;
+        if (Array.isArray(v)) {
+          if (!v.length) { out += key + " []\n"; continue; }
+          out += key + "\n";
+          for (const x of v) out += ind + "  - " + (isMap(x) || Array.isArray(x) ? JSON.stringify(x) : yScal(x)) + "\n";
+        } else if (isMap(v)) out += Object.keys(v).length ? key + "\n" + yBlock(v, ind + "  ") : key + " {}\n";
+        else out += key + " " + yScal(v) + "\n";
+      }
+      return out;
+    }
+    const stringifyYaml = o => isMap(o) ? yBlock(o, "") : Array.isArray(o) ? o.map(x => "- " + yScal(x)).join("\n") + "\n" : yScal(o) + "\n";
     Object.assign(K, { parseYaml, stringifyYaml });
   });
   reg("fns:links", function (K) {
