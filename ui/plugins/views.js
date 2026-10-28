@@ -685,9 +685,11 @@
           await splitWith(g, split, t);
           if (prev && prev !== M().fg() && M().groups().indexOf(prev) >= 0 && typeof focusGroup === "function") try { focusGroup(prev); } catch (_) {}
         }
-        else if (t0 && !t0.kind && active && !leaf._nt && PV_INPLACE.has(type)) {
+        else if (t0 && !t0.kind && active && !leaf._nt && (PV_INPLACE.has(type) || (state && state.file))) {
           // cvf-links CVR-A-096: a canvas opened from a NOTE leaf (a [[X.canvas]] link / embed click) replaces the
-          // note in the same tab, as stock: the canvas tab goes in right after it, then the note tab goes (count unchanged)
+          // note in the same tab, as stock: the canvas tab goes in right after it, then the note tab goes (count unchanged).
+          // Any file view opened on the note's own leaf does the same (Excalidraw "create new drawing - in the current
+          // active window" turns the note leaf into its drawing view: stock keeps one tab, not the note plus the drawing).
           await openTabView(g, t, at, true);
           const j = g.tabs.indexOf(t0);
           if (j >= 0 && typeof closeTab === "function") await closeTab(g, j, "plugin-detach", "plugin", true);
