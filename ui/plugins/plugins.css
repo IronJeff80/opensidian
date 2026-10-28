@@ -27,6 +27,9 @@
 .os-plugin-modal .modal-title { font-weight: 600; font-size: 15px; margin: 0 24px 10px 0 }
 .os-plugin-modal .modal-title:empty { display: none }
 .os-plugin-modal .modal.prompt { padding: 0; width: 560px }
+/* plug-val: a plugin modal's button row sits right-aligned under the text, warning buttons filled (stock-F23-a.png) */
+.os-plugin-modal .modal-button-container { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 16px }
+.os-plugin-modal .modal-button-container button.mod-warning { background: var(--text-error); color: #fff; border-color: transparent }
 .os-plugin-modal .prompt-input { width: 100%; box-sizing: border-box; padding: 10px 14px; border: 0;
   border-bottom: 1px solid var(--border); background: var(--bg-elevated); color: var(--text-chrome); font-size: 14px; outline: none }
 .os-plugin-modal .prompt-results { max-height: 50vh; overflow: auto; padding: 4px 0 }

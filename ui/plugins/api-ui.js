@@ -45,6 +45,14 @@
         document.body.appendChild(this.containerEl);
         openModals.push(this); scopes.push(this.scope);
         try { this.onOpen(); } catch (e) { console.error("[plugin] Modal.onOpen:", e); }
+        /* plug-val: stock moves focus into a freshly opened modal: when onOpen focused nothing inside it, the first
+           button / field takes focus, so Return answers obsidian-git's Discard modal (stock-F23-a.png: focus ring
+           on "Discard all 8 files"); before, the keys went to the editor behind the modal */
+        if (!this.modalEl.contains(document.activeElement)) try {
+          const f = this.contentEl.querySelector("button, input:not([type=hidden]), textarea, select, [tabindex]:not([tabindex='-1'])")
+            || this.modalEl.querySelector(".modal-button-container button");
+          if (f) f.focus();
+        } catch (_) {}
         touch();
       }
       close() {
