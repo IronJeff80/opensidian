@@ -68,6 +68,14 @@
   border-radius: 4px; padding: 4px 8px; font-size: 13px }
 :where(#spage, .os-plugin-modal) .setting-item-control button, .os-plugin-modal button { background: var(--bg-surface); color: var(--text-chrome);
   border: 1px solid var(--border); border-radius: 4px; padding: 4px 12px; font-size: 13px; cursor: pointer }
+/* a plugin <button class="dropdown"> (excalidraw's font picker opens a Menu from it) wears the select look:
+   field background, left-aligned label, an up/down chevron at the right edge */
+:where(#spage, .os-plugin-modal) .setting-item-control button.dropdown { position: relative; background: var(--bg-base);
+  text-align: left; padding: 4px 26px 4px 8px; min-height: 28px }
+:where(#spage, .os-plugin-modal) .setting-item-control button.dropdown::after { content: ""; position: absolute; right: 7px;
+  top: 50%; width: 12px; height: 12px; margin-top: -6px; background: var(--text-chrome-muted);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E") center / contain no-repeat }
 :where(#spage, .os-plugin-modal) .setting-item-control button.mod-cta, .os-plugin-modal button.mod-cta { background: var(--bg-button-primary); color: var(--text-on-accent) }
 :where(#spage, .os-plugin-modal) .setting-item-control button.mod-warning, .os-plugin-modal button.mod-warning { color: var(--text-error) }
 :where(#spage, .os-plugin-modal) .checkbox-container { position: relative; width: 34px; height: 18px; border-radius: 9px;
@@ -95,6 +103,9 @@ body.os-has-plugin-status #main .status { bottom: 30px }
 .os-plugin-menu .menu-item-icon svg { width: 14px; height: 14px; display: block }
 .os-plugin-menu .menu-item.is-label { cursor: default; color: var(--text-chrome-muted) }
 .os-plugin-menu .menu-item.mod-warning { color: var(--text-error) }
+/* MenuItem.setChecked(true) shows a check mark at the right edge in every plugin menu (excalidraw's font picker marks the current font) */
+.os-plugin-menu .menu-item.mod-checked .menu-item-title { flex: 1 1 auto }
+.os-plugin-menu .menu-item.mod-checked::after { content: ""; flex: 0 0 auto; width: 4px; height: 8px; margin: 0 4px 3px 12px; border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg) }
 /* plug-val E43: plugin rows a plugin adds INTO a core file/folder menu (menuHook) get the same icon + title row */
 .ctxmenu > .menu-item { display: flex; align-items: center; gap: 6px }
 .ctxmenu > .menu-item .menu-item-icon:empty { display: none }
@@ -177,7 +188,6 @@ body.os-has-plugin-status #main .status { bottom: 30px }
 .os-plugin-menu.canvas-card-menu-ctx .menu-item-icon { flex: 0 0 16px; display: inline-flex; justify-content: center; color: var(--text-muted, #aaa) }
 .os-plugin-menu.canvas-card-menu-ctx .menu-item-icon svg { width: 15px; height: 15px }
 .os-plugin-menu.canvas-card-menu-ctx .menu-item-title { flex: 1 1 auto }
-.os-plugin-menu.canvas-card-menu-ctx .menu-item.mod-checked::after { content: ""; flex: 0 0 auto; width: 4px; height: 8px; margin: 0 4px 3px 12px; border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg) }
 .os-plugin-menu.canvas-card-menu-ctx .menu-item.dis { opacity: .5; cursor: default }
 /* goal cvf-zoom CVR-C-076: zoomed out past the threshold (canvas-perf.js sets .cvp-lod) a text or note card is drawn
    as its bare box — border and fill, no content (its name still reads above it); a media card keeps its picture.
