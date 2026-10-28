@@ -934,6 +934,19 @@
         // <p> child, and dataview unwraps a lone <p> (childNodes.length == 1) to render an inline field
         // inside a Live Preview line; a trailing "\n" text node left the <p> block and broke the line
         for (const n of [...t.childNodes]) if (n.nodeType === 3 && !/\S/.test(n.data)) n.remove();
+        // deep-dataview FD11: a wiki link a plugin renders is a.internal-link[data-href = linktext] as in stock
+        // 1.13.7 (dataview result links; plugins select and click them by that class), is-unresolved when the
+        // target is missing; a.wiki stays for the app's own link wiring
+        for (const a of t.querySelectorAll("a.wiki")) {
+          const lt = (a.dataset.note || "") + (a.dataset.anchor ? "#" + a.dataset.anchor : "");
+          a.classList.add("internal-link");
+          if (a.classList.contains("wiki-unresolved")) a.classList.add("is-unresolved");
+          // FD9: an un-aliased heading/block link reads "Note > Heading" as in stock (dataview file.outlinks)
+          const nb = (a.dataset.note || "").replace(/\.md$/i, "");
+          if (nb && a.dataset.anchor && (a.textContent === lt || a.textContent === nb + "#" + a.dataset.anchor)) a.textContent = nb + " > " + a.dataset.anchor;
+          a.setAttribute("data-href", lt);   // href stays "#": a relative href would navigate the webview from a
+                                             // plugin view nobody wired (stock routes it through its own handler)
+        }
         const added = [...t.childNodes];
         while (t.firstChild) el.appendChild(t.firstChild);
         await mdProcess(el, sourcePath || "", component instanceof Component ? component : new Component(), true, added);
