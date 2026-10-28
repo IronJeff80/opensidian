@@ -311,7 +311,9 @@
       for (const g of ctx.groups()) { if (g.view && g.view.cm) out.add(g.view); for (const t of g.tabs || []) if (t.view && t.view.cm) out.add(t.view); }
       return [...out];
     }
-    const activeTabView = () => { const g = ctx.focused(); return g && g.active >= 0 && tabOf(g.view) ? g.view : null; };
+    // plug-val: the view must hold the ACTIVE tab: a graph tab (any non-note tab) in front of a note leaves g.view on the
+    // note, and stock then has no active editor (editor-only commands drop out of the palette)
+    const activeTabView = () => { const g = ctx.focused(); const t = g && g.active >= 0 ? tabOf(g.view) : null; return t && (!Array.isArray(g.tabs) || g.tabs[g.active] === t) ? g.view : null; };
 
     /* ------------------------------------------------- the info StateFields */
     const infoField = S.StateField.define({ create: () => null, update: v => v });
