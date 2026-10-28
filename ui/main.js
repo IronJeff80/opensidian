@@ -7336,7 +7336,8 @@ function mdFilter() {
   mdItems = mdSrc().map((it, i) => [fuzzy(q, it.label), i, it])
     .filter(([s]) => s >= 0)
     .sort((a, b) => a[0] - b[0] || a[1] - b[1])  // ties keep source (MRU) order
-    .slice(0, 10).map(([, , it]) => it);
+    .slice(0, modalKind === "cp" ? Infinity : 10)   // plug-val: stock lists EVERY matching command (scrolls); the switcher keeps 10
+    .map(([, , it]) => it);
   mdSel = 0;
   renderModal();
 }
@@ -7452,6 +7453,7 @@ function renderModal() {
     d.append(l, h);
     d.onmousedown = async e => { e.preventDefault(); await mdRun(it, e); };
     box.appendChild(d);
+    if (i === mdSel) d.scrollIntoView({ block: "nearest" });   // arrowing past the visible rows scrolls the list
   });
   mdTitleSoon();   // C4: mdFilter() runs on every keystroke — republish [mdnew:]
 }
