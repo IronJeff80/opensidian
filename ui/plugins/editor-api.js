@@ -351,10 +351,77 @@
         S.Prec.highest(V.EditorView.domEventHandlers({ keydown: e => suggestKey(v, e) })),
       ];
     }
+    /* a plugin StreamLanguage as a highlight overlay. In Obsidian the note's language is itself a
+       StreamLanguage over the CM5 "hypermd" mode, so a plugin that redefines that mode as an overlay
+       (Templater 2.25.0: customOverlayMode(getMode("hypermd"), templater) at Prec.high) only adds
+       token classes on top of markdown. Here the note keeps its lezer markdown tree (mdLang, which
+       wins the language facet), so such a StreamLanguage would never run: it is bridged instead to
+       a view plugin that runs its stream parser over the lines up to the viewport end and marks
+       every token with the CM5 class names (style "a b" -> cm-a cm-b on the token, "line-x" /
+       "line-background-x" -> class x on the line), under a .cm-s-obsidian editor as in Obsidian. */
+    const streamOv = new WeakMap();
+    const OV_LINES = 20000;      // past this many lines before the viewport: start fresh at the viewport
+    function streamOverlay(sl) {
+      let ov = streamOv.get(sl);
+      if (ov) return ov;
+      const p = sl.streamParser, SS = window.CodeMirror && window.CodeMirror.StringStream;
+      if (!p || typeof p.token !== "function" || !SS) { streamOv.set(sl, []); return []; }
+      const skip = { null: 1, undefined: 1, "": 1 };
+      function style(s, lineCls, from, to, marks) {
+        if (!s) return;
+        const cls = [];
+        for (const t of String(s).split(/\s+/)) {
+          if (skip[t]) continue;
+          const m = /^line-(?:background-)?(.+)$/.exec(t);
+          if (m) lineCls.add(m[1]); else cls.push("cm-" + t);
+        }
+        if (cls.length && to > from) marks.push(V.Decoration.mark({ class: cls.join(" "), attributes: { "data-os-ov": "" } }).range(from, to));
+      }
+      function build(view) {
+        const doc = view.state.doc, vp = view.viewport, out = [];
+        const first = doc.lineAt(vp.from).number, last = doc.lineAt(vp.to).number;
+        let n = first > OV_LINES ? first : 1, st;
+        try { st = p.startState((L.indentUnit && view.state.facet(L.indentUnit).length) || 4); } catch (e) { console.error("[plugin] stream overlay startState:", e); return V.Decoration.none; }
+        for (; n <= last; n++) {
+          const line = doc.line(n), lineCls = new Set(), marks = [], vis = n >= first;
+          try {
+            if (!line.length) { if (p.blankLine) style(p.blankLine(st, 4), lineCls, 0, 0, marks); }
+            else {
+              const ss = new SS(line.text, view.state.tabSize);
+              let stuck = 0;
+              while (!ss.eol()) {
+                ss.start = ss.pos;
+                const s = p.token(ss, st);
+                if (ss.pos <= ss.start) { if (++stuck > 3) break; continue; }
+                stuck = 0;
+                if (vis) style(s, lineCls, line.from + ss.start, line.from + ss.pos, marks);
+              }
+            }
+          } catch (e) { console.error("[plugin] stream overlay token:", e); return V.Decoration.none; }
+          if (!vis) continue;
+          for (const c of lineCls) out.push(V.Decoration.line({ class: c, attributes: { "data-os-ovl": "" } }).range(line.from));
+          for (const m of marks) out.push(m);
+        }
+        return V.Decoration.set(out, true);
+      }
+      ov = [V.EditorView.editorAttributes.of({ class: "cm-s-obsidian" }), V.ViewPlugin.fromClass(class {
+        constructor(view) { this.decorations = build(view); }
+        update(u) { if (u.docChanged || u.viewportChanged) this.decorations = build(u.view); }
+      }, { decorations: x => x.decorations })];
+      streamOv.set(sl, ov);
+      return ov;
+    }
+    function bridge(e, d) {
+      if (!e || typeof e !== "object" || d > 8) return e;
+      if (Array.isArray(e)) { let ch = false; const r = e.map(x => { const y = bridge(x, d + 1); if (y !== x) ch = true; return y; }); return ch ? r : e; }
+      if (L && L.StreamLanguage && e instanceof L.StreamLanguage) return streamOverlay(e);
+      if ("inner" in e && "prec" in e) { const y = bridge(e.inner, d + 1); return y === e.inner ? e : y; }   // Prec.*(x)
+      return e;
+    }
     EdG.pxExt = function (v) {
       if (!active) return [];
       const out = [infoField.init(() => infoFor(v)), lpField.init(() => isLp(v)), edField.init(() => v.cm || null), edFill, livePreviewState, hooks(v), mdLang()];
-      for (const x of exts) out.push(x.ext);
+      for (const x of exts) out.push(bridge(x.ext, 0));
       return out;
     };
     /* the note's syntax tree, for plugins that walk it (syntaxTree(state)): while a plugin is
@@ -555,14 +622,16 @@
       if (f !== undefined && f !== isLp(v)) v.cm.dispatch({ effects: lpFx.of(isLp(v)) });
     }
     // [pext:x<exts>,s<suggests>,v<views carrying the base hooks>,d=<value><count>+... of the [data-os-probe]
-    // nodes drawn in the focused editor (a gate probe tags its decorations with it; "0" = none),o<suggest items open>]
+    // nodes drawn in the focused editor (a gate probe tags its decorations with it; "0" = none),o<suggest items open>,
+    // ov<stream overlay token spans>/<overlay-classed lines> in the focused editor (only while some are drawn)]
     function tok() {
       if (!active) return "";
       const v = activeTabView(), m = {}; let nv = 0;
       for (const w of allViews()) if (w.cm.state.field(infoField, false) !== undefined) nv++;
       if (v && v.cm) for (const n of v.cm.contentDOM.querySelectorAll("[data-os-probe]")) { const k = String(n.getAttribute("data-os-probe")).replace(/[^A-Za-z0-9]/g, "").slice(0, 8); m[k] = (m[k] || 0) + 1; }
       const d = Object.keys(m).sort().map(k => k + m[k]).join("+") || "0";
-      return " [pext:x" + exts.length + ",s" + suggests.length + ",v" + nv + ",d=" + d + ",o" + (openS && openS.isOpen ? openS._items.length : 0) + (bad ? ",bad" + bad : "") + "]";
+      const ovs = v && v.cm ? v.cm.contentDOM.querySelectorAll("[data-os-ov]").length : 0, ovl = v && v.cm ? v.cm.contentDOM.querySelectorAll("[data-os-ovl]").length : 0;
+      return " [pext:x" + exts.length + ",s" + suggests.length + ",v" + nv + ",d=" + d + ",o" + (openS && openS.isOpen ? openS._items.length : 0) + (bad ? ",bad" + bad : "") + (ovs || ovl ? ",ov" + ovs + "/" + ovl : "") + "]";
     }
 
     return {
