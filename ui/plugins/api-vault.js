@@ -258,7 +258,15 @@
       }
       async read(p) { return td.decode(await core.read(ap(p))); }
       async readBinary(p) { const u = await core.read(ap(p)); return u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength); }
-      async write(p, data) { await core.write(ap(p), String(data)); }
+      /* deep-git: a note the adapter writes is a TFile at once, as in stock: obsidian-git writes its conflict list with
+         adapter.write and opens it with openLinkText right after; the watcher had not reported it yet, so openLinkText
+         found no file, tried to create it and the plugin showed "exists" instead of the note. Visible notes only
+         (no dot segment); a note already in the model is left to the watcher's "modify". */
+      async write(p, data) {
+        const r = ap(p); await core.write(r, String(data));
+        const rel = vrel(r), n = noteOf(rel);
+        if (n != null && K.st.filesOn && !files.has(rel) && !rel.split("/").some(s => s.startsWith("."))) await changed({ added: [n] });
+      }
       async writeBinary(p, data) { await core.write(ap(p), toBytes(data)); }
       async append(p, data) { await core.append(ap(p), String(data)); }
       async appendBinary(p, data) { await core.append(ap(p), toBytes(data)); }
