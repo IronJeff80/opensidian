@@ -226,13 +226,14 @@ fn rel_in(root: &Path, id: &str, file: &str) -> Result<PathBuf, String> {
     Ok(Path::new(".obsidian").join("plugins").join(id).join(file))
 }
 
-/// Plugin.loadData(): data.json parsed, or Null when absent (Obsidian resolves null)
+/// Plugin.loadData(): data.json parsed, or Null when absent or not valid JSON (Obsidian resolves null for both, so a
+/// plugin falls back to its defaults; the file is left as is)
 pub fn read_data(root: &Path, id: &str) -> Result<serde_json::Value, String> {
     match plugin_file_in(root, id, "data.json", MAX_DATA_JSON)? {
         None => Ok(serde_json::Value::Null),
         Some(p) => {
             let s = fs::read_to_string(&p).map_err(|e| format!("{id}/data.json: {e}"))?;
-            serde_json::from_str(&s).map_err(|e| format!("{id}/data.json: {e}"))
+            Ok(serde_json::from_str(&s).unwrap_or(serde_json::Value::Null))
         }
     }
 }
@@ -419,6 +420,8 @@ mod tests {
         write_data(&r, "good", &serde_json::json!({"a": 1})).unwrap();
         assert_eq!(read_data(&r, "good").unwrap(), serde_json::json!({"a": 1}));
         assert!(fs::read_to_string(r.join(".obsidian/plugins/good/data.json")).unwrap().contains("\"a\": 1"));
+        fs::write(r.join(".obsidian/plugins/good/data.json"), "{\n  \"globalFilter\": \"#task\",\n  \"globalQuery\": \"not do").unwrap();
+        assert_eq!(read_data(&r, "good").unwrap(), serde_json::Value::Null);
         for bad in ["..", "../good", "a/b", ".obsidian", "nosuch"] {
             assert!(write_data(&r, bad, &serde_json::json!(1)).is_err(), "{bad}");
             assert!(read_data(&r, bad).is_err(), "{bad}");
