@@ -244,6 +244,21 @@
        strips the leading "/": "/vault/..." keeps its meaning and the fs facade (core) stays verbatim,
        so require("fs") still has "/etc" refused by Rust. */
     const ap = p => { const s = String(p == null ? "" : p); return s === VROOT || s.startsWith(VROOT + "/") ? s : s.replace(/^\/+/, ""); };
+    /* deep-templater ED-4: in stock a DataAdapter write to a new vault path puts the file in the vault model before the
+       promise resolves and fires "create" (tp.app.vault.getAllLoadedFiles() lists EX/w1.txt right after
+       `await adapter.write("EX/w1.txt", ...)`; templater startup templates write files that way). The watcher reports
+       none of these writes. A note goes through changed() so the app's own tree and the metadata cache see it too;
+       hidden paths (.obsidian/...) stay out of the model, as in stock. Existing files are left to their own events. */
+    async function adapterMade(p, size, folder) {
+      if (!K.st.filesOn) return;
+      const r = vrel(ap(p)).replace(/\/+$/, "");
+      if (!r || r.split("/").some(s => s.startsWith(".")) || files.has(r)) return;
+      if (folder) { const f = ensureFolder(r); vault.trigger("create", f); return; }
+      const n = noteOf(r);
+      if (n != null) { await changed({ added: [n] }); return; }
+      const [f, made] = ensureFile(r); f.stat.size = size || 0;
+      if (made) vault.trigger("create", f);
+    }
     class DataAdapter {
       getName() { return K.st.vaultName; }
       async exists(p) { return core.exists(ap(p)); }
@@ -258,13 +273,13 @@
       }
       async read(p) { return td.decode(await core.read(ap(p))); }
       async readBinary(p) { const u = await core.read(ap(p)); return u.buffer.slice(u.byteOffset, u.byteOffset + u.byteLength); }
-      async write(p, data) { await core.write(ap(p), String(data)); }
-      async writeBinary(p, data) { await core.write(ap(p), toBytes(data)); }
-      async append(p, data) { await core.append(ap(p), String(data)); }
-      async appendBinary(p, data) { await core.append(ap(p), toBytes(data)); }
+      async write(p, data) { const s = String(data); await core.write(ap(p), s); await adapterMade(p, te.encode(s).byteLength); }
+      async writeBinary(p, data) { const u = toBytes(data); await core.write(ap(p), u); await adapterMade(p, u.byteLength); }
+      async append(p, data) { const s = String(data); await core.append(ap(p), s); await adapterMade(p, te.encode(s).byteLength); }
+      async appendBinary(p, data) { const u = toBytes(data); await core.append(ap(p), u); await adapterMade(p, u.byteLength); }
       async process(p, fn) { const out = fn(await this.read(p)); await this.write(p, out); return out; }
       getResourcePath() { return ""; }
-      async mkdir(p) { await core.mkdir(ap(p), true); }
+      async mkdir(p) { await core.mkdir(ap(p), true); await adapterMade(p, 0, true); }
       async trashSystem() { return false; }       // no system trash: callers fall back to trashLocal
       async trashLocal(p) {
         p = ap(p);
@@ -286,7 +301,7 @@
       }
       async remove(p) { await core.unlink(ap(p)); }
       async rename(a, b) { await core.rename(ap(a), ap(b)); }
-      async copy(a, b) { await core.copy(ap(a), ap(b)); }
+      async copy(a, b) { await core.copy(ap(a), ap(b)); const st = await core.stat(ap(b)).catch(() => null); await adapterMade(b, st && st.size); }
     }
     const nodeErr = (Ctor, code, msg) => { const e = new Ctor(msg); e.code = code; return e; };
     const posixResolve = p => {
