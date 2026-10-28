@@ -401,19 +401,33 @@
             } catch (e) {
               if (e !== UNTERM) throw e;
               if (i >= n) throw err(s[0] === "[" || s[0] === "{" ? "unclosed flow collection" : "unclosed quoted scalar");
-              s += (lines[i].trim() ? " " + lines[i].trim() : "\n"); i++;
+              // line folding (stock): an empty line is "\n" with no space before the next text; a double-quoted line
+              // ending in an unescaped backslash escapes the break (next line joins with no space: "b\" + "c" -> "bc")
+              const t = lines[i].trim(), bs = (s.match(/\\+$/) || [""])[0].length;
+              if (s[0] === '"' && bs % 2 === 1) s = s.slice(0, -1) + t;
+              else s += t ? (s.endsWith("\n") ? t : " " + t) : "\n";
+              i++;
             }
           }
         }
-        let v = noComment(s);
-        while (i < n && lines[i].trim() && !/^\s*#/.test(lines[i]) && indent(lines[i]) > ind) {
-          const t = lines[i].trim(); if (keyOf(t)) throw err("mapping values are not allowed here"); v += " " + noComment(t); i++;
+        // multi-line plain scalar: continuation lines indented past ind fold to one space, each empty line in between
+        // is a "\n" (stock: "p: first\n  second\n\n  third" -> "first second\nthird"); trailing empty lines are not part of it
+        let v = noComment(s), nl = 0;
+        while (i < n) {
+          const l = lines[i];
+          if (!l.trim()) { nl++; i++; continue; }
+          if (/^\s*#/.test(l) || indent(l) <= ind) break;
+          const t = l.trim(); if (keyOf(t)) throw err("mapping values are not allowed here");
+          v += (nl ? "\n".repeat(nl) : " ") + noComment(t); nl = 0; i++;
         }
+        i -= nl;
         return plainScalar(v);
       }
       function block(head, ind) {   // | or > with chomping indicator; content = following lines indented past ind
         const lit = head[0] === "|", chomp = /-/.test(head) ? "-" : /\+/.test(head) ? "+" : "";
-        const body = []; let bi = -1;
+        // explicit indentation indicator (|2, >1-): content indent = ind + digit, extra spaces stay in the text
+        // (stock: "i: |2" over "    four sp" -> "  four sp\n"); without it the first content line sets the indent
+        const ii = head.match(/^[|>][-+]?([1-9])/), body = []; let bi = ii ? ind + Number(ii[1]) : -1;
         while (i < n) {
           const l = lines[i];
           if (l.trim()) { const d = indent(l); if (d <= ind) break; if (bi < 0) bi = d; if (d < bi) break; body.push(l.slice(bi)); }
