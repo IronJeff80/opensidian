@@ -586,6 +586,10 @@
     }
     function sdOpenPage(tab, def) { (tab._pages || (tab._pages = [])).push(def); sdRender(tab); }
 
+    /* a tab with setting definitions is rendered from them, as stock 1.13.7 does: its own display() is the
+       legacy fallback and is not called (excalidraw overrides display() with its single-page settings and
+       hands 1.13+ its multi-page definitions); a tab with none runs display() */
+    const sdShow = tab => (tab.settingItems && tab.settingItems.length ? sdRender(tab) : tab.display());
     class SettingTab {
       constructor() {
         installDom();
@@ -606,7 +610,7 @@
         try { defs = this.getSettingDefinitions(); } catch (e) { console.error("[plugin] getSettingDefinitions:", e); defs = []; }
         this.settingItems = Array.isArray(defs) ? defs : [];
         const d = this._dom;   // a tab whose rendering is on screen re-renders
-        if (d && this.containerEl.isConnected && (d.page ? this.containerEl.contains(d.page.rootEl) : d.nodes.some(n => this.containerEl.contains(n.el)))) { this._pages = []; this.display(); }
+        if (d && this.containerEl.isConnected && (d.page ? this.containerEl.contains(d.page.rootEl) : d.nodes.some(n => this.containerEl.contains(n.el)))) { this._pages = []; sdShow(this); }
       }
       getControlValue(key) { const v = this.app && this.app.vault; return v && typeof v.getConfig === "function" ? v.getConfig(key) : undefined; }
       setControlValue(key, value) {
@@ -887,7 +891,8 @@
         setting.activeTab = t;
         setting.lastTabId = t.id;
         const s = ui(); if (s) s.mount(t);
-        t.display();
+        // a tab with setting definitions renders from them (SettingTab.display), not through its own display() override
+        if (t.settingItems && t.settingItems.length && K.SettingTab) K.SettingTab.prototype.display.call(t); else t.display();
       },
       openTabById(id) {
         const t = byId(id);
