@@ -1545,7 +1545,7 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
   border-radius: var(--list-bullet-radius); background: var(--list-marker-color) }
 .lp .li.ord > .mk.lim { min-width: 32px; padding-inline-start: 15px; color: var(--list-marker-color) }
 .lp .li.ord > .mk.lim::before { content: none }
-.lp .tk > .mk.lim { display: none }                             /* a task row draws a checkbox, not a bullet */
+.lp .tk:not(.ord) > .mk.lim { display: none }                           /* a task row draws a checkbox, not a bullet */
 .lp .tk > .mk.lim::before { content: none }
 /* the selector must out-specify `.lp input[type=checkbox]` above (0,2,1): an
    attribute selector weighs as much as a class, so a bare `.lp .tbox` loses */

@@ -337,12 +337,19 @@
     const exts = [];          // {ext, owner}
     const suggests = [];      // EditorSuggest instances
     let active = false;       // a plugin has loaded: views carry the base hooks
+    const UEV = ["input", "delete", "os", "move"];   // FZ-E30.2: the user-edit families that run onTrigger
     const hasEv = n => { const w = ws(), a = w && w._ev && w._ev.get(n); return !!(a && a.length); };
     function hooks(v) {
       return [
         V.EditorView.updateListener.of(u => {
           if (u.docChanged && hasEv("editor-change")) { const mv = viewFor(v); if (mv) queueMicrotask(() => ws().trigger("editor-change", mv.editor, mv)); }
-          if (suggests.length && (u.docChanged || u.selectionSet)) queueMicrotask(() => suggestCheck(v, u.docChanged));
+          // FZ-E30.2: only an edit that carries a userEvent (typing, delete, the editor's own os.* edits, a
+          // plugin write whose origin is one of those) runs the suggests' onTrigger, as in stock. A bare editor-API write (Tasks "Toggle
+          // task done" -> setLine) has none: it is treated like a caret move and opens nothing. tr.isUserEvent, not
+          // tr.annotation(S.Transaction.userEvent): the editor's state module is not the plugins' copy (S), so the
+          // annotation type differs and the lookup always missed (dv6 r1: typing opened nothing)
+          const typed = u.docChanged && u.transactions.some(tr => UEV.some(k => tr.isUserEvent(k)));
+          if (suggests.length && (u.docChanged || u.selectionSet)) queueMicrotask(() => suggestCheck(v, typed));
         }),
         V.EditorView.domEventHandlers({
           paste: e => { const mv = viewFor(v); if (mv && hasEv("editor-paste")) ws().trigger("editor-paste", e, mv.editor, mv); return e.defaultPrevented; },
@@ -545,6 +552,8 @@
       return () => removeSuggest(s);
     }
     const currentSuggest = () => openS || null;
+    // FZ-E30.2: a leaf leaving its edit mode (setMode -> reading) closes an open suggest, as stock does
+    EdG.closeSuggest = () => { const s = openS; openS = null; reqN++; if (s) closeS(s); };
     function setCurrentSuggest(s) { const c = openS; openS = s || null; if (c && c !== openS) closeS(c); }
 
     /* ------------------------------------------- live-preview flag follows the mode */

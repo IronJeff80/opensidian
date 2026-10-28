@@ -133,7 +133,9 @@ const Ed = {
       if (/\d/.test(lm[1])) row.classList.add("ord");
       // deep-tasks: any one status character is a task (Obsidian Tasks "[/]" "[-]" ...); only a BULLET
       // "[x]"/"[X]" line is struck as done (tkx), as the reading view does (rvtask Q5)
-      const task = /^\[([^\]\n])\] /.exec(rest);
+      // FZ-E18.7: inside a quote (d > 0) "- [ ] " is a plain list item, as in stock Live Preview: no
+      // checkbox, so no click can toggle (stock writes nothing there)
+      const task = d === 0 ? /^\[([^\]\n])\] /.exec(rest) : null;
       if (task) {
         row.classList.add("tk");
         if (/[xX]/.test(task[1]) && !/\d/.test(lm[1])) row.classList.add("tkx");
