@@ -317,26 +317,177 @@
   });
   reg("fns:yaml", function (K) {
     const { host, be } = K;
-    function parseScalar(v) {
-      v = v.trim();
-      if (!v) return null;
-      if ((v[0] === '"' && v.endsWith('"')) || (v[0] === "'" && v.endsWith("'"))) return v.slice(1, -1);
-      if (v[0] === "[" && v.endsWith("]")) return v.slice(1, -1).split(",").map(x => parseScalar(x)).filter(x => x !== null);
-      if (/^(true|false)$/i.test(v)) return /^true$/i.test(v);
-      if (/^(null|~)$/i.test(v)) return null;
-      if (/^-?\d+(\.\d+)?$/.test(v)) return Number(v);
+    /* YAML 1.2 core schema over block mappings / sequences (nested by indentation), flow [..] {..}, quoted keys and
+       scalars, | > block scalars. Invalid documents throw YAMLParseError (duplicate key, unclosed flow or quote,
+       bad indentation), so a note with broken frontmatter has none, as in stock. */
+    function plainScalar(v) {
+      if (v === "" || /^(null|Null|NULL|~)$/.test(v)) return null;
+      if (/^(true|True|TRUE)$/.test(v)) return true;
+      if (/^(false|False|FALSE)$/.test(v)) return false;
+      if (/^[-+]?[0-9]+$/.test(v)) return Number(v);
+      if (/^0x[0-9a-fA-F]+$/.test(v)) return parseInt(v.slice(2), 16);
+      if (/^0o[0-7]+$/.test(v)) return parseInt(v.slice(2), 8);
+      if (/^[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?$/.test(v)) return Number(v);
+      if (/^[-+]?\.(inf|Inf|INF)$/.test(v)) return v[0] === "-" ? -Infinity : Infinity;
+      if (/^\.(nan|NaN|NAN)$/.test(v)) return NaN;
       return v;
     }
-    function parseYaml(src) {   // the frontmatter subset: key: scalar | [a, b] | block list
-      const o = {}; let key = null;
-      for (const raw of String(src).split("\n")) {
-        const l = raw.replace(/\r$/, "");
-        if (!l.trim() || /^\s*#/.test(l)) continue;
-        let m;
-        if (key && (m = l.match(/^\s*-\s*(.*)$/))) { if (!Array.isArray(o[key])) o[key] = []; const v = parseScalar(m[1]); if (v !== null) o[key].push(v); continue; }
-        if ((m = l.match(/^([^\s:#][^:]*?)\s*:(?:\s+(.*))?$/))) { key = m[1].trim(); o[key] = parseScalar(m[2] || ""); continue; }
+    function parseYaml(src) {
+      const lines = String(src).replace(/\r\n?/g, "\n").split("\n"), n = lines.length;
+      let i = 0;
+      const err = m => { const e = new Error(m + " (line " + (i + 1) + ")"); e.name = "YAMLParseError"; return e; };
+      const UNTERM = {}, anchors = Object.create(null);
+      const indent = l => l.match(/^ */)[0].length;
+      const skip = () => { while (i < n && (/^\s*$/.test(lines[i]) || /^\s*#/.test(lines[i]))) i++; };
+      const isSeq = t => /^-(\s|$)/.test(t);
+      const noComment = s => { const m = s.match(/(^|\s)#/); return (m ? s.slice(0, m.index) : s).trim(); };
+      function quoted(s, p) {   // -> [value, index after the closing quote]; throws UNTERM
+        const q = s[p]; let v = ""; p++;
+        while (p < s.length) {
+          const c = s[p];
+          if (q === "'") { if (c === "'") { if (s[p + 1] === "'") { v += "'"; p += 2; continue; } return [v, p + 1]; } v += c; p++; continue; }
+          if (c === '"') return [v, p + 1];
+          if (c !== "\\") { v += c; p++; continue; }
+          const e = s[p + 1], X = { n: "\n", t: "\t", r: "\r", 0: "\0", a: "\x07", b: "\b", e: "\x1b", f: "\f", v: "\v", " ": " ", "/": "/", '"': '"', "\\": "\\", N: "\x85", _: "\xa0" };
+          if (e === undefined) throw UNTERM;
+          if (e in X) { v += X[e]; p += 2; continue; }
+          const w = { x: 2, u: 4, U: 8 }[e], h = w && s.slice(p + 2, p + 2 + w);
+          if (!w || !/^[0-9a-fA-F]+$/.test(h) || h.length !== w) throw err("bad escape \\" + e);
+          v += String.fromCodePoint(parseInt(h, 16)); p += 2 + w;
+        }
+        throw UNTERM;
       }
-      return o;
+      function flow(s) {        // one flow collection starting at s[0]; throws UNTERM when it runs off the end
+        let p = 0;
+        const ws = () => { while (p < s.length && /\s/.test(s[p])) p++; };
+        function item(inMap) {
+          ws(); if (p >= s.length) throw UNTERM;
+          const c = s[p];
+          if (c === "[") { p++; const a = []; ws(); if (s[p] === "]") { p++; return a; }
+            for (;;) { a.push(item(false)); ws(); if (p >= s.length) throw UNTERM;
+              if (s[p] === ",") { p++; ws(); if (s[p] === "]") { p++; return a; } continue; }
+              if (s[p] === "]") { p++; return a; } throw err("bad flow sequence"); } }
+          if (c === "{") { p++; const o = {}; ws(); if (s[p] === "}") { p++; return o; }
+            for (;;) { const k = item(true); ws(); if (p >= s.length) throw UNTERM;
+              let v = null; if (s[p] === ":") { p++; v = item(false); ws(); }
+              const ks = String(k); if (Object.prototype.hasOwnProperty.call(o, ks)) throw err("duplicated mapping key " + ks); o[ks] = v;
+              if (p >= s.length) throw UNTERM;
+              if (s[p] === ",") { p++; ws(); if (s[p] === "}") { p++; return o; } continue; }
+              if (s[p] === "}") { p++; return o; } throw err("bad flow mapping"); } }
+          if (c === '"' || c === "'") { const [v, e] = quoted(s, p); p = e; return v; }
+          const st = p;
+          while (p < s.length && !/[,\[\]{}]/.test(s[p]) && !(s[p] === ":" && /^[\s,\]}]?$/.test(s[p + 1] ?? ""))) p++;
+          return plainScalar(s.slice(st, p).trim());
+        }
+        const v = item(false); ws();
+        if (p < s.length && s[p] !== "#") throw err("content after flow collection");
+        return v;
+      }
+      function keyOf(t) {        // "key: rest" -> [key, rest]; null when t is not a mapping entry
+        let k, p;
+        if (t[0] === '"' || t[0] === "'") { try { [k, p] = quoted(t, 0); } catch (e) { if (e === UNTERM) return null; throw e; } }
+        else { const m = t.match(/^([^\s#\-?:,\[\]{}&*!|>'"%@`]|[-?:][^\s])[^#]*?(?=\s*:(\s|$))/); if (!m) return null; k = m[0].trim(); p = m[0].length; }
+        const m = t.slice(p).match(/^\s*:(\s+|$)/);
+        return m ? [k, t.slice(p + m[0].length)] : null;
+      }
+      function inline(s, ind) {  // a scalar or flow value that starts on the current (already consumed) line
+        if (s[0] === '"' || s[0] === "'" || s[0] === "[" || s[0] === "{") {
+          for (;;) {
+            try {
+              if (s[0] === "[" || s[0] === "{") return flow(s);
+              const [v, e] = quoted(s, 0), rest = s.slice(e).trim();
+              if (rest && rest[0] !== "#") throw err("content after quoted scalar");
+              return v;
+            } catch (e) {
+              if (e !== UNTERM) throw e;
+              if (i >= n) throw err(s[0] === "[" || s[0] === "{" ? "unclosed flow collection" : "unclosed quoted scalar");
+              s += (lines[i].trim() ? " " + lines[i].trim() : "\n"); i++;
+            }
+          }
+        }
+        let v = noComment(s);
+        while (i < n && lines[i].trim() && !/^\s*#/.test(lines[i]) && indent(lines[i]) > ind) {
+          const t = lines[i].trim(); if (keyOf(t)) throw err("mapping values are not allowed here"); v += " " + noComment(t); i++;
+        }
+        return plainScalar(v);
+      }
+      function block(head, ind) {   // | or > with chomping indicator; content = following lines indented past ind
+        const lit = head[0] === "|", chomp = /-/.test(head) ? "-" : /\+/.test(head) ? "+" : "";
+        const body = []; let bi = -1;
+        while (i < n) {
+          const l = lines[i];
+          if (l.trim()) { const d = indent(l); if (d <= ind) break; if (bi < 0) bi = d; if (d < bi) break; body.push(l.slice(bi)); }
+          else body.push("");
+          i++;
+        }
+        let tail = 0; while (body.length && body[body.length - 1] === "") { body.pop(); tail++; }
+        let out = lit ? body.join("\n") : "";
+        if (!lit) for (let k = 0; k < body.length; k++) {   // folded: breaks become spaces; blank / more-indented lines keep theirs
+          const l = body[k], q = body[k - 1];
+          out += k === 0 ? l : l === "" ? "\n" : q === "" ? l : /^\s/.test(l) || /^\s/.test(q) ? "\n" + l : " " + l;
+        }
+        if (!body.length) return chomp === "+" ? "\n".repeat(tail) : "";
+        return chomp === "-" ? out : chomp === "+" ? out + "\n".repeat(tail + 1) : out + "\n";
+      }
+      function value(rest, ind, item) {   // the value after "key:" (or "- " when item) at indentation ind
+        let t = rest.trim(), anc = null, tag = null, m;
+        for (;;) {   // node properties: &anchor and !tag, in either order
+          if ((m = t.match(/^&([^\s,\[\]{}]+)(\s+|$)/))) { anc = m[1]; t = t.slice(m[0].length); continue; }
+          if ((m = t.match(/^(![^\s,\[\]{}]*)(\s+|$)/))) { tag = m[1]; t = t.slice(m[0].length); continue; }
+          break;
+        }
+        if ((m = t.match(/^\*([^\s,\[\]{}]+)\s*(#.*)?$/))) {
+          if (!Object.prototype.hasOwnProperty.call(anchors, m[1])) throw err("unidentified alias " + m[1]);
+          return anchors[m[1]];
+        }
+        let v;
+        if (!t || t[0] === "#") {
+          skip(); v = null;
+          if (i < n) {
+            const d = indent(lines[i]), s = lines[i].slice(d);
+            if (d > ind) v = node(d);
+            else if (d === ind && !item && isSeq(s)) v = sequence(d);
+          }
+        } else if (/^[|>][-+0-9]*(\s+#.*)?$/.test(t)) v = block(t, ind);
+        else v = tag === "!!str" && !/^["'\[{]/.test(t) ? noComment(t) : inline(t, ind);
+        if (tag === "!!str" && v !== null && typeof v !== "object") v = String(v);
+        if (anc !== null) anchors[anc] = v;
+        return v;
+      }
+      function mapping(ind) {
+        const o = {};
+        for (;;) {
+          skip(); if (i >= n) return o;
+          const d = indent(lines[i]); if (d < ind) return o;
+          if (d > ind) throw err("bad indentation of a mapping entry");
+          const t = lines[i].slice(d); if (isSeq(t)) return o;
+          const kv = keyOf(t); if (!kv) throw err("can not read a block mapping entry");
+          if (Object.prototype.hasOwnProperty.call(o, kv[0])) throw err("duplicated mapping key " + kv[0]);
+          i++; o[kv[0]] = value(kv[1], d);
+        }
+      }
+      function sequence(ind) {
+        const a = [];
+        for (;;) {
+          skip(); if (i >= n) return a;
+          const d = indent(lines[i]); if (d < ind) return a;
+          if (d > ind) throw err("bad indentation of a sequence entry");
+          const t = lines[i].slice(d); if (!isSeq(t)) return a;
+          const sp = t.slice(1).match(/^\s*/)[0].length, col = d + 1 + sp, rest = t.slice(1 + sp);
+          if (rest && (isSeq(rest) || (rest[0] !== "#" && keyOf(rest)))) { lines[i] = " ".repeat(col) + rest; a.push(node(col)); continue; }
+          i++; a.push(value(rest, d, true));
+        }
+      }
+      function node(ind) {
+        const t = lines[i].slice(ind);
+        if (isSeq(t)) return sequence(ind);
+        if (keyOf(t)) return mapping(ind);
+        i++; return inline(t.trim(), ind - 1);
+      }
+      skip(); if (i >= n) return null;
+      const v = node(indent(lines[i])); skip();
+      if (i < n) throw err("end of the stream or a document separator is expected");
+      return v;
     }
     /* block-style YAML like the frontmatter a vault keeps: lists as `key:` + `  - item` lines (excalidraw's
        converted-note `tags:`), nested maps indented two spaces, plain scalars unless quoting is needed */

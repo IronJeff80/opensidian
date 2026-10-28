@@ -504,7 +504,19 @@
         let j = 1, o = lines[0].length + 1;
         for (; j < lines.length; j++) { if (/^(---|\.\.\.)\s*$/.test(lineEnd(lines[j]))) break; o += lines[j].length + 1; }
         if (j < lines.length) {
-          out.frontmatter = parseYaml(lines.slice(1, j).join("\n"));
+          let fm; try { fm = parseYaml(lines.slice(1, j).join("\n")); } catch (_) { fm = undefined; }   // invalid or empty YAML: no frontmatter
+          if (fm && typeof fm === "object" && !Array.isArray(fm)) {
+            out.frontmatter = fm;
+            const fl = [], walk = (v, k) => {   // properties whose whole value is a [[wikilink]]
+              if (typeof v === "string") {
+                const m = v.match(/^\[\[([^\[\]]+)\]\]$/);
+                if (m) { const b = m[1].indexOf("|"), link = b < 0 ? m[1] : m[1].slice(0, b); fl.push({ key: k, link, original: v, displayText: b < 0 ? link.split("#").filter(Boolean).join(" > ") : m[1].slice(b + 1) }); }
+              } else if (Array.isArray(v)) v.forEach((x, n) => walk(x, k + "." + n));
+              else if (v && typeof v === "object") for (const s of Object.keys(v)) walk(v[s], k + "." + s);
+            };
+            for (const k of Object.keys(fm)) walk(fm[k], k);
+            if (fl.length) out.frontmatterLinks = fl;
+          }
           out.frontmatterPosition = { start: pos(0, 0, 0), end: pos(j, 3, o + 3) };
           out.sections = [{ type: "yaml", position: out.frontmatterPosition }];
           off = o + lines[j].length + 1; i = j + 1;
@@ -685,7 +697,7 @@
       for (const f of batch) {
         if (files.get(f.path) !== f) continue;
         let txt; try { txt = await inv("read_note", { name: noteOf(f.path) }); } catch (_) { continue; }
-        const c = parseMeta(txt); caches.set(f.path, c); f.stat.size = txt.length;
+        const c = parseMeta(txt); caches.set(f.path, c); f.stat.size = new TextEncoder().encode(txt).byteLength;
         metadataCache.trigger("changed", f, txt, c);
         metadataCache.trigger("resolve", f);   // its links resolve on demand (resolveLink), so they are resolved now: dataview re-indexes a file on "resolve"
       }
@@ -698,7 +710,7 @@
       for (let k = 0; k < all.length; k += 16) {
         await Promise.all(all.slice(k, k + 16).map(async f => {
           if (caches.has(f.path)) return;
-          try { const t = await inv("read_note", { name: noteOf(f.path) }); caches.set(f.path, parseMeta(t)); f.stat.size = t.length; } catch (_) {}
+          try { const t = await inv("read_note", { name: noteOf(f.path) }); caches.set(f.path, parseMeta(t)); f.stat.size = new TextEncoder().encode(t).byteLength; } catch (_) {}
         }));
         await new Promise(r => setTimeout(r, 0));
       }
