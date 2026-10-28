@@ -1368,7 +1368,8 @@
     };
     class App {     // typings expose App as a class; plugins only ever receive `app`
       isDarkMode() { return document.body.classList.contains("theme-dark"); }
-      // stock: the base color scheme's name, "obsidian" (dark) or "moonstone" (light). obsidian-git's
+      // the base color scheme's name, the same value a vault's .obsidian/appearance.json "theme" holds:
+      // "obsidian" (dark) or "moonstone" (light). obsidian-git's
       // line author gutter calls window.app.getTheme() while it paints each marker; without it the
       // gutter's view plugin crashed and no gutter was drawn (deep-git G3)
       getTheme() { return this.isDarkMode() ? "obsidian" : "moonstone"; }
