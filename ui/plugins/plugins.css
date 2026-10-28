@@ -59,6 +59,7 @@
 :where(#spage, .os-plugin-modal) .setting-item-name { font-size: 14px; color: var(--text-chrome) }
 :where(#spage, .os-plugin-modal) .setting-item-description { font-size: 12px; color: var(--text-chrome-muted); margin-top: 2px }
 :where(#spage, .os-plugin-modal) .setting-item-description:empty { display: none }
+:where(#spage, .os-plugin-modal) .setting-item-description .mod-warning { color: var(--text-warning) }
 :where(#spage, .os-plugin-modal) .setting-item-control { flex: 0 0 auto; display: flex; align-items: center; gap: 8px }
 :where(#spage, .os-plugin-modal) .setting-item-heading .setting-item-name { font-weight: 600 }
 :where(#spage, .os-plugin-modal) .setting-item.is-disabled { opacity: .5; pointer-events: none }

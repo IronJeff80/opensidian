@@ -83,6 +83,7 @@ body {
   --text-muted: var(--color-base-70, #b3b3b3);                /* R15.14 */
   --text-faint: var(--color-base-50, #666666);                /* R15.14 */
   --text-error: var(--color-red, #f5c2c7);                    /* T6b: color-red = --text-error */
+  --text-warning: var(--color-orange, #e9973f);               /* deep-templater F10: dark literal = Obsidian dark orange, not measured here */
   /* code token names (deep-templater F24; light values measured, see body.theme-light;
      dark literals = Obsidian's dark palette, not measured here) */
   --code-normal: var(--text-normal);
@@ -316,6 +317,7 @@ body:where(.theme-light) {
   --text-muted: var(--color-base-70, #5c5c5c);
   --text-faint: var(--color-base-50, #ababab);
   --text-error: var(--color-red, #e93147);
+  --text-warning: var(--color-orange, #ec7500);               /* deep-templater F10: stock 1.13.7 pixel of templater's device-only note (edge/ev/stock-r1-F10-tab2.png) */
   --text-highlight-bg: #ffec99;
   /* the code token names (deep-templater F24): plugin highlighters paint with them,
      templater's <% %> commands most visibly (var(--code-property, #d4d4d4) etc.), and
