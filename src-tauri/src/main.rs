@@ -2779,6 +2779,102 @@ impl<'a> TaskScan<'a> {
     }
 }
 
+/// deep-tasks QE16: Obsidian comments `%%...%%` (inline or across lines) render as
+/// nothing in the reading view and in a plugin's MarkdownRenderer.render — stock shows
+/// a tasks group heading "%%3%%Normal priority" as "Normal priority". The comment's
+/// bytes are dropped but its newlines are kept, so every line number the render maps
+/// (task checkboxes, block lines) still names the same source line. Fenced code and
+/// inline code spans keep their `%%`; an unclosed `%%` stays literal text.
+fn strip_comments(src: &str) -> std::borrow::Cow<'_, str> {
+    if !src.contains("%%") {
+        return std::borrow::Cow::Borrowed(src);
+    }
+    let mut out = String::with_capacity(src.len());
+    let mut fence: Option<(u8, usize)> = None; // (fence char, run length) while inside a fence
+    let mut open: Option<(usize, usize)> = None; // (out len, src offset) at an open comment
+    let mut line_at = 0usize;
+    for line in src.split_inclusive('\n') {
+        let b = line.as_bytes();
+        if open.is_none() {
+            let ind = b.iter().take_while(|&&c| c == b' ').count();
+            let run = |ch: u8| b[ind..].iter().take_while(|&&c| c == ch).count();
+            if ind <= 3 {
+                if let Some((ch, n)) = fence {
+                    if run(ch) >= n && line[ind + run(ch)..].trim().is_empty() {
+                        fence = None;
+                    }
+                    out.push_str(line);
+                    line_at += line.len();
+                    continue;
+                }
+                let ch = b.get(ind).copied().unwrap_or(0);
+                if (ch == b'`' || ch == b'~') && run(ch) >= 3 {
+                    fence = Some((ch, run(ch)));
+                    out.push_str(line);
+                    line_at += line.len();
+                    continue;
+                }
+            } else if fence.is_some() {
+                out.push_str(line);
+                line_at += line.len();
+                continue;
+            }
+        }
+        let mut i = 0usize;
+        while i < b.len() {
+            if open.is_some() {
+                if b[i..].starts_with(b"%%") {
+                    open = None;
+                    i += 2;
+                } else {
+                    if b[i] == b'\n' {
+                        out.push('\n');
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+            if b[i] == b'`' {
+                // inline code span: a backtick run closed by a run of the same length on this line
+                let n = b[i..].iter().take_while(|&&c| c == b'`').count();
+                let mut j = i + n;
+                let mut close = None;
+                while j < b.len() {
+                    if b[j] == b'`' {
+                        let m = b[j..].iter().take_while(|&&c| c == b'`').count();
+                        if m == n {
+                            close = Some(j + m);
+                            break;
+                        }
+                        j += m;
+                    } else {
+                        j += 1;
+                    }
+                }
+                let end = close.unwrap_or(i + n);
+                out.push_str(&line[i..end]);
+                i = end;
+                continue;
+            }
+            if b[i..].starts_with(b"%%") {
+                open = Some((out.len(), line_at + i));
+                i += 2;
+                continue;
+            }
+            // copy one whole UTF-8 char
+            let w = line[i..].chars().next().map_or(1, char::len_utf8);
+            out.push_str(&line[i..i + w]);
+            i += w;
+        }
+        line_at += line.len();
+    }
+    if let Some((len, at)) = open {
+        out.truncate(len);
+        out.push_str(&src[at..]);
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 /// reading=true: heading links join with " > " (R10.1). Block ids are emitted
 /// as span.blockid in both modes; CSS decides visibility.
 fn render_with(content: &str, notes: &[String], imgs: &[String], reading: bool) -> String {
@@ -2793,6 +2889,9 @@ fn render_with(content: &str, notes: &[String], imgs: &[String], reading: bool) 
 /// Obsidian's REQ-16 "unaffected" set. Live preview passes false (REQ-17: it
 /// shows source lines; its blocks never render a multi-line paragraph).
 fn render_with_br(content: &str, notes: &[String], imgs: &[String], reading: bool, soft_br: bool) -> String {
+    // deep-tasks QE16: the reading render drops %%comments%% (newlines kept, so line maps hold)
+    let stripped = if reading { strip_comments(content) } else { std::borrow::Cow::Borrowed(content) };
+    let content: &str = &stripped;
     // Security (docs/security-review.md H1): .md files are untrusted, so raw
     // HTML events are demoted to text (push_html escapes Text). Wikilinks are
     // linkified at the EVENT level — label and data-note attr escaped — so our
@@ -8841,6 +8940,26 @@ mod tests {
         assert!(rename_in(&root, &mut ix, "Ghost", "X").is_err()); // missing source
         assert!(rename_in(&root, &mut ix, "B", "../esc").is_err()); // traversal blocked
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// deep-tasks QE16: %%comments%% vanish from the reading render (inline and across
+    /// lines, newlines kept), code keeps them, an unclosed %% stays text.
+    #[test]
+    fn reading_render_drops_obsidian_comments() {
+        assert_eq!(strip_comments("%%3%%Normal priority"), "Normal priority");
+        assert_eq!(strip_comments("a %%x%% b %%y%%c"), "a  b c");
+        assert_eq!(strip_comments("a\n%%\nhid\nden\n%%\nb\n"), "a\n\n\n\n\nb\n");
+        assert_eq!(strip_comments("`%%k%%` %%x%%z"), "`%%k%%` z");
+        assert_eq!(strip_comments("```\n%%k%%\n```\n%%x%%y"), "```\n%%k%%\n```\ny");
+        assert_eq!(strip_comments("50%% off"), "50%% off");
+        assert_eq!(strip_comments("é%%ü%%ß"), "éß");
+        let h = render_with("## %%3%%Normal priority", &[], &[], true);
+        assert!(h.contains(">Normal priority</h2>") && !h.contains("%%"), "{h}");
+        // live preview blocks are source-faithful: untouched
+        assert!(render_with("%%3%%x", &[], &[], false).contains("%%3%%x"));
+        // task checkbox line numbers survive a multi-line comment above
+        let t = render_with("%%\na\n%%\n- [ ] t\n", &[], &[], true);
+        assert!(t.contains("data-line=\"3\""), "{t}");
     }
 
     /// goal/linebreak REQ-3..16: a soft break is a `<br>` in the non-strict

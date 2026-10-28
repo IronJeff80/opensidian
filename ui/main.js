@@ -4895,6 +4895,7 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
   try {
   tab.mode = mode;
   hideAc();
+  if (typeof Ed.closeSuggest === "function") Ed.closeSuggest();   // FZ-E30.2: a plugin suggest does not outlive the edit mode
   applyMode(g, leave);
   mswpMark("apply");
   if (tab.mode === "reading") await preview(g, true);
