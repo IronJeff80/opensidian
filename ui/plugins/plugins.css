@@ -17,6 +17,8 @@
 .os-plugin-modal.modal-container { position: fixed; inset: 0; z-index: 70; display: flex;
   align-items: flex-start; justify-content: center; padding-top: 12vh }
 .os-plugin-modal .modal-bg { position: absolute; inset: 0; background: var(--scrim) }
+/* Modal.setDimBackground(false): the backdrop stays (it takes the outside click) but is see-through, as stock */
+.os-plugin-modal:not(.mod-dim) .modal-bg { background: transparent }
 .os-plugin-modal .modal { position: relative; min-width: 360px; max-width: min(640px, 92vw);
   max-height: 76vh; overflow: auto; padding: 18px 20px; background: var(--bg-elevated);
   color: var(--text-chrome); border: 1px solid var(--border); border-radius: 8px;

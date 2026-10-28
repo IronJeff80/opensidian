@@ -22,7 +22,7 @@
         this.app = app;
         this.scope = new Scope();
         this.shouldRestoreSelection = true;
-        this.containerEl = mk("div", { cls: "modal-container os-plugin-modal" });
+        this.containerEl = mk("div", { cls: "modal-container mod-dim os-plugin-modal" });
         this.bgEl = this.containerEl.createDiv({ cls: "modal-bg" });
         this.modalEl = this.containerEl.createDiv({ cls: "modal" });
         this.closeButtonEl = this.modalEl.createDiv({ cls: "modal-close-button", attr: { "aria-label": "Close" } });
@@ -76,6 +76,10 @@
       onClose() {}
       setTitle(t) { this.titleEl.textContent = t; return this; }
       setContent(c) { this.contentEl.textContent = ""; if (c instanceof Node) this.contentEl.appendChild(c); else this.contentEl.textContent = String(c); return this; }
+      /* plug-val3: stock Modal.setDimBackground(dim) toggles the backdrop dimming (container class mod-dim, on by default).
+         Excalidraw's FloatingModal (Frame Settings) calls it from its constructor, so without it the command threw a
+         TypeError and no modal opened (E19) */
+      setDimBackground(dim) { this.shouldDim = !!dim; this.containerEl.toggleClass("mod-dim", !!dim); return this; }
     }
 
     /* ---------------------------------------------- SuggestModal / Fuzzy */
