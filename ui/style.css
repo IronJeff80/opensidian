@@ -1476,9 +1476,11 @@ body { display: flex; font: 14px/1.5 var(--font-interface);
 /* R15.11 task list: custom 16px box r4 1px faint border, accent fill + masked tick; no bullet; done = strike + muted */
 .lp li:has(> input[type=checkbox])::before, .preview li:has(> input[type=checkbox])::before { display: none }
 .lp li:has(> input[type=checkbox]), .preview li:has(> input[type=checkbox]) { list-style: none }
-.lp li:has(> input[type=checkbox]:checked),
 /* rvtask Q5: Obsidian strikes only "[x]"/"[X]" in a BULLET list — a custom status ("[/]" "[-]" …)
-   and an ORDERED-list task are filled but not struck. data-task comes from the renderer. */
+   and an ORDERED-list task are filled but not struck. data-task comes from the renderer.
+   deep-tasks: the same rule in Live Preview — a rendered list in a widget (Obsidian Tasks query block)
+   by its data-task, and an editor task line by its row class tkx (editor.js, bullet "[x]" only) */
+.lp ul > li:is([data-task="x"], [data-task="X"]), .lp .tkx,
 .preview ul > li:is([data-task="x"], [data-task="X"]) {
   text-decoration: var(--checklist-done-decoration); color: var(--checklist-done-color) }
 .lp input[type=checkbox], .preview input[type=checkbox] { -webkit-appearance: none; appearance: none; border-radius: var(--checkbox-radius);

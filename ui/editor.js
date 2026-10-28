@@ -131,9 +131,12 @@ const Ed = {
       row.appendChild(li1);
       row.classList.add("li");
       if (/\d/.test(lm[1])) row.classList.add("ord");
-      const task = /^\[([ xX])\] /.exec(rest);
+      // deep-tasks: any one status character is a task (Obsidian Tasks "[/]" "[-]" ...); only a BULLET
+      // "[x]"/"[X]" line is struck as done (tkx), as the reading view does (rvtask Q5)
+      const task = /^\[([^\]\n])\] /.exec(rest);
       if (task) {
         row.classList.add("tk");
+        if (/[xX]/.test(task[1]) && !/\d/.test(lm[1])) row.classList.add("tkx");
         const cb = Ed.el("input", "tbox");
         cb.type = "checkbox"; cb.checked = task[1] !== " ";
         cb.contentEditable = "false";
@@ -2339,6 +2342,6 @@ Ed.toggleTask = function (e) {
   try { l = cm.state.doc.lineAt(cm.posAtDOM(box, 0)).number - 1; } catch (_) { return; }
   const L = Ed.lines(g);
   Ed.snap(g, "task");
-  L[l] = L[l].replace(/^(\s*(?:[-*+]|\d+\.) )\[( |[xX])\]/, (_, p, ch) => p + (ch === " " ? "[x]" : "[ ]"));
+  L[l] = L[l].replace(/^(\s*(?:[-*+]|\d+\.) )\[([^\]\n])\]/, (_, p, ch) => p + (ch === " " ? "[x]" : "[ ]"));
   Ed.commit(g);
 };
