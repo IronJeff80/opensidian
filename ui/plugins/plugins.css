@@ -62,6 +62,8 @@
 :where(#spage, .os-plugin-modal) .setting-item-description .mod-warning { color: var(--text-warning) }
 :where(#spage, .os-plugin-modal) .setting-item-control { flex: 0 0 auto; display: flex; align-items: center; gap: 8px }
 :where(#spage, .os-plugin-modal) .setting-item-heading .setting-item-name { font-weight: 600 }
+/* a SettingGroup heading (templater "Syntax highlighting", "User scripts", ...) is a section title above its rows, as in stock: larger and semibold */
+:where(#spage, .os-plugin-modal) .setting-group-heading-text { font-size: 16px; font-weight: 600; color: var(--text-chrome); padding-top: 12px }
 :where(#spage, .os-plugin-modal) .setting-item.is-disabled { opacity: .5; pointer-events: none }
 :where(#spage, .os-plugin-modal) .setting-item-control input[type=text], :where(#spage, .os-plugin-modal) .setting-item-control input[type=search],
 :where(#spage, .os-plugin-modal) .setting-item-control textarea, :where(#spage, .os-plugin-modal) .setting-item-control select.dropdown {
