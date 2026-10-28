@@ -41,6 +41,8 @@ mod spawner;
 mod desk_http;
 mod desk_net;
 mod desk_proc;
+#[cfg(feature = "devui")]
+mod devui; // goal devui: DEV-ONLY UI hot reload, never in a default/release build
 mod vaultlock;
 mod srcmode;
 mod themefs;
@@ -3530,15 +3532,19 @@ fn vfs_sync(h: &tauri::AppHandle, req: &tauri::http::Request<Vec<u8>>) -> PageRe
 /// the app window, from the config entry, with page_csp on its responses
 fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) -> tauri::Result<()> {
     let h = app.clone();
-    tauri::WebviewWindowBuilder::from_config(app, wc)?
-        .on_web_resource_request(move |req, res| {
-            if req.uri().path() == VFS_SYNC_PATH {
-                *res = vfs_sync(&h, &req);
-            } else {
-                page_csp(&h, res)
-            }
-        })
-        .build()?;
+    let b = tauri::WebviewWindowBuilder::from_config(app, wc)?;
+    #[cfg(feature = "devui")]
+    let b = if devui::root().is_some() { b.initialization_script(devui::INIT_JS) } else { b };
+    b.on_web_resource_request(move |req, res| {
+        if req.uri().path() == VFS_SYNC_PATH {
+            *res = vfs_sync(&h, &req);
+        } else {
+            #[cfg(feature = "devui")]
+            devui::serve(req.uri().path(), res);
+            page_csp(&h, res)
+        }
+    })
+    .build()?;
     Ok(())
 }
 
@@ -6112,6 +6118,8 @@ fn main() {
                 page_window(app.handle(), wc)?;
             }
             spawn_watcher(app.handle().clone());
+            #[cfg(feature = "devui")]
+            devui::start(app.handle().clone()); // goal devui: no-op without OPENSIDIAN_DEV_UI
             install_term(app.handle().clone()); // tab-dataloss: SIGTERM flushes, bounded
             // item 14: a switch-started window whose UI never calls switch_ready
             // is still shown (and frees the old window) after SWITCH_FALLBACK
@@ -7090,6 +7098,19 @@ mod tests {
         assert!(h.contains(r#"class="wiki" data-note="Ideas""#));
         assert!(h.contains(r#"class="wiki" data-note="Nested""#)); // basename resolve
         assert!(h.contains(r#"class="wiki wiki-unresolved" data-note="Nope""#));
+    }
+
+    #[test]
+    fn render_resolves_md_suffixed_link() {
+        // plug-top5: dataview renders its file links as [[Projects/Alpha.md|Alpha]]; Obsidian resolves
+        // a target written with its .md extension to that note
+        let notes = vec!["Projects/Alpha".to_string()];
+        let h = render_md("[[Projects/Alpha.md|Alpha]] [[Alpha.md]] [[Nope.md]] [[.md]]", &notes);
+        assert!(h.contains(r#"class="wiki" data-note="Projects/Alpha.md""#), "{h}");
+        assert!(h.contains(r#"class="wiki" data-note="Alpha.md""#), "{h}");
+        assert!(h.contains(r#"class="wiki wiki-unresolved" data-note="Nope.md""#), "{h}");
+        assert_eq!(index::resolve(&notes, "Projects/Alpha.md"), Some(0));
+        assert_eq!(index::resolve(&notes, ".md"), None);
     }
 
     #[test]
@@ -11218,5 +11239,46 @@ mod vaultbleed_tests {
         assert_eq!(fs::read_to_string(a.join("onlyA-note.md")).unwrap(), "typed in A #onlyA\n");
         assert!(!b.join("onlyA-note.md").exists(), "write_note wrote A's note into B on disk");
         let _ = (fs::remove_dir_all(&a), fs::remove_dir_all(&b));
+    }
+}
+
+/// goal devui — the release guard's in-tree half: the dev-only UI hot reload can
+/// never ride along in a default (= release) build.
+#[cfg(test)]
+mod devui_guard {
+    const CARGO_TOML: &str = include_str!("../Cargo.toml");
+    const MAIN_RS: &str = include_str!("main.rs");
+
+    /// `devui` is declared, and `[features] default` does not name it
+    #[test]
+    fn devui_guard_not_a_default_feature() {
+        let feats = CARGO_TOML.split("\n[features]\n").nth(1).expect("[features] table").split("\n[").next().unwrap();
+        let def = feats.lines().find(|l| l.trim_start().starts_with("default")).expect("default = [...]");
+        assert!(!def.contains("devui"), "devui must not be a default feature: {def}");
+        assert!(feats.lines().any(|l| l.trim() == "devui = []"), "devui feature declared without deps");
+    }
+
+    /// every main.rs line that reaches the devui module sits directly under a
+    /// `#[cfg(feature = "devui")]`, so without the feature there is no code path into it
+    #[test]
+    fn devui_guard_every_call_site_is_gated() {
+        let (gate, path, decl) = ("#[cfg(feature = \"devui\")]", concat!("devui", "::"), concat!("mod ", "devui;"));
+        let lines: Vec<&str> = MAIN_RS.lines().collect();
+        let mut n = 0;
+        for (i, l) in lines.iter().enumerate() {
+            let code = l.split("//").next().unwrap();
+            if code.contains(path) || code.trim() == decl {
+                n += 1;
+                assert!(i > 0 && lines[i - 1].trim() == gate, "main.rs:{} reaches devui ungated: {l}", i + 1);
+            }
+        }
+        assert_eq!(n, 4, "devui call sites (mod, init script, serve, start)");
+    }
+
+    /// the default build: no devui code path
+    #[cfg(not(feature = "devui"))]
+    #[test]
+    fn devui_guard_default_build_has_no_devui() {
+        assert!(!cfg!(feature = "devui"));
     }
 }

@@ -22,7 +22,7 @@
         this.app = app;
         this.scope = new Scope();
         this.shouldRestoreSelection = true;
-        this.containerEl = mk("div", { cls: "modal-container os-plugin-modal" });
+        this.containerEl = mk("div", { cls: "modal-container mod-dim os-plugin-modal" });
         this.bgEl = this.containerEl.createDiv({ cls: "modal-bg" });
         this.modalEl = this.containerEl.createDiv({ cls: "modal" });
         this.closeButtonEl = this.modalEl.createDiv({ cls: "modal-close-button", attr: { "aria-label": "Close" } });
@@ -45,6 +45,14 @@
         document.body.appendChild(this.containerEl);
         openModals.push(this); scopes.push(this.scope);
         try { this.onOpen(); } catch (e) { console.error("[plugin] Modal.onOpen:", e); }
+        /* plug-val: stock moves focus into a freshly opened modal: when onOpen focused nothing inside it, the first
+           button / field takes focus, so Return answers obsidian-git's Discard modal (stock-F23-a.png: focus ring
+           on "Discard all 8 files"); before, the keys went to the editor behind the modal */
+        if (!this.modalEl.contains(document.activeElement)) try {
+          const f = this.contentEl.querySelector("button, input:not([type=hidden]), textarea, select, [tabindex]:not([tabindex='-1'])")
+            || this.modalEl.querySelector(".modal-button-container button");
+          if (f) f.focus();
+        } catch (_) {}
         touch();
       }
       close() {
@@ -55,13 +63,23 @@
         const j = scopes.lastIndexOf(this.scope); if (j >= 0) scopes.splice(j, 1);
         try { this.onClose(); } catch (e) { console.error("[plugin] Modal.onClose:", e); }
         if (this._closeCb) try { this._closeCb(); } catch (e) { console.error("[plugin] Modal close callback:", e); }
-        if (this.shouldRestoreSelection && this._prevFocus && this._prevFocus.focus) try { this._prevFocus.focus(); } catch (_) {}
+        /* an editor that had focus gets it back through its EditorView: a bare DOM focus() makes CM6
+           read the browser's caret (the first text node, e.g. after LP's hidden "# ") as the new
+           selection, so Templater's insert landed at 0:2 instead of the caret it was opened at */
+        if (this.shouldRestoreSelection && this._prevFocus && this._prevFocus.focus) try {
+          const EV = (window.__osModules || {})["@codemirror/view"], ev = EV && EV.EditorView.findFromDOM(this._prevFocus);
+          if (ev && this._prevFocus.isConnected) ev.focus(); else this._prevFocus.focus();
+        } catch (_) {}
         touch();
       }
       onOpen() {}
       onClose() {}
       setTitle(t) { this.titleEl.textContent = t; return this; }
       setContent(c) { this.contentEl.textContent = ""; if (c instanceof Node) this.contentEl.appendChild(c); else this.contentEl.textContent = String(c); return this; }
+      /* plug-val3: stock Modal.setDimBackground(dim) toggles the backdrop dimming (container class mod-dim, on by default).
+         Excalidraw's FloatingModal (Frame Settings) calls it from its constructor, so without it the command threw a
+         TypeError and no modal opened (E19) */
+      setDimBackground(dim) { this.shouldDim = !!dim; this.containerEl.toggleClass("mod-dim", !!dim); return this; }
     }
 
     /* ---------------------------------------------- SuggestModal / Fuzzy */
@@ -205,14 +223,22 @@
       onChange(cb) { this._cb = cb; return this; }
     }
     class SliderComponent extends ValueComponent {
-      constructor(containerEl) { super(); installDom(); this.sliderEl = containerEl.createEl("input", { cls: "slider", attr: { type: "range" } }); this._cb = null; this.sliderEl.addEventListener("input", () => { if (this._cb) this._cb(this.getValue()); }); }
+      constructor(containerEl) {
+        super(); installDom();
+        /* the current value is printed before the slider, as stock does (setDisplayFormat formats it) */
+        this.valueEl = containerEl.createEl("span", { cls: "slider-value" });
+        this.sliderEl = containerEl.createEl("input", { cls: "slider", attr: { type: "range" } }); this._cb = null;
+        this.sliderEl.addEventListener("input", () => { this._show(); if (this._cb) this._cb(this.getValue()); });
+        this._show();
+      }
+      _show() { if (this.valueEl) this.valueEl.textContent = this.getValuePretty(); }
       setDisabled(d) { super.setDisabled(d); this.sliderEl.disabled = !!d; return this; }
-      setLimits(min, max, step) { if (min != null) this.sliderEl.min = min; if (max != null) this.sliderEl.max = max; this.sliderEl.step = step === "any" || step == null ? "any" : step; return this; }
+      setLimits(min, max, step) { if (min != null) this.sliderEl.min = min; if (max != null) this.sliderEl.max = max; this.sliderEl.step = step === "any" || step == null ? "any" : step; this._show(); return this; }
       getValue() { return +this.sliderEl.value; }
-      setValue(v) { this.sliderEl.value = v; return this; }
+      setValue(v) { this.sliderEl.value = v; this._show(); return this; }
       getValuePretty() { const v = this.getValue(); if (this._fmt) { try { return String(this._fmt(v)); } catch (e) { console.error("[plugin] slider display format:", e); } } return String(v); }
       /* api-settings: a custom formatter for the value shown next to the slider */
-      setDisplayFormat(f) { this._fmt = typeof f === "function" ? f : null; return this; }
+      setDisplayFormat(f) { this._fmt = typeof f === "function" ? f : null; this._show(); return this; }
       setDynamicTooltip() { return this; }
       showTooltip() {}
       setInstant() { return this; }
@@ -331,6 +357,8 @@
       setClass(c) { this.settingEl.addClass(c); return this; }
       setTooltip(t) { this.nameEl.title = t; return this; }
       setHeading() { this.settingEl.addClass("setting-item-heading"); return this; }
+      /* setVisibility(v): a false hides the whole row (excalidraw export dialog: "selected elements only" without a selection) */
+      setVisibility(v) { this.settingEl.style.display = v ? "" : "none"; return this; }
       /* setNavigable(cb): the row reads as a link to somewhere else — a chevron is the first control and a
          click anywhere on the row calls cb() with no arguments and this = the Setting; a second call
          replaces cb (stock 1.13.7, scratch oracle goal cp-settings-tab) */
@@ -440,12 +468,11 @@
           });
           break;
         case "slider": {
-          const lab = s.controlEl.createSpan({ cls: "setting-slider-value" });
           s.addSlider(x => {
             x.setLimits(c.min, c.max, c.step);
             if (typeof v0 === "number") x.setValue(v0);
             if (c.displayFormat) x.setDisplayFormat(c.displayFormat);
-            const show = () => { const p = x.getValuePretty(); lab.textContent = p; lab.hidden = p === ""; };
+            const show = () => { const p = x.getValuePretty(); x.valueEl.textContent = p; x.valueEl.hidden = p === ""; };
             show(); x.onChange(v => { show(); commit(v); });
           });
           break;
@@ -461,7 +488,13 @@
       if (!def || typeof def !== "object") return null;
       const s = new Setting(g.listEl);
       if (def.name != null) s.setName(def.name);
-      if (def.desc != null) s.setDesc(def.desc);
+      /* a DocumentFragment desc empties itself into the first render; keep its nodes so a re-render (back from a
+         sub-page, sdRender) moves the same nodes, listeners included, into the new row (templater documentation links) */
+      if (def.desc instanceof DocumentFragment) {
+        if (!def._descNodes || def.desc.childNodes.length) def._descNodes = Array.from(def.desc.childNodes);
+        const f = document.createDocumentFragment(); for (const n of def._descNodes) f.appendChild(n);
+        s.setDesc(f);
+      } else if (def.desc != null) s.setDesc(def.desc);
       const node = { el: s.settingEl, setting: s, def, visible: def.visible, disabled: def.control ? def.control.disabled : def.disabled };
       d.nodes.push(node);
       if (def.type === "page") {
@@ -554,7 +587,7 @@
         }
         if (!p.title) p.title = top.name == null ? "" : String(top.name);
         const back = new ExtraButtonComponent(p.titlebarEl);
-        back.setIcon("arrow-left").setTooltip("Back").onClick(() => { stack.pop(); sdRender(tab); });
+        back.setIcon("chevron-left").setTooltip("Back").onClick(() => { stack.pop(); sdRender(tab); });
         p.titlebarEl.prepend(back.extraSettingsEl);
         d.page = p;
         tab.containerEl.appendChild(p.rootEl);
@@ -565,6 +598,10 @@
     }
     function sdOpenPage(tab, def) { (tab._pages || (tab._pages = [])).push(def); sdRender(tab); }
 
+    /* a tab with setting definitions is rendered from them, as stock 1.13.7 does: its own display() is the
+       legacy fallback and is not called (excalidraw overrides display() with its single-page settings and
+       hands 1.13+ its multi-page definitions); a tab with none runs display() */
+    const sdShow = tab => (tab.settingItems && tab.settingItems.length ? sdRender(tab) : tab.display());
     class SettingTab {
       constructor() {
         installDom();
@@ -585,7 +622,7 @@
         try { defs = this.getSettingDefinitions(); } catch (e) { console.error("[plugin] getSettingDefinitions:", e); defs = []; }
         this.settingItems = Array.isArray(defs) ? defs : [];
         const d = this._dom;   // a tab whose rendering is on screen re-renders
-        if (d && this.containerEl.isConnected && (d.page ? this.containerEl.contains(d.page.rootEl) : d.nodes.some(n => this.containerEl.contains(n.el)))) { this._pages = []; this.display(); }
+        if (d && this.containerEl.isConnected && (d.page ? this.containerEl.contains(d.page.rootEl) : d.nodes.some(n => this.containerEl.contains(n.el)))) { this._pages = []; sdShow(this); }
       }
       getControlValue(key) { const v = this.app && this.app.vault; return v && typeof v.getConfig === "function" ? v.getConfig(key) : undefined; }
       setControlValue(key, value) {
@@ -866,7 +903,8 @@
         setting.activeTab = t;
         setting.lastTabId = t.id;
         const s = ui(); if (s) s.mount(t);
-        t.display();
+        // a tab with setting definitions renders from them (SettingTab.display), not through its own display() override
+        if (t.settingItems && t.settingItems.length && K.SettingTab) K.SettingTab.prototype.display.call(t); else t.display();
       },
       openTabById(id) {
         const t = byId(id);

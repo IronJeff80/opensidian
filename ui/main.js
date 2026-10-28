@@ -4783,7 +4783,8 @@ function applyMode(g, keep) {  // exactly ONE of lp / preview fills the pane
   const m = g.active >= 0 ? g.tabs[g.active].mode : "livepreview";
   g.editor.style.display = "none";          // R12: the model textarea never shows; source = lp + reveal
   g.lp.style.display = isLp(m) ? "" : "none";
-  if (m !== "reading") g.lp.classList.toggle("src", m === "source");   // opt10b: reading keeps the lp sub-mode class — flipping .lp.src restyled + relaid the kept 30k lp both ways
+  if (m !== "reading") { const was = g.lp.classList.contains("src"); g.lp.classList.toggle("src", m === "source");   // opt10b: reading keeps the lp sub-mode class — flipping .lp.src restyled + relaid the kept 30k lp both ways
+    if (was !== (m === "source") && Ed.cbHook && Ed.cbFx && Ed.cm(g)) Ed.cm(g).dispatch({ effects: Ed.cbFx.of(null) }); }   // plug-top5: plugin code blocks render in lp only
   g.preview.style.display = m === "reading" ? "" : "none";
   // modeswitch opt6: the view the edit <-> reading switch LEAVES (setMode passes
   // it as `keep`) stays laid out instead of display:none — hidden, out of flow,
@@ -4921,7 +4922,7 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
         const [al, ac] = clampLC(wa);
         if (al !== l || ac !== c) { Ed.place(g, al, ac); Ed.extendTo(g, l, c); }
       }
-    } else if (tab.mode === "livepreview") await lpRender(g, -1, 0, full);
+    } else if (tab.mode === "livepreview") await lpRender(g, 0, 0, full);   // plug-top5: stock reading -> edit (nothing remembered) = caret 0:0, focused
     else await lpRender(g, L.length - 1, L[L.length - 1].length, full);
   }
   mswpMark("lp");
@@ -5773,7 +5774,13 @@ async function loadActive(g) {
     v.name = n;
     if (t) { t.base = g.editor.value; t.stale = false; v.loaded = true; }  // R11: disk base
     if (m === "reading") await preview(g);
-    else if (isLp(m)) await lpRender(g, -1, 0, true);
+    else if (isLp(m)) {
+      await lpRender(g, -1, 0, true);
+      // plug-top5: a freshly opened note has its caret at the top, focused when it is the focused pane
+      // (stock 1.13.7: open from the file tree, then type = text lands at 0:0). Plugins that only
+      // redraw on a selection change (dataview inline queries in Live Preview) see that change.
+      if (n && Ed.cm(g)) Ed.place(g, 0, 0, g === fg());
+    }
   } else if (v.scrollTop) g.lp.scrollTop = v.scrollTop;
   renderTabs(g);
   treeHighlight();
@@ -6810,7 +6817,7 @@ async function wikiClick(e, a) {
   e.preventDefault(); e.stopPropagation();
   const g = gOf(a);
   if (!g) return;
-  const n = a.dataset.note || curOf(g), an = a.dataset.anchor;   // R10: [[#H]] = this note
+  const n = wikiTarget(a) || curOf(g), an = a.dataset.anchor;   // R10: [[#H]] = this note
   if (await cvLinkOpen(n, an)) return;      // cvf-links CVR-A-096: [[X.canvas]] opens the canvas, never makes X.canvas.md
   if (a.classList.contains("wiki-unresolved")) await createNote(n);
   if (e.ctrlKey) {                            // R6.4: new tab, same group
@@ -6903,26 +6910,20 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   mswpMark("blines");
   for (const a of g.preview.querySelectorAll("a.tag"))
     a.onclick = e => { e.preventDefault(); tagSearch(a.dataset.tag); };
-  for (const a of g.preview.querySelectorAll("a.wiki"))
-    a.onclick = async e => {
-      e.preventDefault();
-      const g = gOf(a);                              // R20: event-time group (retained views move)
-      const n = a.dataset.note || curOf(g), an = a.dataset.anchor;  // R10: [[#H]] = this note
-      if (await cvLinkOpen(n, an)) return;          // cvf-links CVR-A-096: [[X.canvas]] opens the canvas
-      if (a.classList.contains("wiki-unresolved"))   // R3.5: click creates the note
-        await createNote(n);
-      if (e.ctrlKey) {                               // R6.4: open in NEW TAB, same group
-        await flushSave(g);
-        g.tabs.push(mkTab(n));
-        g.active = g.tabs.length - 1;
-        await loadActive(g);
-        if (an) await navAnchor(g, an);
-      } else navigate(g, n, an);
-    };
+  for (const a of g.preview.querySelectorAll("a.wiki")) a.onclick = e => pvWikiClick(a, e);
+  // plug-top5: links a plugin renders AFTER this wiring (code-block processors: dataview's file links)
+  // follow too — one delegated listener per preview element, only for links nobody wired
+  if (!P._pvWiki) {
+    P._pvWiki = true;
+    P.addEventListener("click", e => {
+      const a = e.target && e.target.closest && e.target.closest("a.wiki, a.internal-link");
+      if (a && !a.onclick && P.contains(a)) pvWikiClick(a, e);
+    });
+  }
   // plugin-views item 7: plugin code-block / post processors over the fresh html. Before the
   // observer is armed, so their synchronous output is part of the retained DOM; async writes
   // later mark it dirty (the next switch re-renders). Not awaited: a slow plugin never holds the switch.
-  if (PPOST) try { PPOST.run(P, curOf(g), g.active >= 0 ? g.tabs[g.active] : null).catch(e => console.error("[plugin] markdown processors:", e)); } catch (e) { console.error(e); }
+  if (PPOST) try { PPOST.run(P, curOf(g), g.active >= 0 ? g.tabs[g.active] : null, src, pvL).catch(e => console.error("[plugin] markdown processors:", e)); } catch (e) { console.error(e); }
   // modeswitch opt2: arm the retained-DOM key. Our own innerHTML above is the
   // last write: drop its records synchronously, from here on any record = dirty.
   if (!P._pvObs) {
@@ -6933,6 +6934,25 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
   if (g.preview === P && g.editor.value === src)
     P._pvk = { src, notes: notesCache, imgs: imgsCache, slb: slbOn, lines: pvL, pp: PPOST ? PPOST.gen : 0 };
   mswpMark("wire");
+}
+
+// a wiki link click in the reading view, also for links a plugin rendered into it. plug-top5: a target
+// written with its .md extension ([[Projects/Beta.md]], dataview's file links) is that note
+function wikiTarget(a) { const n = a.dataset.note || a.dataset.href || ""; return /[^/]\.md$/.test(n) ? n.slice(0, -3) : n; }
+async function pvWikiClick(a, e) {
+  e.preventDefault();
+  const g = gOf(a) || fg();                      // R20: event-time group (retained views move)
+  const n = wikiTarget(a) || curOf(g), an = a.dataset.anchor;  // R10: [[#H]] = this note
+  if (await cvLinkOpen(n, an)) return;          // cvf-links CVR-A-096: [[X.canvas]] opens the canvas
+  if (a.classList.contains("wiki-unresolved"))   // R3.5: click creates the note
+    await createNote(n);
+  if (e.ctrlKey) {                               // R6.4: open in NEW TAB, same group
+    await flushSave(g);
+    g.tabs.push(mkTab(n));
+    g.active = g.tabs.length - 1;
+    await loadActive(g);
+    if (an) await navAnchor(g, an);
+  } else navigate(g, n, an);
 }
 
 function scheduleSave(g) {
@@ -7316,7 +7336,8 @@ function mdFilter() {
   mdItems = mdSrc().map((it, i) => [fuzzy(q, it.label), i, it])
     .filter(([s]) => s >= 0)
     .sort((a, b) => a[0] - b[0] || a[1] - b[1])  // ties keep source (MRU) order
-    .slice(0, 10).map(([, , it]) => it);
+    .slice(0, modalKind === "cp" ? Infinity : 10)   // plug-val: stock lists EVERY matching command (scrolls); the switcher keeps 10
+    .map(([, , it]) => it);
   mdSel = 0;
   renderModal();
 }
@@ -7432,6 +7453,7 @@ function renderModal() {
     d.append(l, h);
     d.onmousedown = async e => { e.preventDefault(); await mdRun(it, e); };
     box.appendChild(d);
+    if (i === mdSel) d.scrollIntoView({ block: "nearest" });   // arrowing past the visible rows scrolls the list
   });
   mdTitleSoon();   // C4: mdFilter() runs on every keystroke — republish [mdnew:]
 }
@@ -8228,6 +8250,7 @@ function folderMenu(e, f) {                 // right-click an explorer folder ro
   if (CV_FOLDERMENU_FULL) folderMenuFull(item, sep, f);
   else item("New canvas", () => cmdNewCanvas(f));
   m.dataset.mt = "folder:" + String(f).replace(/[|\]]/g, "");
+  if (PMENU && PMENU.folderMenu) PMENU.folderMenu(m, f);   // plug-val: workspace "file-menu" rows for the TFolder, after a rule
   placeMenu(m, e.clientX, e.clientY);
 }
 /* ---------- R14: command registry = the ONE source of truth for the palette
@@ -11705,6 +11728,11 @@ async function quitFlush(why) {
   inv("quit_ready", { dirty: lost.length }).catch(() => {});
 }
 TAURI.event.listen("app-quit", e => quitFlush(e.payload || "quit")).then(() => inv("quit_arm")).catch(() => {});
+/* plug-val G1: window.close() closes the app window as in stock (obsidian-git "commit-and-sync and
+   close" calls it). The webview's own close only blanks the page and leaves the window up, and the
+   page has no window-close permission (capabilities: core:default), so this takes the close
+   button's path (win_close): CloseRequested, then the quit flush above. */
+window.close = () => { inv("win_close").catch(e => console.error("[window.close]", e)); };
 
 $("vswitch").onclick = showPicker;
 /* settings-gear (#29): the gear beside the vault switcher opens Settings — the SAME path as the

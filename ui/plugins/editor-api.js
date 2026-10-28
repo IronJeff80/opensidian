@@ -311,7 +311,9 @@
       for (const g of ctx.groups()) { if (g.view && g.view.cm) out.add(g.view); for (const t of g.tabs || []) if (t.view && t.view.cm) out.add(t.view); }
       return [...out];
     }
-    const activeTabView = () => { const g = ctx.focused(); return g && g.active >= 0 && tabOf(g.view) ? g.view : null; };
+    // plug-val: the view must hold the ACTIVE tab: a graph tab (any non-note tab) in front of a note leaves g.view on the
+    // note, and stock then has no active editor (editor-only commands drop out of the palette)
+    const activeTabView = () => { const g = ctx.focused(); const t = g && g.active >= 0 ? tabOf(g.view) : null; return t && (!Array.isArray(g.tabs) || g.tabs[g.active] === t) ? g.view : null; };
 
     /* ------------------------------------------------- the info StateFields */
     const infoField = S.StateField.define({ create: () => null, update: v => v });
@@ -388,7 +390,11 @@
           return -1;
         } }],
       };
-      try { mdLangExt = new L.Language(L.defineLanguageFacet(), LM.markdownLanguage.parser.configure([code]), [], "markdown").extension; }
+      // Prec.highest: the language facet keeps its FIRST value, and Templater 2.25.0 registers a
+      // Prec.high StreamLanguage (its CM5 "templater" overlay; with no CM5 javascript mode here it
+      // is the null mode = a flat, nodeless tree) that would otherwise displace this tree for every
+      // plugin that reads it (plug-top5: dataview inline queries never rendered in Live Preview)
+      try { mdLangExt = S.Prec.highest(new L.Language(L.defineLanguageFacet(), LM.markdownLanguage.parser.configure([code]), [], "markdown").extension); }
       catch (e) { console.error("[plugin] markdown syntax tree:", e); mdLangExt = []; }
       return mdLangExt;
     }
@@ -698,18 +704,39 @@
        registers one, so a vault without such plugins pays nothing; gen bumps on
        every (un)register so the reading view's retained DOM is re-rendered. */
     const MDP = { post: [], code: new Map(), gen: 0, used: false };
-    function mdpChanged() { MDP.gen++; MDP.used = true; try { PPOST = (MDP.post.length || MDP.code.size || embPluginExts()) ? PP : null; } catch (_) {} touch(); }
+    function mdpChanged() { MDP.gen++; MDP.used = true; try { PPOST = (MDP.post.length || MDP.code.size || embPluginExts()) ? PP : null; } catch (_) {} cbHookSet(); touch(); }
+    // plug-top5: the Live Preview side of the code-block processors (editor.js Ed.cbField): a fence
+    // of a registered language renders as one block widget; each widget owns its render's children
+    let cbT = 0;
+    function cbHookSet() {
+      try {
+        if (typeof Ed === "undefined" || !Ed) return;
+        if (!Ed.cbHook) Ed.cbHook = {
+          any: () => MDP.code.size > 0,
+          has: lang => MDP.code.has(lang),
+          gen: () => MDP.gen,
+          render(lang, src, el, sourcePath) {
+            const p = MDP.code.get(lang);
+            if (!p) return null;
+            const h = new Component(); h.load();
+            runCode(lang, p, src, el, mdCtx(sourcePath, h));
+            return () => h.unload();
+          },
+        };
+        if (Ed.cbRefresh) { clearTimeout(cbT); cbT = setTimeout(() => { try { Ed.cbRefresh(); } catch (e) { console.error(e); } }, 0); }   // a plugin registers several in a row: one rebuild
+      } catch (e) { console.error(e); }
+    }
     // main.js tabGone: a closed tab unloads its reading embed children, even once no processor or plugin
     // embed is left (PPOST null by then). Armed by embHolder, the only maker of tab-owned children:
     // this part runs from api.js before main.js has declared PTABGONE, so it cannot be set here.
     const armTabGone = () => { try { if (PTABGONE !== embRelease) PTABGONE = embRelease; } catch (_) {} };
     const pathOf = n => (n ? n + ".md" : "");   // the app names notes without ".md"
-    function mdCtx(sourcePath, holder) {
+    function mdCtx(sourcePath, holder, sec) {
       let fm; try { const c = K.metadataCache.getCache(sourcePath); fm = c ? c.frontmatter : undefined; } catch (_) {}
       return {
         docId: sourcePath, sourcePath, frontmatter: fm,
         addChild: ch => { holder.addChild(ch); return ch; },
-        getSectionInfo: () => null,
+        getSectionInfo: el => (sec ? sec(el) : null),
       };
     }
     function runCode(lang, p, src, el, ctx) {
@@ -817,11 +844,11 @@
        (oracle: stock 1.13.7 hands them the element passed to render, not one call per block);
        the reading view (PP.run) hands them every top-level block. `nodes` limits the code
        block scan to what this render added. */
-    async function mdProcess(root, sourcePath, holder, whole, nodes, embHold) {
+    async function mdProcess(root, sourcePath, holder, whole, nodes, embHold, sec) {
       const pend = embedPass(nodes || [root], sourcePath, embHold || holder, whole ? true : undefined);
       if (pend.length) await Promise.all(pend);
       if (!MDP.code.size && !MDP.post.length) return;
-      const ctx = mdCtx(sourcePath, holder);
+      const ctx = mdCtx(sourcePath, holder, sec);
       if (MDP.code.size) for (const f of fences(nodes || root, null)) { const p = MDP.code.get(f.lang); if (p) codeBlock(f, p, ctx); }
       if (!MDP.post.length) return;
       const posts = MDP.post.slice().sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
@@ -849,12 +876,38 @@
       e.prev = e.cur; e.cur = new Component(); e.cur.load();
       return e.cur;
     }
-    const PP = {   // main.js preview(): PPOST.run(pane, note, tab) after the reading html is in
+    /* plug-top5: ctx.getSectionInfo(el) in the reading view = {text, lineStart, lineEnd} of the top-level
+       block el is (or sits in): text = the whole note source, lines 0-based, lineEnd = the block's last
+       non-blank line. From the renderer's own block -> 1-based start line map (main.js preview: pvLines,
+       one entry per top-level element), taken when the html went in, so a block a plugin inserts or
+       replaces later does not shift the others (a replaced block falls back to its position while the
+       pane still has one element per entry). Obsidian Tasks reads it to locate the tasks it re-renders
+       in the reading view (its checkbox then writes the done date into that source line). */
+    function secMap(P, src, lines) {
+      if (typeof src !== "string" || !Array.isArray(lines) || !P || P.children.length !== lines.length) return null;
+      const L = src.split("\n"), at = new Map();
+      [...P.children].forEach((c, k) => at.set(c, k));
+      const span = k => {
+        const s = lines[k] - 1;
+        let e = (k + 1 < lines.length ? lines[k + 1] - 1 : L.length) - 1;
+        while (e > s && !/\S/.test(L[e] || "")) e--;
+        return { text: src, lineStart: s, lineEnd: e };
+      };
+      return el => {
+        let n = el;
+        while (n && n.parentElement && n.parentElement !== P) n = n.parentElement;
+        if (!n || n.parentElement !== P) return null;
+        let k = at.get(n);
+        if (k === undefined && P.children.length === lines.length) k = [...P.children].indexOf(n);
+        return k === undefined || k < 0 ? null : span(k);
+      };
+    }
+    const PP = {   // main.js preview(): PPOST.run(pane, note, tab, src, lines) after the reading html is in
       get gen() { return MDP.gen; },
-      run(P, note, tab) {
+      run(P, note, tab, src, lines) {
         if (P._ppHold) try { P._ppHold.unload(); } catch (e) { console.error(e); }
         const h = P._ppHold = new Component(); h.load();
-        return mdProcess(P, pathOf(note), h, false, null, embPluginExts() ? embHolder(tab, note) : null);
+        return mdProcess(P, pathOf(note), h, false, null, embPluginExts() ? embHolder(tab, note) : null, secMap(P, src, lines));
       },
       release: embRelease,
     };
@@ -863,7 +916,7 @@
       if (!MDP.used) return "";
       const r = document.querySelectorAll(".preview [class^='block-language-'], .preview [class*=' block-language-']").length;
       if (!MDP.post.length && !MDP.code.size && !r) return "";
-      return " [pmd:p" + MDP.post.length + "|c" + [...MDP.code.keys()].join("+") + "|r" + r + "]";
+      return " [pmd:p" + MDP.post.length + "|c" + [...MDP.code.keys()].join("+") + "|r" + r + "]" + (typeof Ed !== "undefined" && Ed.cbCensus ? Ed.cbCensus() : "");
     }
     const prop = (C, name, def) => Object.defineProperty(C.prototype, name, {   // see protoField in the editor-api closure
       configurable: true, enumerable: false, get() { return typeof def === "function" ? def() : def; },
@@ -877,6 +930,10 @@
       static async render(app_, markdown, el, sourcePath, component) {
         const html = await K.inv("render", { content: String(markdown == null ? "" : markdown) });
         const t = document.createElement("div"); t.innerHTML = html;
+        // plug-val: only the blocks go in, not the newlines between them: stock hands back "happy" as ONE
+        // <p> child, and dataview unwraps a lone <p> (childNodes.length == 1) to render an inline field
+        // inside a Live Preview line; a trailing "\n" text node left the <p> block and broke the line
+        for (const n of [...t.childNodes]) if (n.nodeType === 3 && !/\S/.test(n.data)) n.remove();
         const added = [...t.childNodes];
         while (t.firstChild) el.appendChild(t.firstChild);
         await mdProcess(el, sourcePath || "", component instanceof Component ? component : new Component(), true, added);

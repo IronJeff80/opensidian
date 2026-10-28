@@ -17,6 +17,8 @@
 .os-plugin-modal.modal-container { position: fixed; inset: 0; z-index: 70; display: flex;
   align-items: flex-start; justify-content: center; padding-top: 12vh }
 .os-plugin-modal .modal-bg { position: absolute; inset: 0; background: var(--scrim) }
+/* Modal.setDimBackground(false): the backdrop stays (it takes the outside click) but is see-through, as stock */
+.os-plugin-modal:not(.mod-dim) .modal-bg { background: transparent }
 .os-plugin-modal .modal { position: relative; min-width: 360px; max-width: min(640px, 92vw);
   max-height: 76vh; overflow: auto; padding: 18px 20px; background: var(--bg-elevated);
   color: var(--text-chrome); border: 1px solid var(--border); border-radius: 8px;
@@ -27,6 +29,9 @@
 .os-plugin-modal .modal-title { font-weight: 600; font-size: 15px; margin: 0 24px 10px 0 }
 .os-plugin-modal .modal-title:empty { display: none }
 .os-plugin-modal .modal.prompt { padding: 0; width: 560px }
+/* plug-val: a plugin modal's button row sits right-aligned under the text, warning buttons filled (stock-F23-a.png) */
+.os-plugin-modal .modal-button-container { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 16px }
+.os-plugin-modal .modal-button-container button.mod-warning { background: var(--text-error); color: #fff; border-color: transparent }
 .os-plugin-modal .prompt-input { width: 100%; box-sizing: border-box; padding: 10px 14px; border: 0;
   border-bottom: 1px solid var(--border); background: var(--bg-elevated); color: var(--text-chrome); font-size: 14px; outline: none }
 .os-plugin-modal .prompt-results { max-height: 50vh; overflow: auto; padding: 4px 0 }
@@ -44,6 +49,12 @@
    (#spage) and plugin modals. :where() keeps the original specificity. */
 :where(#spage, .os-plugin-modal) .setting-item { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border) }
 :where(#spage, .os-plugin-modal) .setting-item:first-child { border-top: 0 }
+/* a declarative row/group whose visible() predicate is false carries [hidden] (api-ui.js sdApply); the display:flex
+   above outranks the UA [hidden] rule, so it would stay on screen (templater: Excluded folders with the trigger off) */
+:where(#spage, .os-plugin-modal) :is(.setting-item, .setting-group)[hidden] { display: none }
+/* a settings sub-page (api-ui.js SettingPage): back button and title on one line above the page content */
+:where(#spage) .setting-page-titlebar { display: flex; align-items: center; gap: 8px; padding: 4px 0 12px }
+:where(#spage) .setting-page-title { font-size: 15px; font-weight: 600; color: var(--text-chrome) }
 :where(#spage, .os-plugin-modal) .setting-item-info { flex: 1 1 auto; min-width: 0 }
 :where(#spage, .os-plugin-modal) .setting-item-name { font-size: 14px; color: var(--text-chrome) }
 :where(#spage, .os-plugin-modal) .setting-item-description { font-size: 12px; color: var(--text-chrome-muted); margin-top: 2px }
@@ -84,6 +95,10 @@ body.os-has-plugin-status #main .status { bottom: 30px }
 .os-plugin-menu .menu-item-icon svg { width: 14px; height: 14px; display: block }
 .os-plugin-menu .menu-item.is-label { cursor: default; color: var(--text-chrome-muted) }
 .os-plugin-menu .menu-item.mod-warning { color: var(--text-error) }
+/* plug-val E43: plugin rows a plugin adds INTO a core file/folder menu (menuHook) get the same icon + title row */
+.ctxmenu > .menu-item { display: flex; align-items: center; gap: 6px }
+.ctxmenu > .menu-item .menu-item-icon:empty { display: none }
+.ctxmenu > .menu-item .menu-item-icon svg { width: 14px; height: 14px; display: block }
 /* Settings > Community plugins (ui/plugins/settings.js): live toggles + the per-plugin gear */
 .sctl.toggle.live { cursor: pointer }
 .sctl.toggle.live:focus-visible { outline: 2px solid var(--border-focus-ring); outline-offset: 1px }
@@ -176,3 +191,39 @@ body.os-has-plugin-status #main .status { bottom: 30px }
 .sctl.cpgear svg.gi { width: 16px; height: 16px; display: block; pointer-events: none }
 .canvas-settings-check svg.gi, .cvsp-chk svg.gi { width: 12px; height: 12px; vertical-align: -2px; pointer-events: none }
 .cvsp-chk { margin-right: 6px }
+/* plug-top5: an icon setIcon/getIcon made has a size of its own (an unsized inline svg fills its
+   container: Obsidian Tasks' search-box filter icon is absolutely positioned and covered the pane).
+   Zero specificity, so every sized icon rule above still wins. */
+:where(svg.svg-icon) { width: var(--icon-size, 18px); height: var(--icon-size, 18px) }
+/* plug-top5: a link a plugin renders with Obsidian's class name and no href (Tasks' backlink to the
+   task's note) looks like the app's own note links; the preview's delegated click follows it */
+:where(.preview, .lp, .cm-editor) a.internal-link { color: var(--accent-blue); cursor: pointer; text-decoration: underline }
+/* plug-top5: the sidebar-pane vocabulary plugins build their own views from (obsidian-git's source
+   control view: a .nav-header with a .nav-buttons-container of .clickable-icon buttons over
+   .tree-item rows — name, then the row's own tools — that fold by .tree-item-children). Zero
+   specificity: a plugin's own stylesheet and every rule above still win. */
+:where(.os-pv) :where(.nav-header) { padding: 6px 8px 4px }
+:where(.os-pv) :where(.nav-buttons-container) { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 2px }
+:where(.os-pv) :where(.clickable-icon) { display: inline-flex; align-items: center; justify-content: center; padding: 4px 6px;
+  border: 0; border-radius: 4px; background: none; color: var(--text-muted); cursor: pointer }
+:where(.os-pv) :where(.clickable-icon:hover) { background: var(--background-modifier-hover); color: var(--text-normal) }
+:where(.os-pv) :where(.clickable-icon) > :where(svg) { width: 16px; height: 16px }
+:where(.os-pv) :where(.tree-item-self) { display: flex; align-items: center; gap: 4px; position: relative; min-height: 24px;
+  padding: 2px 6px 2px 24px; border-radius: 4px; color: var(--text-muted); font-size: 13px }
+:where(.os-pv) :where(.tree-item-self.is-clickable) { cursor: pointer }
+:where(.os-pv) :where(.tree-item-self:hover) { background: var(--background-modifier-hover); color: var(--text-normal) }
+:where(.os-pv) :where(.tree-item-inner) { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+:where(.os-pv) :where(.tree-item-icon, .collapse-icon) { position: absolute; left: 6px; display: inline-flex; color: var(--text-faint) }
+:where(.os-pv) :where(.tree-item-icon, .collapse-icon) :where(svg) { width: 12px; height: 12px; transition: transform .1s }
+:where(.os-pv) :where(.is-collapsed) > :where(.tree-item-self) :where(.collapse-icon svg) { transform: rotate(-90deg) }
+:where(.os-pv) :where(.tree-item-flair) { flex: 0 0 auto; color: var(--text-faint) }
+:where(.os-pv) :where(.tree-item-children) { padding-left: 12px }
+:where(.os-pv) :where(.tree-item-self) :where(.buttons) :where(.clickable-icon) { padding: 2px }
+:where(.os-pv) :where(.tree-item-self) :where(.clickable-icon) > :where(svg) { width: 14px; height: 14px }
+:where(.os-pv) :where(textarea, input[type="text"], input[type="search"]) { box-sizing: border-box; width: 100%; padding: 4px 8px; font: inherit; font-size: 13px;
+  border: 1px solid var(--background-modifier-border); border-radius: 4px; background: var(--background-primary); color: var(--text-normal); resize: vertical }
+/* plug-val: a plain <table> a plugin renders into a note (dataview's CALENDAR month grid) is ruled
+   like a table in the note: a 1px grid on every cell, header row included. :where() keeps this at
+   element specificity, so a plugin's own table styles (dataview's TABLE view) still win. */
+:where(.block-language-dataview, .block-language-dataviewjs) :where(table:not(.table-view-table)) :is(th, td) {
+  border: 1px solid var(--border) }

@@ -1497,6 +1497,41 @@
        is added — not even the rule — when no handler adds a row. "editor-menu"
        opens a menu of plugin rows only, and only once bridge.editor yields an
        Editor. */
+    /* plug-val E43: MenuItem.setSection(). Stock orders a file/folder menu by section
+       (open, action-primary, action, info, view, system, "", danger; a rule between two
+       sections) and a plugin row joins its section's group: excalidraw's "New drawing"
+       (action-primary) sits under New note..New base, git's rows (action) after Bookmark.
+       When every core row of the host menu has a known section, the menu is rebuilt in
+       section order; an unknown core row keeps the old append-after-a-rule layout. */
+    const SEC_RANK = ["title", "open", "action-primary", "action", "info", "view", "system", "", "danger"];
+    const CORE_SEC = {
+      "Open in new tab": "open", "Open to the right": "open", "Open in new window": "open",
+      "New note": "action-primary", "New folder": "action-primary", "New canvas": "action-primary", "New base": "action-primary",
+      "Make a copy": "action", "Move folder to...": "action", "Move file to...": "action", "Search in folder": "action",
+      "Bookmark": "action", "Bookmark...": "action", "Remove bookmark": "action", "Merge entire file with...": "action",
+      "Copy path": "info", "Show in system explorer": "system", "Open in default app": "system",
+      "Rename...": "danger", "Delete": "danger",
+    };
+    function sectionLayout(m, items, isSep) {
+      const core = [...m.children].filter(c => !c.classList.contains("sep"));
+      const secOf = c => { const t = (c.textContent || "").trim(); return Object.prototype.hasOwnProperty.call(CORE_SEC, t) ? CORE_SEC[t] : null; };
+      if (!core.length || core.some(c => secOf(c) === null)) return false;
+      const rows = core.map(c => ({ el: c, sec: secOf(c) }));
+      for (const x of items) if (x && !isSep(x)) rows.push({ el: x.dom, sec: String(x.section || "") });
+      const extra = [];   // plugin sections stock does not name: after "", before danger, first-seen order
+      for (const r of rows) if (!SEC_RANK.includes(r.sec) && !extra.includes(r.sec)) extra.push(r.sec);
+      const order = [...SEC_RANK.slice(0, -1), ...extra, "danger"];
+      const rank = s => order.indexOf(s);
+      rows.forEach((r, i) => { r.i = i; });
+      rows.sort((a, b) => rank(a.sec) - rank(b.sec) || a.i - b.i);
+      m.textContent = "";
+      let prev = null;
+      for (const r of rows) {
+        if (prev !== null && r.sec !== prev) { const s = document.createElement("div"); s.className = "sep"; m.appendChild(s); }
+        m.appendChild(r.el); prev = r.sec;
+      }
+      return true;
+    }
     function menuHook(name, m, args) {
       const a = workspace._ev.get(name);
       if (!a || !a.length) return 0;
@@ -1509,6 +1544,7 @@
       while (it.length && isSep(it[it.length - 1])) it.pop();
       const n = it.filter(x => x && !isSep(x)).length;
       if (!n) return 0;
+      if (sectionLayout(m, it, isSep)) return n;
       if (m.childElementCount) { const s = document.createElement("div"); s.className = "sep"; m.appendChild(s); }
       for (const x of it) {
         if (isSep(x)) { const s = document.createElement("div"); s.className = "sep"; m.appendChild(s); }
@@ -1520,6 +1556,11 @@
       fileMenu(m, name, source) {
         const f = files.get(name + ".md");
         return f instanceof TFile ? menuHook("file-menu", m, [f, source || "file-explorer-context-menu", null]) : 0;
+      },
+      /* an explorer FOLDER row: "file-menu" with its TFolder (templater "Create new note from template") */
+      folderMenu(m, path) {
+        const f = files.get(normalizePath(String(path || "")));
+        return f instanceof K.TFolder ? menuHook("file-menu", m, [f, "file-explorer-context-menu", null]) : 0;
       },
       editorMenu(e) {
         const x = bridge.editor ? bridge.editor() : null;
