@@ -94,7 +94,9 @@
       }
     };
     app.vault.on("delete", f => repaintUnder(f && f.path));
-    app.vault.on("rename", (f, old) => repaintUnder(typeof old === "string" ? old : ""));
+    // PR #33 review: a rename also repaints the cards at its destination, so a missing-file card naming that path
+    // turns into the file (the model has the new path when "rename" fires). No Create-button flow renames
+    app.vault.on("rename", (f, old) => { repaintUnder(typeof old === "string" ? old : ""); if (f && f.path !== old) repaintUnder(f.path); });
   }
 
   /* ------------------------------------------------ file cards */
