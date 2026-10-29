@@ -546,8 +546,10 @@
       if (typeof v === "boolean") return String(v);
       if (v instanceof Date) return v.toISOString();
       const s = String(v);
+      // PR #33 review: plain only when parseYaml reads it back as this string (plainScalar is the one rule for
+      // "1.", "1.e5", "0o17", "+.inf"); the regex keeps quoting the YAML 1.1 words and 1_000 other parsers read
       const plain = s !== "" && s === s.trim() && !/[\n\r\t]/.test(s) && !/^[-?:,\[\]{}#&*!|>'"%@`]/.test(s)
-        && !/: |:$| #/.test(s) && !/^(true|false|yes|no|on|off|null|~|[-+]?(\d[\d_]*)?\.?\d+([eE][-+]?\d+)?|0x[0-9a-f]+|\.(inf|nan))$/i.test(s);
+        && !/: |:$| #/.test(s) && typeof plainScalar(s) === "string" && !/^(true|false|yes|no|on|off|null|~|[-+]?(\d[\d_]*)?\.?\d+([eE][-+]?\d+)?|0x[0-9a-f]+|\.(inf|nan))$/i.test(s);
       return plain ? s : JSON.stringify(s);
     }
     const isMap = v => v !== null && typeof v === "object" && !Array.isArray(v) && !(v instanceof Date);
