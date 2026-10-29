@@ -3135,9 +3135,15 @@ fn block_lines_of(content: &str) -> Vec<u32> {
     out
 }
 
+/// the reading view's block map: from the text the reading render keeps, i.e. with its
+/// %%comments%% dropped (a comment-only paragraph renders no element, so it takes no slot)
+fn reading_block_lines(content: &str) -> Vec<u32> {
+    block_lines_of(&strip_comments(content))
+}
+
 #[tauri::command]
 fn block_lines(content: String) -> Vec<u32> {
-    span_timed!("block_lines", block_lines_of(&content))
+    span_timed!("block_lines", reading_block_lines(&content))
 }
 
 #[tauri::command]
@@ -3161,7 +3167,7 @@ fn render(v: State<Vault>, content: String, otel: Option<perf::Ctx>) -> String {
 fn render_view(v: State<Vault>, content: String, otel: Option<perf::Ctx>) -> (String, Vec<u32>) {
     let soft_br = !cur_vault(&v).is_some_and(|r| app_bool_in(&r, "strictLineBreaks"));
     let ix = v.index.lock().unwrap();
-    span_timed!(otel => "render_view", (render_with_br(&content, ix.names(), ix.images(), true, soft_br), block_lines_of(&content)), serde_json::json!({"bytes": content.len()}))
+    span_timed!(otel => "render_view", (render_with_br(&content, ix.names(), ix.images(), true, soft_br), reading_block_lines(&content)), serde_json::json!({"bytes": content.len()}))
 }
 
 /// pure core of render_blocks: every block rendered against the same note list
@@ -6549,6 +6555,10 @@ mod tests {
         // a line-1 start is line 1, not line 0 (1-based, like the fixture markers)
         assert_eq!(block_lines_of("only\n"), vec![1]);
         assert_eq!(block_lines_of(""), Vec::<u32>::new());
+        // the reading map skips a %%comment%% the reading render drops (both reading entrypoints use it)
+        assert_eq!(reading_block_lines("%%hidden%%\n# Visible\n"), vec![2]);
+        assert_eq!(reading_block_lines("a\n\n%%x\ny%%\n\nb\n"), vec![1, 6]);
+        assert!(!render_with("%%hidden%%\n# Visible\n", &[], &[], true).contains("<p>"));
     }
 
     #[test]
