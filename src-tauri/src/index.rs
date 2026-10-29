@@ -394,6 +394,12 @@ pub fn suffix_map(names: &[String]) -> HashMap<String, usize> {
     m
 }
 
+/// a link target written with the note's .md extension, without it ("Alpha.md" -> "Alpha"); None
+/// when there is no such suffix or nothing is left before it
+fn md_stem(l: &str) -> Option<&str> {
+    l.strip_suffix(".md").filter(|s| !s.is_empty() && !s.ends_with('/'))
+}
+
 /// wikilinks resolve by full relative path or basename (first sorted match);
 /// the raw token may carry #anchor / |alias — only the note part is matched
 pub fn resolve(notes: &[String], l: &str) -> Option<usize> {
@@ -404,8 +410,12 @@ pub fn resolve(notes: &[String], l: &str) -> Option<usize> {
     // one suffix alloc per call — it used to be one per note per link, so a
     // write_note on a 9KB note walked ~50k allocs (2ms debug); graph paid it
     // per edge too
-    let suffix = format!("/{l}");
-    notes.iter().position(|x| *x == l || x.ends_with(&suffix))
+    let hit = |l: &str| {
+        let suffix = format!("/{l}");
+        notes.iter().position(|x| *x == l || x.ends_with(&suffix))
+    };
+    // plug-top5: [[Alpha.md]] (dataview writes its file links that way) is the note Alpha
+    hit(l).or_else(|| md_stem(l).and_then(hit))
 }
 
 fn walk(dir: &Path, base: &Path, out: &mut Vec<String>, imgs: &mut Vec<String>) {
@@ -559,7 +569,6 @@ impl Index {
         ix
     }
 
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.notes.len()
     }
@@ -636,7 +645,7 @@ impl Index {
         if l.is_empty() {
             return None;
         }
-        self.res.get(l).copied()
+        self.res.get(l).copied().or_else(|| md_stem(l).and_then(|s| self.res.get(s).copied()))
     }
 
     /// R19: cached graph (built on first use after any edge change)

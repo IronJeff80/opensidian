@@ -247,6 +247,36 @@ pub fn reconcile(root: &Path, d: &Diff, ix: &mut Index) -> Change {
     c
 }
 
+/* ---------- GHOSTS: our own create, deleted from outside before a walk saw it ----------
+   create_note / write_note put a new note into the Index under the index lock.
+   If something outside removes it (an `rm -rf` of the folder the app just made)
+   BEFORE the next tick walks the vault, the file is in neither the previous
+   walk nor this one: diff() reports nothing, reconcile() never runs, and the
+   note lives on in the Index and in the UI's file model until a restart. The
+   UI then treats the file as present, e.g. a canvas card shows it as a note
+   card instead of the missing-file card (media CVR-B-063, flaky because it
+   depends on whether a tick lands between the create and the rm).
+   So the tick also asks the Index: a name it holds that this walk did not
+   list AND that lstat cannot find is gone, and is reported as removed.
+   Caller holds the index lock. A note created after the walk is on disk, so
+   lstat finds it and it is kept; a short walk (S1) is healed the same way.
+   Cost: one len compare per tick; the scan runs only when the Index holds
+   more names than the walk listed. */
+pub fn sweep_ghosts(root: &Path, cur: &Snapshot, ix: &mut Index) -> Vec<String> {
+    if ix.len() <= cur.len() {
+        return Vec::new();
+    }
+    let ghosts: Vec<String> = ix
+        .names()
+        .iter()
+        .filter(|n| !cur.contains_key(n.as_str()) && fs::symlink_metadata(note_file(root, n)).is_err())
+        .cloned()
+        .collect();
+    for g in &ghosts {
+        ix.remove(g);
+    }
+    ghosts
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,6 +307,35 @@ mod tests {
         assert_eq!(d.removed, vec!["sub/D"]);
         assert_eq!(d.modified, vec!["B", "C"]); // mtime-only and len-only both count
         assert_eq!(diff(&cur, &cur), Diff::default());
+    }
+
+    /// GHOSTS (media CVR-B-063): our create, then an external rm -rf of its
+    /// folder, both between two walks. The walks agree (nothing to diff), so
+    /// only the Index can say the note is gone.
+    #[test]
+    fn own_create_deleted_outside_before_a_walk_is_reported_removed() {
+        let root = tmp("ghost");
+        w(&root, "A", "alpha\n");
+        let mut ix = Index::build(&root);
+        let s0 = snapshot(&root);
+        fs::create_dir_all(root.join("Nope")).unwrap();
+        w(&root, "Nope/missing", "");
+        ix.upsert("Nope/missing", ""); // create_note: disk + index under the lock
+        fs::remove_dir_all(root.join("Nope")).unwrap(); // the outside rm -rf, before any walk
+        let s1 = snapshot(&root);
+        assert_eq!(diff(&s0, &s1), Diff::default(), "the walks alone see nothing");
+        assert_eq!(sweep_ghosts(&root, &s1, &mut ix), vec!["Nope/missing".to_string()]);
+        assert_eq!(ix.content("Nope/missing"), None);
+        assert_eq!(ix.content("A"), Some("alpha\n"));
+        // a note created after the walk is on disk: not a ghost
+        w(&root, "B", "b\n");
+        ix.upsert("B", "b\n");
+        assert!(sweep_ghosts(&root, &s1, &mut ix).is_empty());
+        assert_eq!(ix.content("B"), Some("b\n"));
+        // steady state: nothing to sweep
+        let s2 = snapshot(&root);
+        assert!(sweep_ghosts(&root, &s2, &mut ix).is_empty());
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
