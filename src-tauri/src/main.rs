@@ -6814,6 +6814,29 @@ mod tests {
         assert_eq!(fs::read_to_string(root.join("L.md")).unwrap(), "x [[New#h|alias]] y");
         assert_eq!(ix.backlinks("New"), ["L"]);
         let _ = fs::remove_dir_all(&root);
+        // [[Old.md]] is the note Old: counted in the blast radius and rewritten keeping its .md
+        assert_eq!(
+            rewrite_links("[[Old.md]] [[Old.md#h|a]] [[sub/Old.md]] [[Older.md]]", "sub/Old", "sub/New", true),
+            ("[[New.md]] [[New.md#h|a]] [[sub/New.md]] [[Older.md]]".to_string(), true)
+        );
+        let root = tmp_vault("ramd");
+        fs::write(root.join("sub/Old.md"), "# h").unwrap();
+        fs::write(root.join("L.md"), "x [[Old.md]] [[sub/Old.md|o]] y").unwrap();
+        let mut ix = Index::build(&root);
+        assert_eq!(ix.rename_blast("sub/Old", "sub/New"), (2, 1));
+        rename_in(&root, &mut ix, "sub/Old", "sub/New").unwrap();
+        assert_eq!(fs::read_to_string(root.join("L.md")).unwrap(), "x [[New.md]] [[sub/New.md|o]] y");
+        let _ = fs::remove_dir_all(&root);
+        // a note whose basename IS "Old.md" owns [[Old.md]]: left alone
+        let root = tmp_vault("ramd2");
+        fs::write(root.join("Old.md"), "").unwrap();
+        fs::write(root.join("Old.md.md"), "").unwrap();
+        fs::write(root.join("L.md"), "[[Old.md]] [[Old]]").unwrap();
+        let mut ix = Index::build(&root);
+        assert_eq!(ix.rename_blast("Old", "New"), (1, 1));
+        rename_in(&root, &mut ix, "Old", "New").unwrap();
+        assert_eq!(fs::read_to_string(root.join("L.md")).unwrap(), "[[Old.md]] [[New]]");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
