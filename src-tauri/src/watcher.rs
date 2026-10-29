@@ -265,10 +265,15 @@ pub fn reconcile(root: &Path, d: &Diff, ix: &mut Index) -> Change {
    outside add whose read failed in reconcile), so equal counts do not mean
    equal sets and a ghost hid behind it for good. */
 pub fn sweep_ghosts(root: &Path, cur: &Snapshot, ix: &mut Index) -> Vec<String> {
+    // gone = lstat says it does not exist; any other error (a folder made unreadable) keeps the note, whose
+    // removal would close its tab while the file is still there
+    let gone = |p: &Path| {
+        matches!(fs::symlink_metadata(p), Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory))
+    };
     let ghosts: Vec<String> = ix
         .names()
         .iter()
-        .filter(|n| !cur.contains_key(n.as_str()) && fs::symlink_metadata(note_file(root, n)).is_err())
+        .filter(|n| !cur.contains_key(n.as_str()) && gone(&note_file(root, n)))
         .cloned()
         .collect();
     for g in &ghosts {
@@ -343,6 +348,20 @@ mod tests {
         let s3 = snapshot(&root);
         assert_eq!(s3.len(), ix.len());
         assert_eq!(sweep_ghosts(&root, &s3, &mut ix), vec!["Nope/ours".to_string()]);
+        // a folder made unreadable from outside: the walk cannot list the note and lstat is refused, not
+        // NotFound, so the note is kept (root ignores the mode bits: nothing to check then)
+        use std::os::unix::fs::PermissionsExt;
+        fs::create_dir_all(root.join("Locked")).unwrap();
+        w(&root, "Locked/n", "");
+        ix.upsert("Locked/n", "");
+        fs::set_permissions(root.join("Locked"), fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::symlink_metadata(note_file(&root, "Locked/n")).is_err() {
+            let s4 = snapshot(&root);
+            assert!(!s4.contains_key("Locked/n"));
+            assert!(sweep_ghosts(&root, &s4, &mut ix).is_empty());
+            assert_eq!(ix.content("Locked/n"), Some(""));
+        }
+        fs::set_permissions(root.join("Locked"), fs::Permissions::from_mode(0o755)).unwrap();
         let _ = fs::remove_dir_all(&root);
     }
 
