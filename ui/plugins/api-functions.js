@@ -335,7 +335,7 @@
     function parseYaml(src) {
       const lines = String(src).replace(/\r\n?/g, "\n").split("\n"), n = lines.length;
       let i = 0;
-      const err = m => { const e = new Error(m + " (line " + (i + 1) + ")"); e.name = "YAMLParseError"; return e; };
+      const err = (m, at = i) => { const e = new Error(m + " (line " + (at + 1) + ")"); e.name = "YAMLParseError"; return e; };
       const UNTERM = {}, anchors = Object.create(null);
       const indent = l => l.match(/^ */)[0].length;
       const skip = () => { while (i < n && (/^\s*$/.test(lines[i]) || /^\s*#/.test(lines[i]))) i++; };
@@ -379,8 +379,10 @@
               if (B.s[p] === "]") { p++; return a; } throw err("bad flow sequence"); } }
           if (c === "{") { p++; const o = {}; need(); if (B.s[p] === "}") { p++; return o; }
             for (;;) { const k = item(true); need();
-              let v = null; if (B.s[p] === ":") { p++; v = item(false); ws(); }
-              const ks = String(k); if (Object.prototype.hasOwnProperty.call(o, ks)) throw err("duplicated mapping key " + ks); o[ks] = v;
+              // a plain value that ends its line folds the next one in (it may go on there); a duplicate key is still
+              // reported at the line the value started on, as before (the fold is not part of the error position)
+              let v = null, at = i; if (B.s[p] === ":") { p++; need(); at = i; const c = B.s[p]; v = item(false); if (/[\[{"']/.test(c)) at = i; ws(); }
+              const ks = String(k); if (Object.prototype.hasOwnProperty.call(o, ks)) throw err("duplicated mapping key " + ks, at); o[ks] = v;
               need();
               if (B.s[p] === ",") { p++; need(); if (B.s[p] === "}") { p++; return o; } continue; }
               if (B.s[p] === "}") { p++; return o; } throw err("bad flow mapping"); } }
