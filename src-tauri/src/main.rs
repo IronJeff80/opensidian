@@ -7665,6 +7665,11 @@ mod tests {
         assert!(!g.nodes[3].resolved);
         // A->B, A->Ghost (deduped), B->Ghost, B->sub/C
         assert_eq!(g.edges, vec![(0, 1), (0, 3), (1, 3), (1, 2)]);
+        // [[C.md]] / [[sub/C.md]] are the note sub/C (as the renderer and backlinks resolve them), not a ghost
+        let docs = vec![("A".to_string(), "[[C.md]] [[sub/C.md]] [[Nope.md]]".to_string()), ("sub/C".to_string(), String::new())];
+        let g = graph_of(&docs);
+        assert_eq!(g.nodes.iter().map(|n| (n.name.as_str(), n.resolved)).collect::<Vec<_>>(), vec![("A", true), ("sub/C", true), ("Nope.md", false)]);
+        assert_eq!(g.edges, vec![(0, 1), (0, 2)]);
     }
 
     #[test]

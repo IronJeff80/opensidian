@@ -186,10 +186,12 @@ pub fn build_graph(notes: &[String], links: &[&[String]]) -> Graph {
             let hit = if l.contains('/') {
                 resolve(notes, l)
             } else {
-                match (full.get(l), base.get(l)) {
+                let look = |l: &str| match (full.get(l), base.get(l)) {
                     (Some(a), Some(b)) => Some(*a.min(b)),
                     (a, b) => a.or(b).copied(),
-                }
+                };
+                // [[Alpha.md]] is the note Alpha, as resolve() and the backlinks have it
+                look(l).or_else(|| md_stem(l).and_then(look))
             };
             let j = match hit {
                 Some(j) => j,
