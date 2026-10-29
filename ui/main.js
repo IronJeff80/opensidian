@@ -104,6 +104,13 @@ function leaves(node, out = []) {
 const groups = () => (state ? leaves(state.root) : []);
 let rlwOn = true;   // goal/minimalmargin: app.json readableLineLength mirror (rlwLoad, near loadVaultCss); declared up here because mkView reads it
 const fg = () => state.focused;
+// a visible text field outside group g's editor holds the keyboard (quick switcher, palette, rename prompt, settings)
+function typingElsewhere(g) {
+  const a = document.activeElement;
+  if (!a || a === document.body || (g.lp && g.lp.contains(a))) return false;
+  if (!(a.matches && a.matches("input, textarea, [contenteditable=''], [contenteditable='true']"))) return false;
+  return a.getClientRects().length > 0;
+}
 /* plugin-views: the plugin host (ui/plugins/views.js) sets PVHOST when a plugin registers a view
    type; loadActive asks it to mount a kept "unk" tab of that type (and to hide it again). */
 let PVHOST = null;
@@ -5784,7 +5791,9 @@ async function loadActive(g) {
       // plug-top5: a freshly opened note has its caret at the top, focused when it is the focused pane
       // (stock 1.13.7: open from the file tree, then type = text lands at 0:0). Plugins that only
       // redraw on a selection change (dataview inline queries in Live Preview) see that change.
-      if (n && Ed.cm(g)) Ed.home(g, 0, 0, g === fg());   // goal mt-fix: the caret only — no raw row opens on open ([mode:lp])
+      // goal mt-fix: focus only if nothing else took the keyboard while the note loaded — a big note's render can end
+      // after the user opened the quick switcher (or any prompt); stealing focus then sent the typed query into the note
+      if (n && Ed.cm(g)) Ed.home(g, 0, 0, g === fg() && !typingElsewhere(g));   // goal mt-fix: the caret only — no raw row opens on open ([mode:lp])
     }
   } else if (v.scrollTop) g.lp.scrollTop = v.scrollTop;
   renderTabs(g);
