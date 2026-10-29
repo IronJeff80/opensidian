@@ -259,6 +259,40 @@
       const [f, made] = ensureFile(r); f.stat.size = size || 0;
       if (made) vault.trigger("create", f);
     }
+    /* PR #33 review: the other half of adapterMade. A file the adapter removes or renames leaves / moves in the vault
+       model at once too (getFileByPath / getFiles no longer report a removed tmp.txt), with stock's "delete" /
+       "rename"; a note goes through changed() so the app's tabs and tree follow. A path not in the model: nothing to
+       drop, and a rename onto a visible path is a new file there (adapterMade). */
+    const adapterRel = p => vrel(ap(p)).replace(/\/+$/, "");
+    const notesIn = f => { const out = []; const go = x => { if (x instanceof TFolder) x.children.forEach(go); else { const n = noteOf(x.path); if (n != null) out.push(n); } }; go(f); return out; };
+    async function adapterGone(p) {
+      if (!K.st.filesOn) return;
+      const r = adapterRel(p), f = r && files.get(r);
+      if (!f) return;
+      const notes = notesIn(f), all = [];
+      const go = x => { all.push(x); if (x instanceof TFolder) x.children.forEach(go); }; go(f);
+      if (f instanceof TFile && notes.length) { await changed({ removed: notes }); return; }
+      removeTree(f);
+      for (const x of all.reverse()) vault.trigger("delete", x);
+      if (notes.length) await changed({ removed: notes });
+    }
+    async function adapterMoved(a, b) {
+      if (!K.st.filesOn) return;
+      const ra = adapterRel(a), rb = adapterRel(b), f = ra && files.get(ra);
+      const hidden = !rb || rb.split("/").some(s => s.startsWith("."));
+      const kindKept = f && (f instanceof TFolder || (noteOf(ra) != null) === (noteOf(rb) != null));
+      if (!f || hidden || !kindKept) {   // out of the model, into a hidden path, or a note <-> non-note: a delete + a create
+        if (f) await adapterGone(a);
+        if (!hidden) { const st = await core.stat(ap(b)).catch(() => null); await adapterMade(b, st && st.size, st && st.type === "folder"); }
+        return;
+      }
+      if (f instanceof TFile && noteOf(ra) != null) { await changed({ renamed: [[noteOf(ra), noteOf(rb)]] }); return; }
+      const before = notesIn(f), moved = [];
+      const go = x => { moved.push([x, x.path]); if (x instanceof TFolder) x.children.forEach(go); }; go(f);
+      movePath(f, rb);
+      for (const [x, o] of moved) vault.trigger("rename", x, o);
+      if (before.length) await changed({ renamed: before.map(o => [o, rb + o.slice(ra.length)]) });
+    }
     class DataAdapter {
       getName() { return K.st.vaultName; }
       async exists(p) { return core.exists(ap(p)); }
@@ -303,8 +337,8 @@
         }
         await core.rmdir(p);
       }
-      async remove(p) { await core.unlink(ap(p)); }
-      async rename(a, b) { await core.rename(ap(a), ap(b)); }
+      async remove(p) { await core.unlink(ap(p)); await adapterGone(p); }
+      async rename(a, b) { await core.rename(ap(a), ap(b)); await adapterMoved(a, b); }
       async copy(a, b) { await core.copy(ap(a), ap(b)); const st = await core.stat(ap(b)).catch(() => null); await adapterMade(b, st && st.size); }
     }
     const nodeErr = (Ctor, code, msg) => { const e = new Ctor(msg); e.code = code; return e; };
