@@ -561,13 +561,17 @@
         if (Array.isArray(v)) {
           if (!v.length) { out += key + " []\n"; continue; }
           out += key + "\n";
-          for (const x of v) out += ind + "  - " + (isMap(x) || Array.isArray(x) ? JSON.stringify(x) : yScal(x)) + "\n";
+          for (const x of v) out += ind + "  - " + yItem(x) + "\n";
         } else if (isMap(v)) out += Object.keys(v).length ? key + "\n" + yBlock(v, ind + "  ") : key + " {}\n";
         else out += key + " " + yScal(v) + "\n";
       }
       return out;
     }
-    const stringifyYaml = o => isMap(o) ? yBlock(o, "") : Array.isArray(o) ? o.map(x => "- " + yScal(x)).join("\n") + "\n" : yScal(o) + "\n";
+    // PR #33 review: a top-level list renders its items as yBlock's lists do (a map or list item as flow JSON,
+    // not "[object Object]" / "a,b") and an empty one as [], not an empty document
+    const yItem = x => isMap(x) || Array.isArray(x) ? JSON.stringify(x) : yScal(x);
+    const stringifyYaml = o => isMap(o) ? yBlock(o, "")
+      : Array.isArray(o) ? (o.length ? o.map(x => "- " + yItem(x)).join("\n") + "\n" : "[]\n") : yScal(o) + "\n";
     Object.assign(K, { parseYaml, stringifyYaml });
   });
   reg("fns:links", function (K) {
