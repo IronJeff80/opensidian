@@ -341,73 +341,98 @@
       const skip = () => { while (i < n && (/^\s*$/.test(lines[i]) || /^\s*#/.test(lines[i]))) i++; };
       const isSeq = t => /^-(\s|$)/.test(t);
       const noComment = s => { const m = s.match(/(^|\s)#/); return (m ? s.slice(0, m.index) : s).trim(); };
-      function quoted(s, p) {   // -> [value, index after the closing quote]; throws UNTERM
-        const q = s[p]; let v = ""; p++;
-        while (p < s.length) {
-          const c = s[p];
+      /* A quoted or flow value may span lines. B = { s, more }: B.s is the value folded so far and B.more() folds
+         the next line onto it (false when the document ended). The scanners below pull a line only when they run
+         off the end of B.s and then carry on from where they stopped, so a multi-line value is scanned once
+         (linear), instead of being re-parsed from its first character after every folded line (quadratic: a
+         large frontmatter value could hold the UI thread for seconds on every metadata sweep). */
+      const X = { n: "\n", t: "\t", r: "\r", 0: "\0", a: "\x07", b: "\b", e: "\x1b", f: "\f", v: "\v", " ": " ", "/": "/", '"': '"', "\\": "\\", N: "\x85", _: "\xa0" };
+      function quoted(B, p) {   // -> [value, index after the closing quote]; throws UNTERM
+        const q = B.s[p]; let v = ""; p++;
+        for (;;) {
+          if (p >= B.s.length) { if (B.more && B.more()) continue; throw UNTERM; }
+          const s = B.s, c = s[p];
           if (q === "'") { if (c === "'") { if (s[p + 1] === "'") { v += "'"; p += 2; continue; } return [v, p + 1]; } v += c; p++; continue; }
           if (c === '"') return [v, p + 1];
           if (c !== "\\") { v += c; p++; continue; }
-          const e = s[p + 1], X = { n: "\n", t: "\t", r: "\r", 0: "\0", a: "\x07", b: "\b", e: "\x1b", f: "\f", v: "\v", " ": " ", "/": "/", '"': '"', "\\": "\\", N: "\x85", _: "\xa0" };
-          if (e === undefined) throw UNTERM;
+          const e = s[p + 1];
+          // a backslash ending the line: fold, then read s[p] again (an escaped break drops the backslash)
+          if (e === undefined) { if (B.more && B.more()) continue; throw UNTERM; }
           if (e in X) { v += X[e]; p += 2; continue; }
           const w = { x: 2, u: 4, U: 8 }[e], h = w && s.slice(p + 2, p + 2 + w);
           if (!w || !/^[0-9a-fA-F]+$/.test(h) || h.length !== w) throw err("bad escape \\" + e);
           v += String.fromCodePoint(parseInt(h, 16)); p += 2 + w;
         }
-        throw UNTERM;
       }
-      function flow(s) {        // one flow collection starting at s[0]; throws UNTERM when it runs off the end
+      function flow(B) {        // one flow collection starting at B.s[0]; throws UNTERM when it runs off the end
         let p = 0;
-        const ws = () => { while (p < s.length && /\s/.test(s[p])) p++; };
+        const ws = () => { while (p < B.s.length && /\s/.test(B.s[p])) p++; };
+        const need = () => {    // skip whitespace, folding lines until there is a character to read; UNTERM at the end
+          ws(); while (p >= B.s.length) { if (!(B.more && B.more())) throw UNTERM; ws(); }
+        };
         function item(inMap) {
-          ws(); if (p >= s.length) throw UNTERM;
-          const c = s[p];
-          if (c === "[") { p++; const a = []; ws(); if (s[p] === "]") { p++; return a; }
-            for (;;) { a.push(item(false)); ws(); if (p >= s.length) throw UNTERM;
-              if (s[p] === ",") { p++; ws(); if (s[p] === "]") { p++; return a; } continue; }
-              if (s[p] === "]") { p++; return a; } throw err("bad flow sequence"); } }
-          if (c === "{") { p++; const o = {}; ws(); if (s[p] === "}") { p++; return o; }
-            for (;;) { const k = item(true); ws(); if (p >= s.length) throw UNTERM;
-              let v = null; if (s[p] === ":") { p++; v = item(false); ws(); }
+          need();
+          const c = B.s[p];
+          if (c === "[") { p++; const a = []; need(); if (B.s[p] === "]") { p++; return a; }
+            for (;;) { a.push(item(false)); need();
+              if (B.s[p] === ",") { p++; need(); if (B.s[p] === "]") { p++; return a; } continue; }
+              if (B.s[p] === "]") { p++; return a; } throw err("bad flow sequence"); } }
+          if (c === "{") { p++; const o = {}; need(); if (B.s[p] === "}") { p++; return o; }
+            for (;;) { const k = item(true); need();
+              let v = null; if (B.s[p] === ":") { p++; v = item(false); ws(); }
               const ks = String(k); if (Object.prototype.hasOwnProperty.call(o, ks)) throw err("duplicated mapping key " + ks); o[ks] = v;
-              if (p >= s.length) throw UNTERM;
-              if (s[p] === ",") { p++; ws(); if (s[p] === "}") { p++; return o; } continue; }
-              if (s[p] === "}") { p++; return o; } throw err("bad flow mapping"); } }
-          if (c === '"' || c === "'") { const [v, e] = quoted(s, p); p = e; return v; }
+              need();
+              if (B.s[p] === ",") { p++; need(); if (B.s[p] === "}") { p++; return o; } continue; }
+              if (B.s[p] === "}") { p++; return o; } throw err("bad flow mapping"); } }
+          if (c === '"' || c === "'") { const [v, e] = quoted(B, p); p = e; return v; }
           const st = p;
-          while (p < s.length && !/[,\[\]{}]/.test(s[p]) && !(s[p] === ":" && /^[\s,\]}]?$/.test(s[p + 1] ?? ""))) p++;
-          return plainScalar(s.slice(st, p).trim());
+          for (;;) {   // a plain scalar that reaches the end of the line goes on with the folded next line
+            const s = B.s;
+            while (p < s.length && !/[,\[\]{}]/.test(s[p]) && !(s[p] === ":" && /^[\s,\]}]?$/.test(s[p + 1] ?? ""))) p++;
+            if (p < B.s.length || !(B.more && B.more())) break;
+          }
+          return plainScalar(B.s.slice(st, p).trim());
         }
         const v = item(false); ws();
-        if (p < s.length && s[p] !== "#") throw err("content after flow collection");
+        if (p < B.s.length && B.s[p] !== "#") throw err("content after flow collection");
         return v;
       }
+      const KEY_HEAD = /^([^\s#\-?:,\[\]{}&*!|>'"%@`]|[-?:][^\s])/, KEY_COLON = /:(\s|$)/g;
       function keyOf(t) {        // "key: rest" -> [key, rest]; null when t is not a mapping entry
         let k, p;
-        if (t[0] === '"' || t[0] === "'") { try { [k, p] = quoted(t, 0); } catch (e) { if (e === UNTERM) return null; throw e; } }
-        else { const m = t.match(/^([^\s#\-?:,\[\]{}&*!|>'"%@`]|[-?:][^\s])[^#]*?(?=\s*:(\s|$))/); if (!m) return null; k = m[0].trim(); p = m[0].length; }
+        if (t[0] === '"' || t[0] === "'") { try { [k, p] = quoted({ s: t }, 0); } catch (e) { if (e === UNTERM) return null; throw e; } }
+        else {
+          // the key runs to the first ": " / ":" at the end of the line (whitespace before it trimmed) and holds no "#".
+          // A linear scan: a lazy regex with a lookahead here backtracked quadratically over long runs of spaces.
+          const h = KEY_HEAD.exec(t); if (!h) return null;
+          KEY_COLON.lastIndex = h[0].length; const c = KEY_COLON.exec(t); if (!c) return null;
+          if (t.lastIndexOf("#", c.index) >= h[0].length) return null;
+          p = c.index; while (p > h[0].length && /\s/.test(t[p - 1])) p--;
+          k = t.slice(0, p).trim();
+        }
         const m = t.slice(p).match(/^\s*:(\s+|$)/);
         return m ? [k, t.slice(p + m[0].length)] : null;
       }
       function inline(s, ind) {  // a scalar or flow value that starts on the current (already consumed) line
         if (s[0] === '"' || s[0] === "'" || s[0] === "[" || s[0] === "{") {
-          for (;;) {
-            try {
-              if (s[0] === "[" || s[0] === "{") return flow(s);
-              const [v, e] = quoted(s, 0), rest = s.slice(e).trim();
-              if (rest && rest[0] !== "#") throw err("content after quoted scalar");
-              return v;
-            } catch (e) {
-              if (e !== UNTERM) throw e;
-              if (i >= n) throw err(s[0] === "[" || s[0] === "{" ? "unclosed flow collection" : "unclosed quoted scalar");
-              // line folding (stock): an empty line is "\n" with no space before the next text; a double-quoted line
-              // ending in an unescaped backslash escapes the break (next line joins with no space: "b\" + "c" -> "bc")
-              const t = lines[i].trim(), bs = (s.match(/\\+$/) || [""])[0].length;
-              if (s[0] === '"' && bs % 2 === 1) s = s.slice(0, -1) + t;
-              else s += t ? (s.endsWith("\n") ? t : " " + t) : "\n";
-              i++;
-            }
+          const dq = s[0] === '"', B = { s, more() {
+            if (i >= n) return false;
+            // line folding (stock): an empty line is "\n" with no space before the next text; a double-quoted line
+            // ending in an unescaped backslash escapes the break (next line joins with no space: "b\" + "c" -> "bc")
+            const t = lines[i].trim(), u = B.s; let bs = 0;
+            while (bs < u.length && u[u.length - 1 - bs] === "\\") bs++;
+            if (dq && bs % 2 === 1) B.s = u.slice(0, -1) + t;
+            else B.s = u + (t ? (u.endsWith("\n") ? t : " " + t) : "\n");
+            i++; return true;
+          } };
+          try {
+            if (!dq && s[0] !== "'") return flow(B);
+            const [v, e] = quoted(B, 0), rest = B.s.slice(e).trim();
+            if (rest && rest[0] !== "#") throw err("content after quoted scalar");
+            return v;
+          } catch (e) {
+            if (e !== UNTERM) throw e;
+            throw err(s[0] === "[" || s[0] === "{" ? "unclosed flow collection" : "unclosed quoted scalar");
           }
         }
         // multi-line plain scalar: continuation lines indented past ind fold to one space, each empty line in between
