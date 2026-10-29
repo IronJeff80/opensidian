@@ -347,7 +347,8 @@
          right-aligned in the warning colour (templater Template hotkey "This template already has a hotkey") */
       setErrorMessage(msg) {
         if (msg) {
-          if (!this.errorEl) this.errorEl = this.controlEl.createDiv({ cls: "setting-item-error" });
+          // PR #33 review: clear() empties controlEl, so an error element it detached is made again, not written unseen
+          if (!this.errorEl || this.errorEl.parentNode !== this.controlEl) this.errorEl = this.controlEl.createDiv({ cls: "setting-item-error" });
           this.errorEl.textContent = String(msg); this.settingEl.addClass("is-invalid");
         } else {
           if (this.errorEl) this.errorEl.remove();
