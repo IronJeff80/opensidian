@@ -5277,13 +5277,24 @@ fn watch_tick(v: &Vault, prev: &mut Option<(PathBuf, watcher::Snapshot)>) -> wat
                 cur = c2;
                 d = d2;
             }
-            if d.added.is_empty() && d.removed.is_empty() && d.modified.is_empty() {
+            let mut c = if d.added.is_empty() && d.removed.is_empty() && d.modified.is_empty() {
                 watcher::Change::default()
             } else {
                 vault_hook("watch_tick:pre_lock");
                 let mut ix = v.index.lock().unwrap();
                 span_timed!("watcher_reconcile", watcher::reconcile(&root, &d, &mut ix))
+            };
+            // GHOSTS (media CVR-B-063): our own create that an outside delete
+            // removed before any walk listed it is in no Diff; ask the Index.
+            let ghosts = {
+                let mut ix = v.index.lock().unwrap();
+                watcher::sweep_ghosts(&root, &cur, &mut ix)
+            };
+            if !ghosts.is_empty() {
+                eprintln!("[watch] GHOSTS removed={ghosts:?} (created here, deleted outside before a walk)");
+                c.removed.extend(ghosts);
             }
+            c
         }
         _ => watcher::Change::default(),
     };
@@ -11336,6 +11347,30 @@ mod vaultbleed_tests {
         let ch = watch_tick(&v, &mut prev);
         assert_eq!(ch.added, ["TYPEGATE"], "the first tick after bind must report the create: {ch:?}");
         assert!(cur_notes(&v).iter().any(|n| n == "TYPEGATE"), "the index must hold it: {:?}", cur_notes(&v));
+        let ch2 = watch_tick(&v, &mut prev);
+        assert!(ch2.is_empty(), "a steady tick reports nothing: {ch2:?}");
+        let _ = fs::remove_dir_all(&a);
+    }
+
+    /* media CVR-B-063 flake: the canvas "Create new note" button makes
+       Nope/missing.md (create_note: disk + index), then the phase's
+       `rm -rf Nope` runs before the next tick walked it. Both walks lack the
+       file, so the tick used to report nothing and the note stayed in the
+       index (and the UI) for good. */
+    #[test]
+    fn own_create_removed_outside_before_the_next_tick_is_reported() {
+        let a = mk("ghost", &[("A", "a\n")]);
+        let v = vault_at(&a);
+        let mut prev = None;
+        watch_tick(&v, &mut prev); // baseline
+        {
+            let mut ix = v.index.lock().unwrap();
+            create_note_in(&a, &mut ix, "Nope/missing", "").unwrap();
+        }
+        fs::remove_dir_all(a.join("Nope")).unwrap();
+        let ch = watch_tick(&v, &mut prev);
+        assert_eq!(ch.removed, ["Nope/missing"], "the tick must report the vanished create: {ch:?}");
+        assert!(!cur_notes(&v).iter().any(|n| n == "Nope/missing"), "index still holds it: {:?}", cur_notes(&v));
         let ch2 = watch_tick(&v, &mut prev);
         assert!(ch2.is_empty(), "a steady tick reports nothing: {ch2:?}");
         let _ = fs::remove_dir_all(&a);

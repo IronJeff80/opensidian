@@ -569,7 +569,6 @@ impl Index {
         ix
     }
 
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.notes.len()
     }
