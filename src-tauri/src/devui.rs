@@ -128,6 +128,8 @@ fn mime(p: &Path) -> &'static str {
         "css" => "text/css",
         "svg" => "image/svg+xml",
         "json" => "application/json",
+        "txt" => "text/plain",
+        "md" => "text/markdown",
         "png" => "image/png",
         "woff2" => "font/woff2",
         "woff" => "font/woff",
@@ -156,9 +158,9 @@ pub fn serve(uri_path: &str, res: &mut tauri::http::Response<Cow<'static, [u8]>>
                 let h = res.headers_mut();
                 h.remove(header::CONTENT_LENGTH);
                 h.remove(header::CONTENT_ENCODING);
-                if !h.contains_key(header::CONTENT_TYPE) {
-                    h.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime(&f)));
-                }
+                // the type of the file served, not the embedded response's: a file only the dev dir has gets
+                // Tauri's index.html fallback (text/html), and a script served as html is refused
+                h.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime(&f)));
                 h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
                 *res.body_mut() = Cow::Owned(b);
             }
