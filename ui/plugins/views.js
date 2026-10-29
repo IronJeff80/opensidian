@@ -686,7 +686,9 @@
           await splitWith(g, split, t);
           if (prev && prev !== M().fg() && M().groups().indexOf(prev) >= 0 && typeof focusGroup === "function") try { focusGroup(prev); } catch (_) {}
         }
-        else if (t0 && !t0.kind && active && !leaf._nt && (PV_INPLACE.has(type) || (state && state.file))) {
+        // PR #33 review: a PINNED note leaf is never replaced (as getLeaf and the "replace" open above): the view opens in a
+        // new tab after it and the note stays
+        else if (t0 && !t0.kind && !t0.pinned && active && !leaf._nt && (PV_INPLACE.has(type) || (state && state.file))) {
           // cvf-links CVR-A-096: a canvas opened from a NOTE leaf (a [[X.canvas]] link / embed click) replaces the
           // note in the same tab, as stock: the canvas tab goes in right after it, then the note tab goes (count unchanged).
           // Any file view opened on the note's own leaf does the same (Excalidraw "create new drawing - in the current
