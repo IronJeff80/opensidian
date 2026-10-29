@@ -529,12 +529,16 @@
           let fm; try { fm = parseYaml(lines.slice(1, j).join("\n")); } catch (_) { fm = undefined; }   // invalid or empty YAML: no frontmatter
           if (fm && typeof fm === "object" && !Array.isArray(fm)) {
             out.frontmatter = fm;
-            const fl = [], walk = (v, k) => {   // properties whose whole value is a [[wikilink]]
+            // an *alias is the SAME object as its anchor, so the frontmatter can be a shared-node graph: each object is walked
+            // once (its links are reported under the first key that reaches it), else doubled aliases (aN: [*a(N-1), *a(N-1)])
+            // made the walk exponential in the line count
+            const fl = [], seen = new Set(), walk = (v, k) => {   // properties whose whole value is a [[wikilink]]
               if (typeof v === "string") {
                 const m = v.match(/^\[\[([^\[\]]+)\]\]$/);
                 if (m) { const b = m[1].indexOf("|"), link = b < 0 ? m[1] : m[1].slice(0, b); fl.push({ key: k, link, original: v, displayText: b < 0 ? link.split("#").filter(Boolean).join(" > ") : m[1].slice(b + 1) }); }
-              } else if (Array.isArray(v)) v.forEach((x, n) => walk(x, k + "." + n));
-              else if (v && typeof v === "object") for (const s of Object.keys(v)) walk(v[s], k + "." + s);
+              } else if (!v || typeof v !== "object" || seen.has(v)) return;
+              else if (seen.add(v), Array.isArray(v)) v.forEach((x, n) => walk(x, k + "." + n));
+              else for (const s of Object.keys(v)) walk(v[s], k + "." + s);
             };
             for (const k of Object.keys(fm)) walk(fm[k], k);
             if (fl.length) out.frontmatterLinks = fl;
