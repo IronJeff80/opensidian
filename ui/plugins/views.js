@@ -1522,7 +1522,15 @@
       const secOf = c => { const t = (c.textContent || "").trim(); return Object.prototype.hasOwnProperty.call(CORE_SEC, t) ? CORE_SEC[t] : null; };
       if (!core.length || core.some(c => secOf(c) === null)) return false;
       const rows = core.map(c => ({ el: c, sec: secOf(c) }));
-      for (const x of items) if (x && !isSep(x)) rows.push({ el: x.dom, sec: String(x.section || "") });
+      // PR #33 review: a plugin's own separator between two of its rows that land side by side in one section stays
+      // a rule there (a section change draws one anyway); it is not dropped with the rest of the separator items
+      let sepAfter = null, last = null;
+      for (const x of items) {
+        if (isSep(x)) { sepAfter = last; continue; }
+        if (!x) continue;
+        const r = { el: x.dom, sec: String(x.section || ""), afterSep: sepAfter };
+        rows.push(r); last = r; sepAfter = null;
+      }
       const extra = [];   // plugin sections stock does not name: after "", before danger, first-seen order
       for (const r of rows) if (!SEC_RANK.includes(r.sec) && !extra.includes(r.sec)) extra.push(r.sec);
       const order = [...SEC_RANK.slice(0, -1), ...extra, "danger"];
@@ -1530,10 +1538,10 @@
       rows.forEach((r, i) => { r.i = i; });
       rows.sort((a, b) => rank(a.sec) - rank(b.sec) || a.i - b.i);
       m.textContent = "";
-      let prev = null;
+      let prev = null, prow = null;
       for (const r of rows) {
-        if (prev !== null && r.sec !== prev) { const s = document.createElement("div"); s.className = "sep"; m.appendChild(s); }
-        m.appendChild(r.el); prev = r.sec;
+        if (prev !== null && (r.sec !== prev || (r.afterSep && r.afterSep === prow))) { const s = document.createElement("div"); s.className = "sep"; m.appendChild(s); }
+        m.appendChild(r.el); prev = r.sec; prow = r;
       }
       return true;
     }
