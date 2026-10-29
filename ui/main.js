@@ -3534,7 +3534,17 @@ function updateTitleNow() {      // flush: publish the census in this task
   finally { const t1 = performance.now(); utCost = t1 - t0; utLast = t1; utRan = true; utArm(); }
 }
 function utBuild() {             // pane/focus census in the window title (headless probe)
-  rTrack();                      // lgpanes: keep rLeaf current even with the right sidebar closed
+  /* No layout yet (boot, before the first vault load sets `state`): there is nothing
+     to publish. Every updateTitle() caller used to be guarded one by one (the R33.6b
+     scars in wfArm/wfTitleSafe); the settings-gear focus/blur listeners and
+     onVaultChanged are not, and on a boot where one of them fires first the read
+     of state.root below threw "null is not an object (evaluating 'state.root')"
+     into window.onerror. noteErr latches the FIRST error as [jserr:] for the whole
+     session, so a later phase that asserts "no JS error" (panedrag's header click,
+     wspace R28.13, fileops) went red on a boot-time throw it did not cause.
+     Guard the one place that reads it, so no future caller can bring it back. */
+  if (!state) return;
+  rTrack();                     // lgpanes: keep rLeaf current even with the right sidebar closed
   const ps = [...document.querySelectorAll("#main .pane")];
   const nf = document.querySelectorAll("#main .pane.focused").length;
   const fx = (state.root.fractions || []).map(f => f.toFixed(2)).join(",");
