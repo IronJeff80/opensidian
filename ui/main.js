@@ -6841,7 +6841,7 @@ async function wikiClick(e, a) {
   e.preventDefault(); e.stopPropagation();
   const g = gOf(a);
   if (!g) return;
-  const n = wikiTarget(a) || curOf(g), an = a.dataset.anchor;   // R10: [[#H]] = this note
+  const n = wikiTarget(a) || curOf(g), an = wikiAnchor(a);   // R10: [[#H]] = this note
   if (await cvLinkOpen(n, an)) return;      // cvf-links CVR-A-096: [[X.canvas]] opens the canvas, never makes X.canvas.md
   if (a.classList.contains("wiki-unresolved")) await createNote(n);
   if (e.ctrlKey) {                            // R6.4: new tab, same group
@@ -6962,11 +6962,22 @@ async function preview(g, sw) {   // sw: called by setMode (the edit -> reading 
 
 // a wiki link click in the reading view, also for links a plugin rendered into it. plug-top5: a target
 // written with its .md extension ([[Projects/Beta.md]], dataview's file links) is that note
-function wikiTarget(a) { const n = a.dataset.note || a.dataset.href || ""; return /[^/]\.md$/.test(n) ? n.slice(0, -3) : n; }
+// PR #33 review: a link with no data-note (one a plugin built: a.internal-link[data-href="Note#H"], or "#H" for
+// this note) takes its note from the part of data-href before "#" and its anchor from the part after
+function wikiTarget(a) {
+  const n = a.dataset.note != null ? a.dataset.note : String(a.dataset.href || "").split("#")[0];
+  return /[^/]\.md$/.test(n) ? n.slice(0, -3) : n;
+}
+function wikiAnchor(a) {
+  if (a.dataset.anchor) return a.dataset.anchor;
+  if (a.dataset.note != null) return "";
+  const h = String(a.dataset.href || ""), i = h.indexOf("#");
+  return i >= 0 ? h.slice(i + 1) : "";
+}
 async function pvWikiClick(a, e) {
   e.preventDefault();
   const g = gOf(a) || fg();                      // R20: event-time group (retained views move)
-  const n = wikiTarget(a) || curOf(g), an = a.dataset.anchor;  // R10: [[#H]] = this note
+  const n = wikiTarget(a) || curOf(g), an = wikiAnchor(a);  // R10: [[#H]] = this note
   if (await cvLinkOpen(n, an)) return;          // cvf-links CVR-A-096: [[X.canvas]] opens the canvas
   if (a.classList.contains("wiki-unresolved"))   // R3.5: click creates the note
     await createNote(n);
