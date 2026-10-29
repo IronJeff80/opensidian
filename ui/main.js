@@ -4783,8 +4783,12 @@ function applyMode(g, keep) {  // exactly ONE of lp / preview fills the pane
   const m = g.active >= 0 ? g.tabs[g.active].mode : "livepreview";
   g.editor.style.display = "none";          // R12: the model textarea never shows; source = lp + reveal
   g.lp.style.display = isLp(m) ? "" : "none";
-  if (m !== "reading") { const was = g.lp.classList.contains("src"); g.lp.classList.toggle("src", m === "source");   // opt10b: reading keeps the lp sub-mode class — flipping .lp.src restyled + relaid the kept 30k lp both ways
-    if (was !== (m === "source") && Ed.cbHook && Ed.cbFx && Ed.cm(g)) Ed.cm(g).dispatch({ effects: Ed.cbFx.of(null) }); }   // plug-top5: plugin code blocks render in lp only
+  if (m !== "reading") g.lp.classList.toggle("src", m === "source");   // opt10b: reading keeps the lp sub-mode class — flipping .lp.src restyled + relaid the kept 30k lp both ways
+  /* plug-top5: plugin code blocks render in lp only. goal mt-fix: not in the lp a reading view keeps laid out either —
+     a widget there is a second, stale copy of every dataview/tasks block (rendered before a setting changed, never
+     refreshed on a vault change) beside the reading view's live one; it is rebuilt fresh on the way back to edit. */
+  const cbk = m === "reading" ? "r" : m === "source" ? "s" : "l";
+  if (g.lp._cbk !== cbk) { g.lp._cbk = cbk; if (Ed.cbHook && Ed.cbFx && Ed.cm(g)) Ed.cm(g).dispatch({ effects: Ed.cbFx.of(null) }); }
   g.preview.style.display = m === "reading" ? "" : "none";
   // modeswitch opt6: the view the edit <-> reading switch LEAVES (setMode passes
   // it as `keep`) stays laid out instead of display:none — hidden, out of flow,
@@ -4923,7 +4927,7 @@ async function setMode(g, mode) {   // R20 (#3): one target mode — tab menu ra
         const [al, ac] = clampLC(wa);
         if (al !== l || ac !== c) { Ed.place(g, al, ac); Ed.extendTo(g, l, c); }
       }
-    } else if (tab.mode === "livepreview") await lpRender(g, 0, 0, full);   // plug-top5: stock reading -> edit (nothing remembered) = caret 0:0, focused
+    } else if (tab.mode === "livepreview") { await lpRender(g, -1, 0, full); Ed.home(g, 0, 0); }   // plug-top5: stock reading -> edit (nothing remembered) = caret 0:0, focused; goal mt-fix: no raw row opens
     else await lpRender(g, L.length - 1, L[L.length - 1].length, full);
   }
   mswpMark("lp");
@@ -5780,7 +5784,7 @@ async function loadActive(g) {
       // plug-top5: a freshly opened note has its caret at the top, focused when it is the focused pane
       // (stock 1.13.7: open from the file tree, then type = text lands at 0:0). Plugins that only
       // redraw on a selection change (dataview inline queries in Live Preview) see that change.
-      if (n && Ed.cm(g)) Ed.place(g, 0, 0, g === fg());
+      if (n && Ed.cm(g)) Ed.home(g, 0, 0, g === fg());   // goal mt-fix: the caret only — no raw row opens on open ([mode:lp])
     }
   } else if (v.scrollTop) g.lp.scrollTop = v.scrollTop;
   renderTabs(g);

@@ -1485,6 +1485,7 @@ const CMs = CM6["@codemirror/state"], CMv = CM6["@codemirror/view"], CMc = CM6["
 /* ED-3: a plugin Editor-API edit carries Ed.PLUGIN_EDIT; Ed.EDIT_KIND remembers the kind + time of the last
    doc change so the undo grouping below can join a plugin's follow-up edit to its own previous one */
 Ed.PLUGIN_EDIT = CMs && CMs.Annotation.define();
+Ed.HOME_SEL = CMs && CMs.Annotation.define();   // goal mt-fix: Ed.home selection (no raw row)
 Ed.EDIT_KIND = CMs && CMs.StateField.define({
   create: () => ({ k: "", t: 0 }),
   update: (v, tr) => !tr.docChanged ? v : { k: tr.annotation(Ed.PLUGIN_EDIT) ? "plugin" : tr.isUserEvent("input.type") ? "type" : "other", t: tr.annotation(CMs.Transaction.time) || Date.now() },
@@ -1602,6 +1603,15 @@ Object.assign(Ed, {
     cm.dispatch({ selection: { anchor: Ed.off(g, l, c) } });
     if (focus !== false && !cm.hasFocus) cm.focus();
     Ed.mark(g, Ed.focusPos(g).l);
+  },
+  /* goal mt-fix: the caret at (line,col) WITHOUT opening the raw row there — a freshly opened note (and reading ->
+     edit) puts the caret at 0:0, focused, as in stock, so typing lands at the top and plugins see the selection
+     change (dataview inline queries, templater cursor); the row only opens once the user moves or types. */
+  home(g, l, c, focus) {
+    const cm = Ed.cm(g); if (!cm) return;
+    cm.dispatch({ selection: { anchor: Ed.off(g, l, c) }, annotations: Ed.HOME_SEL ? [Ed.HOME_SEL.of(true)] : [] });
+    if (focus !== false && !cm.hasFocus) cm.focus();
+    Ed.mark(g, -1);
   },
   extendTo(g, l, c) {
     const cm = Ed.cm(g); if (!cm) return;
@@ -1784,7 +1794,11 @@ Object.assign(Ed, {
         perf.mark("ed_patch", t0, { lines: d.lines, patched: n, full: n >= d.lines && d.lines > 3 });
       }
     }
-    if (u.selectionSet || u.docChanged) { const p = Ed.focusPos(g); Ed.mark(g, p ? p.l : -1); }
+    // goal mt-fix: the caret Ed.home placed (note open, reading -> edit) opens no raw row: [mode:lp] stays bare
+    if (u.selectionSet || u.docChanged) {
+      if (!u.docChanged && Ed.HOME_SEL && u.transactions.some(t => t.annotation(Ed.HOME_SEL))) Ed.census();
+      else { const p = Ed.focusPos(g); Ed.mark(g, p ? p.l : -1); }
+    }
   },
   /* keys CM6 does not own: Enter (list continuation), Backspace/Delete (model
      deletes), Tab, Home/End, raw-column arrows, undo/redo, select-all — the
@@ -2292,7 +2306,8 @@ Ed.cbField = function (v, G, bust) {
     const h = Ed.cbHook;
     if (!h || !h.any()) return Decoration.none;
     const g = G();
-    if (!g || (v.lp && v.lp.classList.contains("src"))) return Decoration.none;
+    const tb = g && g.view === v && g.active >= 0 ? g.tabs[g.active] : null;   // goal mt-fix: the lp a reading view keeps laid out renders none
+    if (!g || (v.lp && v.lp.classList.contains("src")) || (tb && tb.mode === "reading")) return Decoration.none;
     const blocks = Ed.cbFences(st.doc);
     if (!blocks.length) return Decoration.none;
     const n = typeof curOf === "function" && g.view === v ? curOf(g) : v.note, path = n ? n + ".md" : "", gen = h.gen() + "/" + (v._cbRb || 0), out = [];
