@@ -260,12 +260,11 @@ pub fn reconcile(root: &Path, d: &Diff, ix: &mut Index) -> Change {
    list AND that lstat cannot find is gone, and is reported as removed.
    Caller holds the index lock. A note created after the walk is on disk, so
    lstat finds it and it is kept; a short walk (S1) is healed the same way.
-   Cost: one len compare per tick; the scan runs only when the Index holds
-   more names than the walk listed. */
+   Cost: one map lookup per Index name per tick (the walk itself lstats every
+   note). Not a length compare: the walk can list a name the Index lacks (an
+   outside add whose read failed in reconcile), so equal counts do not mean
+   equal sets and a ghost hid behind it for good. */
 pub fn sweep_ghosts(root: &Path, cur: &Snapshot, ix: &mut Index) -> Vec<String> {
-    if ix.len() <= cur.len() {
-        return Vec::new();
-    }
     let ghosts: Vec<String> = ix
         .names()
         .iter()
@@ -335,6 +334,15 @@ mod tests {
         // steady state: nothing to sweep
         let s2 = snapshot(&root);
         assert!(sweep_ghosts(&root, &s2, &mut ix).is_empty());
+        // the walk lists an outside note the Index lacks while one of ours is gone: same COUNT, different names
+        fs::create_dir_all(root.join("Nope")).unwrap();
+        w(&root, "Nope/ours", "");
+        ix.upsert("Nope/ours", "");
+        fs::remove_dir_all(root.join("Nope")).unwrap();
+        w(&root, "Outside", "o\n");
+        let s3 = snapshot(&root);
+        assert_eq!(s3.len(), ix.len());
+        assert_eq!(sweep_ghosts(&root, &s3, &mut ix), vec!["Nope/ours".to_string()]);
         let _ = fs::remove_dir_all(&root);
     }
 
