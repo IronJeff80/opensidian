@@ -232,8 +232,9 @@ pub fn read_data(root: &Path, id: &str) -> Result<serde_json::Value, String> {
     match plugin_file_in(root, id, "data.json", MAX_DATA_JSON)? {
         None => Ok(serde_json::Value::Null),
         Some(p) => {
-            let s = fs::read_to_string(&p).map_err(|e| format!("{id}/data.json: {e}"))?;
-            Ok(serde_json::from_str(&s).unwrap_or(serde_json::Value::Null))
+            // bytes, not a String: a file cut inside a multi-byte character is invalid JSON (null), not a read error
+            let b = fs::read(&p).map_err(|e| format!("{id}/data.json: {e}"))?;
+            Ok(serde_json::from_slice(&b).unwrap_or(serde_json::Value::Null))
         }
     }
 }
@@ -421,6 +422,9 @@ mod tests {
         assert_eq!(read_data(&r, "good").unwrap(), serde_json::json!({"a": 1}));
         assert!(fs::read_to_string(r.join(".obsidian/plugins/good/data.json")).unwrap().contains("\"a\": 1"));
         fs::write(r.join(".obsidian/plugins/good/data.json"), "{\n  \"globalFilter\": \"#task\",\n  \"globalQuery\": \"not do").unwrap();
+        assert_eq!(read_data(&r, "good").unwrap(), serde_json::Value::Null);
+        // cut inside a multi-byte character: invalid JSON too, not a load error
+        fs::write(r.join(".obsidian/plugins/good/data.json"), b"{\"k\": \"\xc3").unwrap();
         assert_eq!(read_data(&r, "good").unwrap(), serde_json::Value::Null);
         for bad in ["..", "../good", "a/b", ".obsidian", "nosuch"] {
             assert!(write_data(&r, bad, &serde_json::json!(1)).is_err(), "{bad}");
