@@ -341,23 +341,25 @@
       const skip = () => { while (i < n && (/^\s*$/.test(lines[i]) || /^\s*#/.test(lines[i]))) i++; };
       const isSeq = t => /^-(\s|$)/.test(t);
       const noComment = s => { const m = s.match(/(^|\s)#/); return (m ? s.slice(0, m.index) : s).trim(); };
-      /* A quoted or flow value may span lines. B = { s, more }: B.s is the value folded so far and B.more() folds
-         the next line onto it (false when the document ended). The scanners below pull a line only when they run
-         off the end of B.s and then carry on from where they stopped, so a multi-line value is scanned once
-         (linear), instead of being re-parsed from its first character after every folded line (quadratic: a
-         large frontmatter value could hold the UI thread for seconds on every metadata sweep). */
+      /* A quoted or flow value may span lines. B = { s, more }: B.s is a window on the value folded so far and
+         B.more(keep, esc) drops the first keep characters of the window (text the caller has consumed), then folds
+         the next line onto it (false when the document ended; the caller then moves its index back by keep). The
+         scanners below pull a line only when they run off the end of B.s and carry on from where they stopped, so a
+         multi-line value is scanned once. The window holds about one line: growing one string by a line and then
+         indexing it copies the whole string (V8 flattens the rope), so a window over the whole value made every
+         fold cost the length folded so far (quadratic in the line count: a note of short lines froze the UI). */
       const X = { n: "\n", t: "\t", r: "\r", 0: "\0", a: "\x07", b: "\b", e: "\x1b", f: "\f", v: "\v", " ": " ", "/": "/", '"': '"', "\\": "\\", N: "\x85", _: "\xa0" };
       function quoted(B, p) {   // -> [value, index after the closing quote]; throws UNTERM
         const q = B.s[p]; let v = ""; p++;
         for (;;) {
-          if (p >= B.s.length) { if (B.more && B.more()) continue; throw UNTERM; }
+          if (p >= B.s.length) { if (B.more && B.more(p)) { p = 0; continue; } throw UNTERM; }
           const s = B.s, c = s[p];
           if (q === "'") { if (c === "'") { if (s[p + 1] === "'") { v += "'"; p += 2; continue; } return [v, p + 1]; } v += c; p++; continue; }
           if (c === '"') return [v, p + 1];
           if (c !== "\\") { v += c; p++; continue; }
           const e = s[p + 1];
-          // a backslash ending the line: fold, then read s[p] again (an escaped break drops the backslash)
-          if (e === undefined) { if (B.more && B.more()) continue; throw UNTERM; }
+          // a backslash ending the line: fold, then read the window from that backslash again (an escaped break drops it)
+          if (e === undefined) { if (B.more && B.more(p, true)) { p = 0; continue; } throw UNTERM; }
           if (e in X) { v += X[e]; p += 2; continue; }
           const w = { x: 2, u: 4, U: 8 }[e], h = w && s.slice(p + 2, p + 2 + w);
           if (!w || !/^[0-9a-fA-F]+$/.test(h) || h.length !== w) throw err("bad escape \\" + e);
@@ -368,7 +370,7 @@
         let p = 0;
         const ws = () => { while (p < B.s.length && /\s/.test(B.s[p])) p++; };
         const need = () => {    // skip whitespace, folding lines until there is a character to read; UNTERM at the end
-          ws(); while (p >= B.s.length) { if (!(B.more && B.more())) throw UNTERM; ws(); }
+          ws(); while (p >= B.s.length) { if (!(B.more && B.more(p))) throw UNTERM; p = 0; ws(); }
         };
         function item(inMap) {
           need();
@@ -387,13 +389,16 @@
               if (B.s[p] === ",") { p++; need(); if (B.s[p] === "}") { p++; return o; } continue; }
               if (B.s[p] === "}") { p++; return o; } throw err("bad flow mapping"); } }
           if (c === '"' || c === "'") { const [v, e] = quoted(B, p); p = e; return v; }
-          const st = p;
+          let st = p, acc = "";
           for (;;) {   // a plain scalar that reaches the end of the line goes on with the folded next line
             const s = B.s;
             while (p < s.length && !/[,\[\]{}]/.test(s[p]) && !(s[p] === ":" && /^[\s,\]}]?$/.test(s[p + 1] ?? ""))) p++;
-            if (p < B.s.length || !(B.more && B.more())) break;
+            if (p < s.length) break;
+            const part = s.slice(st, p);   // the window drops what was read, so the scalar so far is kept here
+            if (!(B.more && B.more(p))) break;
+            acc += part; st = p = 0;
           }
-          return plainScalar(B.s.slice(st, p).trim());
+          return plainScalar((acc + B.s.slice(st, p)).trim());
         }
         const v = item(false); ws();
         if (p < B.s.length && B.s[p] !== "#") throw err("content after flow collection");
@@ -417,14 +422,17 @@
       }
       function inline(s, ind) {  // a scalar or flow value that starts on the current (already consumed) line
         if (s[0] === '"' || s[0] === "'" || s[0] === "[" || s[0] === "{") {
-          const dq = s[0] === '"', B = { s, more() {
+          // pre: the folded character just before the window (what the window dropped ended with)
+          const dq = s[0] === '"', B = { s, pre: "", more(keep, esc) {
             if (i >= n) return false;
             // line folding (stock): an empty line is "\n" with no space before the next text; a double-quoted line
-            // ending in an unescaped backslash escapes the break (next line joins with no space: "b\" + "c" -> "bc")
-            const t = lines[i].trim(), u = B.s; let bs = 0;
-            while (bs < u.length && u[u.length - 1 - bs] === "\\") bs++;
-            if (dq && bs % 2 === 1) B.s = u.slice(0, -1) + t;
-            else B.s = u + (t ? (u.endsWith("\n") ? t : " " + t) : "\n");
+            // ending in an unescaped backslash escapes the break (next line joins with no space: "b\" + "c" -> "bc").
+            // esc: quoted() stopped on that backslash (it is B.s[keep], the window's last character); a backslash
+            // the scanner reads at the end of a line is unescaped exactly when the run of them there is odd
+            const t = lines[i].trim(), u = B.s, last = u.length ? u[u.length - 1] : B.pre;
+            if (dq && esc) B.s = u.slice(keep, -1) + t;
+            else B.s = u.slice(keep) + (t ? (last === "\n" ? t : " " + t) : "\n");
+            if (keep > 0) B.pre = u[keep - 1];
             i++; return true;
           } };
           try {
