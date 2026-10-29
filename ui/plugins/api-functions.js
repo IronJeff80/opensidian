@@ -321,7 +321,10 @@
        scalars, | > block scalars. Invalid documents throw YAMLParseError (duplicate key, unclosed flow or quote,
        bad indentation), so a note with broken frontmatter has none, as in stock. */
     function plainScalar(v) {
-      if (v === "" || /^(null|Null|NULL|~)$/.test(v)) return null;
+      if (v === "") return null;
+      // every pattern below starts with one of these characters: other text skips nine regex tests (many short items)
+      if (!"nNtTfF~0123456789+-.".includes(v[0])) return v;
+      if (/^(null|Null|NULL|~)$/.test(v)) return null;
       if (/^(true|True|TRUE)$/.test(v)) return true;
       if (/^(false|False|FALSE)$/.test(v)) return false;
       if (/^[-+]?[0-9]+$/.test(v)) return Number(v);
@@ -368,7 +371,10 @@
       }
       function flow(B) {        // one flow collection starting at B.s[0]; throws UNTERM when it runs off the end
         let p = 0;
-        const ws = () => { while (p < B.s.length && /\s/.test(B.s[p])) p++; };
+        // ws / the plain scalar test character codes (a regex per character was most of a long flow value's time);
+        // non-ASCII still goes through /\s/, so the whitespace set is unchanged
+        const isWs = (s, p) => { const c = s.charCodeAt(p); return c === 32 || (c >= 9 && c <= 13) || (c > 127 && /\s/.test(s[p])); };
+        const ws = () => { const s = B.s; while (p < s.length && isWs(s, p)) p++; };
         const need = () => {    // skip whitespace, folding lines until there is a character to read; UNTERM at the end
           ws(); while (p >= B.s.length) { if (!(B.more && B.more(p))) throw UNTERM; p = 0; ws(); }
         };
@@ -392,7 +398,11 @@
           let st = p, acc = "";
           for (;;) {   // a plain scalar that reaches the end of the line goes on with the folded next line
             const s = B.s;
-            while (p < s.length && !/[,\[\]{}]/.test(s[p]) && !(s[p] === ":" && /^[\s,\]}]?$/.test(s[p + 1] ?? ""))) p++;
+            for (; p < s.length; p++) {   // stops at , [ ] { } and at a ":" before whitespace, , ] } or the end
+              const c = s.charCodeAt(p);
+              if (c === 44 || c === 91 || c === 93 || c === 123 || c === 125) break;
+              if (c === 58 && (p + 1 >= s.length || ",]}".includes(s[p + 1]) || isWs(s, p + 1))) break;
+            }
             if (p < s.length) break;
             const part = s.slice(st, p);   // the window drops what was read, so the scalar so far is kept here
             if (!(B.more && B.more(p))) break;
