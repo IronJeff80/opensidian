@@ -1789,12 +1789,15 @@
      filename is the entry's base name. recursive watches the top level only. An abort signal ends the
      iterator with AbortError (fs.watch: emits "close"). Paths are the facade's ("/vault/x" or "x"). */
   const WATCH_MS = 250;
-  async function watchSnap(p) {
-    const m = new Map(), sig = s => s.type + ":" + s.size + ":" + s.mtime;
-    const st = await host.vfs.stat(p).catch(() => null);
+  /* PR #33 review: the FIRST snapshot keeps a stat / list failure of the watched path (ENOENT, EPERM from the VFS), so
+     the watch reports it as Node's does (fs.promises.watch: the iterator throws; fs.watch: "error") instead of polling
+     an empty snapshot forever. A later poll still reads a vanished path as empty ("rename" for what went away). */
+  async function watchSnap(p, first) {
+    const m = new Map(), sig = s => s.type + ":" + s.size + ":" + s.mtime, keep = e => { throw e; };
+    const st = await host.vfs.stat(p).catch(first ? keep : () => null);
     if (!st) return m;
     if (st.type !== "folder") { m.set(String(p).replace(/\/+$/, "").split("/").pop(), sig(st)); return m; }
-    for (const [n] of await host.vfs.list(p).catch(() => [])) {
+    for (const [n] of await host.vfs.list(p).catch(first ? keep : () => [])) {
       const s = await host.vfs.stat(String(p).replace(/\/+$/, "") + "/" + n).catch(() => null);
       if (s) m.set(n, sig(s));
     }
@@ -1813,7 +1816,8 @@
     const stop = e => { if (done) return; done = true; err = e || null; clearTimeout(timer); if (wake) { const w = wake; wake = null; w(); } };
     const poll = async () => {
       if (done) return;
-      const cur = await watchSnap(p);
+      let cur;
+      try { cur = await watchSnap(p, !prev); } catch (e) { stop(e); return; }
       if (prev) for (const e of watchDiff(prev, cur)) q.push(e);
       prev = cur;
       if (q.length && wake) { const w = wake; wake = null; w(); }
@@ -1843,7 +1847,10 @@
       if (sig) { if (sig.aborted) this._ac.abort(); else sig.addEventListener("abort", () => this.close(), { once: true }); }
       if (typeof l === "function") this.on("change", l);
       const it = watchP(p, Object.assign({}, o, { signal: this._ac.signal }));
-      (async () => { try { for (;;) { const r = await it.next(); if (r.done) break; this.emit("change", r.value.eventType, r.value.filename); } } catch (_) { /* closed */ } })();
+      (async () => { try { for (;;) { const r = await it.next(); if (r.done) break; this.emit("change", r.value.eventType, r.value.filename); } } catch (e) {
+        // closed (AbortError), or the watched path could not be read at the start: Node's watcher reports that as "error"
+        if (e && e.name !== "AbortError" && !this._closed) { if (this.listenerCount("error")) this.emit("error", e); else console.error("[desktop] fs.watch:", e); }
+      } })();
     }
     close() { if (this._closed) return; this._closed = true; this._ac.abort(); later(() => this.emit("close")); }
     ref() { return this; } unref() { return this; }
