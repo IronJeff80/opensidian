@@ -239,9 +239,19 @@ pub fn read_data(root: &Path, id: &str) -> Result<serde_json::Value, String> {
     }
 }
 
-/// Plugin.saveData(): pretty JSON (Obsidian writes 2-space), atomic, confined
+/// Plugin.saveData(): pretty JSON (Obsidian writes 2-space), atomic, confined. A data.json that is not valid JSON
+/// (loadData gave the plugin null, so it is saving its defaults) is copied to data.json.invalid first, so the save
+/// does not destroy the settings the user's broken edit still holds
 pub fn write_data(root: &Path, id: &str, data: &serde_json::Value) -> Result<(), String> {
-    plugin_file_in(root, id, "data.json", MAX_DATA_JSON)?; // a symlinked data.json refuses
+    // a symlinked data.json refuses
+    if let Some(p) = plugin_file_in(root, id, "data.json", MAX_DATA_JSON)? {
+        let old = fs::read(&p).map_err(|e| format!("{id}/data.json: {e}"))?;
+        if serde_json::from_slice::<serde_json::Value>(&old).is_err() {
+            crate::vaultfs::write_atomic(root, &rel_in(root, id, "data.json.invalid")?, &old)
+                .map_err(|e| format!("{id}/data.json.invalid: {e}"))?;
+            eprintln!("[plugins] {id}/data.json was not valid JSON: kept as data.json.invalid before the save");
+        }
+    }
     let body = serde_json::to_string_pretty(data).map_err(|e| e.to_string())?;
     if body.len() as u64 > MAX_DATA_JSON {
         return Err(format!("{id}/data.json: too big"));
@@ -426,6 +436,12 @@ mod tests {
         // cut inside a multi-byte character: invalid JSON too, not a load error
         fs::write(r.join(".obsidian/plugins/good/data.json"), b"{\"k\": \"\xc3").unwrap();
         assert_eq!(read_data(&r, "good").unwrap(), serde_json::Value::Null);
+        // saving over the invalid file keeps its bytes as data.json.invalid; a valid one is replaced as is
+        write_data(&r, "good", &serde_json::json!({"d": 2})).unwrap();
+        assert_eq!(fs::read(r.join(".obsidian/plugins/good/data.json.invalid")).unwrap(), b"{\"k\": \"\xc3");
+        assert_eq!(read_data(&r, "good").unwrap(), serde_json::json!({"d": 2}));
+        write_data(&r, "good", &serde_json::json!({"d": 3})).unwrap();
+        assert_eq!(fs::read(r.join(".obsidian/plugins/good/data.json.invalid")).unwrap(), b"{\"k\": \"\xc3");
         for bad in ["..", "../good", "a/b", ".obsidian", "nosuch"] {
             assert!(write_data(&r, bad, &serde_json::json!(1)).is_err(), "{bad}");
             assert!(read_data(&r, bad).is_err(), "{bad}");
