@@ -3299,6 +3299,7 @@ addEventListener("resize", () => {                 // the census must follow the
    key_to_paint span. */
 let rvSelT = null;
 document.addEventListener("selectionchange", () => {
+  if (!CENSUS_ON) return;        // census-gate: only republishes [rvsel:]
   const s = window.getSelection(), n = s && s.anchorNode;
   if (!n) return;
   const e = n.nodeType === 1 ? n : n.parentNode;
@@ -3478,6 +3479,7 @@ function bmCollapseAll() {
 // one pending rAF for every image load/error in a frame (audit #10, see the [xi:] probe)
 let xiPending = false;
 function xiAgain() {
+  if (!CENSUS_ON) return;        // census-gate: only republishes [xi:]/[pf:]
   if (xiPending) return;
   xiPending = true;
   requestAnimationFrame(() => { xiPending = false; updateTitle(); });
@@ -3533,6 +3535,30 @@ function updateTitleNow() {      // flush: publish the census in this task
   try { utBuild(); }
   finally { const t1 = performance.now(); utCost = t1 - t0; utLast = t1; utRan = true; utArm(); }
 }
+/* census-gate (issue #30): the title path with the census OFF (CENSUS_ON false, ui/census.js —
+   every launch without OPENSIDIAN_CENSUS=1). utBuild returns here right after rTrack(), so no
+   inline or registered token is built and no layout is read. What still runs is every NON-census
+   side effect the census build carried (DESIGN.md, goal census-gate):
+   - navBtnSync(): back/forward .disabled per pane (the census build ran it before [nvb:]);
+   - caFace() of both collapse-all toggles (caSync, ui/census.js, without its rects);
+   - the plugin host's censusTick(): focusTick (file-open / active-leaf-change) + EA.tick;
+   - wsTouch(): R28.3, every mutation funnels through updateTitle — arm the layout write.
+   The title is the plain "<note> - <vault> - Opensidian", written (DOM + one setTitle IPC) only
+   when it CHANGES, so a keystroke costs no IPC. */
+let utPlain = "";
+function utLite() {
+  navBtnSync();
+  caFace($("fecabtn"), feCaState().lab);
+  caFace($("bmcabtn"), bmCaState().lab);
+  const H = window.__osPluginHost;
+  if (H && H.censusTick) { try { H.censusTick(); } catch (e) { console.error("[plugin] tick:", e); } }
+  const g = fg(), tb = g && g.active >= 0 ? g.tabs[g.active] : null;
+  const nm = tb ? (!tb.kind ? String(tb.name || "").split("/").pop().replace(/\.md$/i, "") : String(tb.title || "")) : "";
+  const vn = String(vaultPath || "").replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+  const t = (nm ? nm + " - " : "") + (vn ? vn + " - " : "") + "Opensidian";
+  if (t !== utPlain) { utPlain = t; document.title = t; pushTitle(t); }
+  wsTouch();
+}
 function utBuild() {             // pane/focus census in the window title (headless probe)
   /* No layout yet (boot, before the first vault load sets `state`): there is nothing
      to publish. Every updateTitle() caller used to be guarded one by one (the R33.6b
@@ -3545,6 +3571,7 @@ function utBuild() {             // pane/focus census in the window title (headl
      Guard the one place that reads it, so no future caller can bring it back. */
   if (!state) return;
   rTrack();                     // lgpanes: keep rLeaf current even with the right sidebar closed
+  if (!CENSUS_ON) return utLite();   // census-gate (issue #30): shipped builds stop HERE — no token, no layout read, no census title
   const ps = [...document.querySelectorAll("#main .pane")];
   const nf = document.querySelectorAll("#main .pane.focused").length;
   const fx = (state.root.fractions || []).map(f => f.toFixed(2)).join(",");
@@ -7458,6 +7485,7 @@ function qsFoot(on) {                   // stock's static instructions row (r1 c
    and closing the modal still publish synchronously. */
 let mdTitleT = null;
 function mdTitleSoon() {
+  if (!CENSUS_ON) return;        // census-gate: only republishes [mdnew:]
   if (mdTitleT) return;
   mdTitleT = setTimeout(() => { mdTitleT = null; updateTitle(); }, 30);
 }
@@ -9623,7 +9651,7 @@ $("rninput").onkeydown = async e => {
   await renameThenAsk(old, nn);
 };
 
-if (document.fonts) document.fonts.addEventListener("loadingdone", () => updateTitle());   // R15.2: republish [fonts:] once a lazy @font-face lands
+if (CENSUS_ON && document.fonts) document.fonts.addEventListener("loadingdone", () => updateTitle());   // R15.2: republish [fonts:] once a lazy @font-face lands
 
 /* perf (INTEGRATE): compositor FLOOR probe — N no-op 1px repaints driven through
    the SAME act() -> otel.paint() path every interaction uses, so each op can be
@@ -11812,7 +11840,7 @@ function sgearTok() {
     // the BOOT picker's window stays untitled by the census (no 'panes:', see
     // loadRecent) — so the reason is published as "opensidian [vault:-]
     // [vargerr:...]" only, never the pane census
-    $("p-err").textContent = bootNote; const pt = "Opensidian" + vargTok(); document.title = pt; pushTitle(pt); } }
+    $("p-err").textContent = bootNote; const pt = CENSUS_ON ? "Opensidian" + vargTok() : "Opensidian"; /* census-gate */ document.title = pt; pushTitle(pt); } }
   // R30 / T2: the table AND the nav DOM are warmed off the open path — the nav is
   // 19 entries that never change, so building it at boot into the hidden modal
   // takes the only unavoidable DOM work out of the open keystroke. The pane stays
@@ -12200,6 +12228,7 @@ function sactCtl(r) {
                                 glyph-centre offset from the button centre, right/top inset in its card */
 let buiSelMax = 0, buiPress = 0;
 document.addEventListener("selectionchange", () => {
+  if (!CENSUS_ON) return;        // census-gate: feeds [bui:sel=] only
   const n = String(getSelection() || "").length;
   if (n > buiSelMax) buiSelMax = n;
 });
@@ -13764,7 +13793,7 @@ function psgTok() {
     ";btn=" + btn + ";pb=" + pb + ";ovf=" + bad.length + "," + bad.slice(0, 4).join(",").slice(0, 160) + "]";
 }
 function psgPublish() {
-  if (!psgProbe || vaultPath || $("picker").hidden) return;
+  if (!CENSUS_ON || !psgProbe || vaultPath || $("picker").hidden) return;   // census-gate: a census title, never without OPENSIDIAN_CENSUS=1
   const t = "Opensidian" + vargTok() + psgTok() + sbarTok();   // noscroll: the boot picker's root/element scrollbars too (the pane census never runs here)
   if (t === psgLast) return;
   psgLast = t; document.title = t; pushTitle(t);

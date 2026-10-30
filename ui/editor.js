@@ -1461,7 +1461,7 @@ Ed.rvTaskTok = () => {
    reason the context menu refreshes it on its own scroll). Debounced: one
    title write per settled scroll, not per wheel tick. */
 let rvTaskScT = null;
-document.addEventListener("scroll", e => {
+if (CENSUS_ON) document.addEventListener("scroll", e => {   // census-gate: census-only listener, not registered when OFF
   const t = e.target;
   if (!t || !t.classList || !t.classList.contains("preview")) return;
   clearTimeout(rvTaskScT);

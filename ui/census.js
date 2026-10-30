@@ -12,6 +12,12 @@
 // lines here are append-only; change a token by changing the function it calls.
 // Tokens are appended AFTER every inline token (end of the title), in this
 // file's line order; a token that throws is published as [cerr:<index>].
+// census-gate (issue #30): the census is a TEST/DEV probe. ON only when the process was started
+// with OPENSIDIAN_CENSUS=1 (or is a devui build): src-tauri/src/census.rs then injects a frozen
+// window.__OS_CENSUS before any page script. OFF (every shipped launch) updateTitle() takes the
+// lite path (ui/main.js utLite): no token here or inline is built, no layout is read, the
+// native title is the plain "note - vault - Opensidian".
+const CENSUS_ON = window.__OS_CENSUS === true;
 var CENSUS = [];
 CENSUS.push(() => { const L = CMDS.filter(c => c.id === "editor:toggle-bullet-list" || c.id === "editor:toggle-numbered-list"); return " [lt:" + L.length + "/" + L.filter(c => !c.when || c.when()).length + "]"; });   // listtoggle: both list commands registered / offered by the palette (editing view only)
 CENSUS.push(() => sgeoTok());   // setcenter R3: settings modal geometry [sbox:] [snav:] [srow1:] [shkf:] [shkc:] [shk1/2:] (only while settings is open)
