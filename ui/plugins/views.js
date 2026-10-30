@@ -294,6 +294,10 @@
         if (active !== false || g.active < 0) { g.active = g.tabs.indexOf(t); if (typeof focusGroup === "function") try { focusGroup(g); } catch (_) {} if (typeof loadActive === "function") await loadActive(g); }
         else if (typeof renderTabs === "function") renderTabs(g);
       }
+      async function noteSaved(g, t0) {   // false: t0 is the active note, it held unsaved edits and they did not reach disk
+        if (activeTab(g) !== t0 || typeof bufDirty !== "function" || !bufDirty(g)) return true;
+        try { return !!(await flushSave(g)); } catch (_) { return false; }
+      }
       async function closeTabOf(t) {
         const g = groupOfTab(t); if (!g) { const r = recs.get(t); if (r) closeRec(r); return; }
         const i = g.tabs.indexOf(t);
@@ -688,7 +692,9 @@
         }
         // PR #33 review: a PINNED note leaf is never replaced (as getLeaf and the "replace" open above): the view opens in a
         // new tab after it and the note stays
-        else if (t0 && !t0.kind && !t0.pinned && active && !leaf._nt && (PV_INPLACE.has(type) || (state && state.file))) {
+        // PR #33 review: the note goes with no flush of its own (closeTab noFlush, and it is no longer the active tab), so
+        // its edits are written first; a write that fails keeps the note (the view opens after it, as on a pinned note)
+        else if (t0 && !t0.kind && !t0.pinned && active && !leaf._nt && (PV_INPLACE.has(type) || (state && state.file)) && await noteSaved(g, t0)) {
           // cvf-links CVR-A-096: a canvas opened from a NOTE leaf (a [[X.canvas]] link / embed click) replaces the
           // note in the same tab, as stock: the canvas tab goes in right after it, then the note tab goes (count unchanged).
           // Any file view opened on the note's own leaf does the same (Excalidraw "create new drawing - in the current
