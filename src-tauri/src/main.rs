@@ -5271,7 +5271,7 @@ fn watch_tick(v: &Vault, prev: &mut Option<(PathBuf, watcher::Snapshot)>) -> wat
                 let claimed = d.removed.len();
                 let mut c2 = watcher::snapshot(&root);
                 let mut d2 = watcher::diff(s, &c2);
-                let healed = watcher::heal_short_walk(&root, &mut c2, &mut d2);
+                let healed = watcher::heal_short_walk(&root, s, &mut c2, &mut d2);
                 if d2.removed.len() < claimed {
                     eprintln!(
                         "[tabclose] SHORT WALK REJECTED claimed={claimed} confirmed={} restat_healed={:?} kept={:?}",
