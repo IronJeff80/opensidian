@@ -625,7 +625,13 @@
     /* a tab with setting definitions is rendered from them, as stock 1.13.7 does: its own display() is the
        legacy fallback and is not called (excalidraw overrides display() with its single-page settings and
        hands 1.13+ its multi-page definitions); a tab with none runs display() */
-    const sdShow = tab => (tab.settingItems && tab.settingItems.length ? sdRender(tab) : tab.display());
+    // PR #33 review: definitions that became empty take their rendering down (rows and their callbacks, as hide()
+    // does) before display() runs, so no stale declarative rows stay on screen live
+    const sdShow = tab => {
+      if (tab.settingItems && tab.settingItems.length) return sdRender(tab);
+      if (tab._dom) { sdTeardown(tab); tab.containerEl.empty(); }
+      return tab.display();
+    };
     class SettingTab {
       constructor() {
         installDom();
