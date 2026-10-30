@@ -337,10 +337,13 @@
     }
     function parseYaml(src) {
       const lines = String(src).replace(/\r\n?/g, "\n").split("\n"), n = lines.length;
-      let i = 0;
+      // vl / vc: the line an inline "- " item continues on (sequence below) and the column its content starts at
+      let i = 0, vl = -1, vc = 0;
       const err = (m, at = i) => { const e = new Error(m + " (line " + (at + 1) + ")"); e.name = "YAMLParseError"; return e; };
       const UNTERM = {}, anchors = Object.create(null);
       const indent = l => l.match(/^ */)[0].length;
+      // the current line's indentation: an inline item ('- - x', '- k: v') reads its content as a line indented to its column
+      const lead = () => i === vl ? vc : indent(lines[i]);
       const skip = () => { while (i < n && (/^\s*$/.test(lines[i]) || /^\s*#/.test(lines[i]))) i++; };
       const isSeq = t => /^-(\s|$)/.test(t);
       const noComment = s => { const m = s.match(/(^|\s)#/); return (m ? s.slice(0, m.index) : s).trim(); };
@@ -503,7 +506,7 @@
         if (!t || t[0] === "#") {
           skip(); v = null;
           if (i < n) {
-            const d = indent(lines[i]), s = lines[i].slice(d);
+            const d = lead(), s = lines[i].slice(d);
             if (d > ind) v = node(d);
             else if (d === ind && !item && isSeq(s)) v = sequence(d);
           }
@@ -517,7 +520,7 @@
         const o = {};
         for (;;) {
           skip(); if (i >= n) return o;
-          const d = indent(lines[i]); if (d < ind) return o;
+          const d = lead(); if (d < ind) return o;
           if (d > ind) throw err("bad indentation of a mapping entry");
           const t = lines[i].slice(d); if (isSeq(t)) return o;
           const kv = keyOf(t); if (!kv) throw err("can not read a block mapping entry");
@@ -529,11 +532,14 @@
         const a = [];
         for (;;) {
           skip(); if (i >= n) return a;
-          const d = indent(lines[i]); if (d < ind) return a;
+          const d = lead(); if (d < ind) return a;
           if (d > ind) throw err("bad indentation of a sequence entry");
           const t = lines[i].slice(d); if (!isSeq(t)) return a;
           const sp = t.slice(1).match(/^\s*/)[0].length, col = d + 1 + sp, rest = t.slice(1 + sp);
-          if (rest && (isSeq(rest) || (rest[0] !== "#" && keyOf(rest)))) { lines[i] = " ".repeat(col) + rest; a.push(node(col)); continue; }
+          // the item's content is a node at col on this same line: lines[i].slice(col) is rest already, so only its
+          // indentation is recorded (PR #33 review: rebuilding the line per level cost O(line) per level, quadratic
+          // time and one line copy per level held for a single line of nested "- - - ...")
+          if (rest && (isSeq(rest) || (rest[0] !== "#" && keyOf(rest)))) { vl = i; vc = col; a.push(node(col)); continue; }
           i++; a.push(value(rest, d, true));
         }
       }
@@ -544,7 +550,9 @@
         i++; return inline(t.trim(), ind - 1);
       }
       skip(); if (i >= n) return null;
-      const v = node(indent(lines[i])); skip();
+      // nesting past the JS stack (a line of "- - - ..." with no item limit) is a parse error, not a raw RangeError
+      let v; try { v = node(indent(lines[i])); } catch (e) { if (e instanceof RangeError) throw err("nesting too deep"); throw e; }
+      skip();
       if (i < n) throw err("end of the stream or a document separator is expected");
       return v;
     }
