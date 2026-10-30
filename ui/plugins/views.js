@@ -287,12 +287,15 @@
         for (const g of M().groups()) for (const t of g.tabs) live.add(t);
         for (const [t, r] of [...recs]) if (!live.has(t) && !r.side) closeRec(r);
       }
-      async function openTabView(g, t, at, active) {   // insert t into g at `at` (no splice: tabclose census)
+      async function openTabView(g, t, at, active, guard) {   // insert t into g at `at` (no splice: tabclose census)
         if (typeof flushSave === "function") try { await flushSave(g); } catch (_) {}
+        // PR #33 review: `guard` runs after the last await before the switch (nothing can type in between); false = nothing inserted
+        if (guard && !guard()) return false;
         g.tabs.push(t);
         if (at < g.tabs.length - 1) { g.tabs.copyWithin(at + 1, at); g.tabs[at] = t; }
         if (active !== false || g.active < 0) { g.active = g.tabs.indexOf(t); if (typeof focusGroup === "function") try { focusGroup(g); } catch (_) {} if (typeof loadActive === "function") await loadActive(g); }
         else if (typeof renderTabs === "function") renderTabs(g);
+        return true;
       }
       async function noteSaved(g, t0) {   // true only when t0 provably holds no edits the disk lacks
         // bufDirty/flushSave only see the group's ACTIVE buffer: an inactive note tab whose last save failed may still
@@ -697,14 +700,21 @@
         // new tab after it and the note stays
         // PR #33 review: the note goes with no flush of its own (closeTab noFlush, and it is no longer the active tab), so
         // its edits are written first; a write that fails keeps the note (the view opens after it, as on a pinned note)
-        else if (t0 && !t0.kind && !t0.pinned && active && !leaf._nt && (PV_INPLACE.has(type) || (state && state.file)) && await noteSaved(g, t0)) {
+        else if (t0 && !t0.kind && !t0.pinned && active && !leaf._nt && (PV_INPLACE.has(type) || (state && state.file))) {
           // cvf-links CVR-A-096: a canvas opened from a NOTE leaf (a [[X.canvas]] link / embed click) replaces the
           // note in the same tab, as stock: the canvas tab goes in right after it, then the note tab goes (count unchanged).
           // Any file view opened on the note's own leaf does the same (Excalidraw "create new drawing - in the current
           // active window" turns the note leaf into its drawing view: stock keeps one tab, not the note plus the drawing).
-          await openTabView(g, t, at, true);
-          const j = g.tabs.indexOf(t0);
-          if (j >= 0 && typeof closeTab === "function") await closeTab(g, j, "plugin-detach", "plugin", true);
+          // PR #33 review: the save captures the buffer before its I/O, so keys typed while it is in flight are not in it:
+          // the note goes only if it is still the shown tab and clean at the switch itself (the guard runs after the last await)
+          if (await noteSaved(g, t0) && await openTabView(g, t, at, true, () => activeTab(g) === t0 && !(typeof bufDirty === "function" && bufDirty(g)))) {
+            const j = g.tabs.indexOf(t0);
+            if (j >= 0 && typeof closeTab === "function") await closeTab(g, j, "plugin-detach", "plugin", true);
+          }
+          // PR #33 review: not saved (F1 banner up) or edited since: the note stays the ACTIVE tab, dirty where the next
+          // save, the dirty census and leaveVault/quit (active tabs only) see it; the view opens after it, not shown.
+          // A note that was not the shown tab (noteSaved false, e6aec6f7) keeps it as before: the view opens after it, shown
+          else await openTabView(g, t, at, activeTab(g) !== t0);
         }
         else if (t0 && !active && !leaf._nt) {
           // a leaf already showing something changes view in place: the active leaf stays where it is (stock);
