@@ -288,6 +288,9 @@
         if (!hidden) { const st = await core.stat(ap(b)).catch(() => null); await adapterMade(b, st && st.size, st && st.type === "folder"); }
         return;
       }
+      // PR #33 review: a rename onto a path in the model replaced that file on disk; it leaves the model (with its
+      // "delete") first, so the moved entry is the only one there (getFiles reported both)
+      const g = files.get(rb); if (g && g !== f) await adapterGone(b);
       if (f instanceof TFile && noteOf(ra) != null) { await changed({ renamed: [[noteOf(ra), noteOf(rb)]] }); return; }
       const before = notesIn(f), moved = [];
       const go = x => { moved.push([x, x.path]); if (x instanceof TFolder) x.children.forEach(go); }; go(f);
