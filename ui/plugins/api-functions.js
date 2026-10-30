@@ -369,7 +369,9 @@
           if (e in X) { v += X[e]; p += 2; continue; }
           const w = { x: 2, u: 4, U: 8 }[e], h = w && s.slice(p + 2, p + 2 + w);
           if (!w || !/^[0-9a-fA-F]+$/.test(h) || h.length !== w) throw err("bad escape \\" + e);
-          v += String.fromCodePoint(parseInt(h, 16)); p += 2 + w;
+          // a \U past U+10FFFF names no character: a parse error (String.fromCodePoint would throw a raw RangeError)
+          const cp = parseInt(h, 16); if (cp > 0x10ffff) throw err("bad escape \\" + e + h);
+          v += String.fromCodePoint(cp); p += 2 + w;
         }
       }
       function flow(B) {        // one flow collection starting at B.s[0]; throws UNTERM when it runs off the end
