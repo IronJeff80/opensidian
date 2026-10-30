@@ -294,8 +294,11 @@
         if (active !== false || g.active < 0) { g.active = g.tabs.indexOf(t); if (typeof focusGroup === "function") try { focusGroup(g); } catch (_) {} if (typeof loadActive === "function") await loadActive(g); }
         else if (typeof renderTabs === "function") renderTabs(g);
       }
-      async function noteSaved(g, t0) {   // false: t0 is the active note, it held unsaved edits and they did not reach disk
-        if (activeTab(g) !== t0 || typeof bufDirty !== "function" || !bufDirty(g)) return true;
+      async function noteSaved(g, t0) {   // true only when t0 provably holds no edits the disk lacks
+        // bufDirty/flushSave only see the group's ACTIVE buffer: an inactive note tab whose last save failed may still
+        // carry edits nothing here can check or write, so it is never treated as saved (the view opens after it instead)
+        if (activeTab(g) !== t0) return false;
+        if (typeof bufDirty !== "function" || !bufDirty(g)) return true;
         try { return !!(await flushSave(g)); } catch (_) { return false; }
       }
       async function closeTabOf(t) {
