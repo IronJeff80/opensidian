@@ -21,6 +21,7 @@ mod appid;
 mod builtins;
 use opensidian_lib::canvasfs;
 mod cfgstore;
+mod census; // census-gate (#30): the window-title census is opt-in (OPENSIDIAN_CENSUS=1 / devui)
 use opensidian_lib::datefmt;
 use opensidian_lib::graphq;
 use opensidian_lib::index;
@@ -3638,6 +3639,8 @@ fn vfs_sync(h: &tauri::AppHandle, req: &tauri::http::Request<Vec<u8>>) -> PageRe
 fn page_window(app: &tauri::AppHandle, wc: &tauri::utils::config::WindowConfig) -> tauri::Result<()> {
     let h = app.clone();
     let b = tauri::WebviewWindowBuilder::from_config(app, wc)?;
+    // census-gate: the title census exists only when opted in (census.rs); off = no script, no flag
+    let b = if census::on() { b.initialization_script(census::INIT_JS) } else { b };
     #[cfg(feature = "devui")]
     let b = if devui::root().is_some() { b.initialization_script(devui::INIT_JS) } else { b };
     b.on_web_resource_request(move |req, res| {
