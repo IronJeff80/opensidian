@@ -273,7 +273,9 @@
       const go = x => { all.push(x); if (x instanceof TFolder) x.children.forEach(go); }; go(f);
       if (f instanceof TFile && notes.length) { await changed({ removed: notes }); return; }
       removeTree(f);
-      for (const x of all.reverse()) vault.trigger("delete", x);
+      // PR #33 review: a note in the tree gets metadataCache "deleted" here, as applyChange gives a removed note (the
+      // changed() below finds no model entry left to fire it for)
+      for (const x of all.reverse()) { if (x instanceof TFile && noteOf(x.path) != null) metadataCache.trigger("deleted", x, null); vault.trigger("delete", x); }
       if (notes.length) await changed({ removed: notes });
     }
     async function adapterMoved(a, b) {
