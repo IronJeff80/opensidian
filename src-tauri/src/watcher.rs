@@ -580,6 +580,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let root = tmp("healperm");
         w(&root, "A", "a\n");
+        fs::create_dir_all(root.join("Locked")).unwrap();
         w(&root, "Locked/n", "n\n");
         let full = snapshot(&root);
         let mut ix = Index::build(&root);
